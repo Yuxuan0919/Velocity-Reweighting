@@ -1,0 +1,137 @@
+\subsubsection{Population-Level Effective Target with Mass Normalization}
+
+Fix a noisy state $(\mathbf{x}_t,c,t)$ and omit its arguments for notational
+simplicity. Let $\mathbf{v}_{\mathrm{old}}$ denote the velocity field of the
+old model, and let $\mathbf{v}_i$ denote the sample-wise flow matching target
+associated with generated sample $i$.
+
+We treat the old velocity field as carrying a unit baseline mass. Each generated
+sample contributes an additional signed editing mass. For sample $i$, define
+\begin{equation}
+w_i
+=
+\beta_a r_i^{+}
+-
+\beta_d r_i^{-},
+\label{eq:net_editing_mass_i}
+\end{equation}
+where $\beta_a r_i^{+}$ represents the added mass and $\beta_d r_i^{-}$
+represents the deleted mass. Thus, $w_i>0$ adds sample mass, whereas $w_i<0$
+removes sample mass.
+
+Importantly, the Monte Carlo mass associated with sample $i$ is $w_i$. Therefore, for a batch of $B$ generated samples, the total remaining
+mass is
+\begin{equation}
+M_B
+=
+1+\sum_{i=1}^{B}w_i
+>
+0 .
+\label{eq:batch_total_mass}
+\end{equation}
+The positivity condition in Eq.~\eqref{eq:batch_total_mass} ensures that the
+mass normalization is well defined.
+
+
+\paragraph{Mass-Normalized Effective Target.}
+
+After add--delete editing, the unnormalized velocity mass is
+\[
+\mathbf{v}_{\mathrm{old}}
++
+\sum_{i=1}^{B}
+w_i\mathbf{v}_i .
+\]
+
+\[
+\mathbf{v}_{\mathrm{old}}
++
+\sum_{i=1}^{B}
+w_i(\mathbf{v}_i-\mathbf{v}_{\mathrm{old}})?
+\]
+Normalizing it by the total remaining mass gives the finite-sample effective
+target
+\begin{equation}
+\boxed{
+\bar{\mathbf{v}}_{B}
+=
+\frac{
+\mathbf{v}_{\mathrm{old}}
++
+\sum_{i=1}^{B}
+w_i\mathbf{v}_i
+}{
+M_B
+}
+=
+\mathbf{v}_{\mathrm{old}}
++
+\frac{
+\sum_{i=1}^{B}
+w_i
+\left(
+\mathbf{v}_i-\mathbf{v}_{\mathrm{old}}
+\right)
+}{
+M_B
+}.
+}
+\label{eq:batch_mass_normalized_target}
+\end{equation}
+Hence, the updated target differs from the old velocity field by a signed
+mass-weighted residual, normalized by the total remaining mass.
+
+
+\paragraph{Direct Target-Matching Objective.}
+
+Given the normalized target in Eq.~\eqref{eq:batch_mass_normalized_target}, the
+direct target-matching objective is
+\begin{equation}
+\boxed{
+\mathcal{L}_{\mathrm{target}}
+=
+\left\|
+\mathbf{v}_{\theta}
+-
+\bar{\mathbf{v}}_{B}
+\right\|_2^2 .
+}
+\label{eq:direct_batch_target_matching_objective}
+\end{equation}
+Equivalently,
+\begin{equation}
+\mathcal{L}_{\mathrm{target}}
+=
+\left\|
+\mathbf{v}_{\theta}
+-
+\mathbf{v}_{\mathrm{old}}
+-
+\frac{
+\sum_{i=1}^{B}
+w_i
+\left(
+\mathbf{v}_i-\mathbf{v}_{\mathrm{old}}
+\right)
+}{
+M_B
+}
+\right\|_2^2 .
+\label{eq:direct_batch_target_matching_expanded}
+\end{equation}
+
+This objective is conceptually direct, but it is not directly decomposable into
+independent sample-wise squared-error terms. The reason is that the normalized
+target contains the batch-level ratio
+\[
+\frac{
+\sum_{i=1}^{B}
+w_i
+\left(
+\mathbf{v}_i-\mathbf{v}_{\mathrm{old}}
+\right)
+}{
+M_B
+},
+\]
+which couples all samples before the squared norm is taken.

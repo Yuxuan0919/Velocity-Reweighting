@@ -42,6 +42,20 @@ from flow_grpo.ema import EMAModuleWrapper
 from ml_collections import config_flags
 from torch.cuda.amp import GradScaler, autocast as torch_autocast
 
+"""
+整体可以概括为四段：
+1. 初始化分布式环境、模型、LoRA adapter、优化器和数据管线。
+2. 用 old policy 采样图像，并为每张图计算 reward。
+3. 把 reward 归一化成 advantage，再把 clean latent + timestep 重新送回训练环节。
+4. 按 DiffusionNFT 原始实现中的正/负隐式目标构造 loss，并更新 default adapter；
+   每个 outer epoch 结束后，再把 old adapter 软更新到新的位置。
+
+代码里有三个“策略”：
+- default adapter: 当前要训练的 policy。
+- old adapter: 负责 rollout / 采样的旧策略，也是 loss 中的参照策略。
+- reference policy: 关闭 LoRA 后的 base model，只用于 KL/MSE 正则，不参与训练。
+"""
+
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
 
@@ -54,6 +68,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 
 
 def setup_distributed(rank, lock_rank, world_size):
+    """初始化 NCCL 分布式环境，并把当前进程绑定到对应 GPU。"""
     os.environ["MASTER_ADDR"] = os.getenv("MASTER_ADDR", "localhost")
     os.environ["MASTER_PORT"] = os.getenv("MASTER_PORT", "12355")
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
@@ -61,14 +76,17 @@ def setup_distributed(rank, lock_rank, world_size):
 
 
 def cleanup_distributed():
+    """销毁分布式进程组。"""
     dist.destroy_process_group()
 
 
 def is_main_process(rank):
+    """只有 rank 0 负责日志、保存 checkpoint 等主进程任务。"""
     return rank == 0
 
 
 def set_seed(seed: int, rank: int = 0):
+    """给每个 rank 设置不同随机种子，避免多卡完全同随机流。"""
     random.seed(seed + rank)
     np.random.seed(seed + rank)
     torch.manual_seed(seed + rank)
@@ -76,6 +94,8 @@ def set_seed(seed: int, rank: int = 0):
 
 
 class TextPromptDataset(Dataset):
+    """简单文本数据集：每行一个 prompt，没有额外 metadata。"""
+
     def __init__(self, dataset, split="train"):
         self.file_path = os.path.join(dataset, f"{split}.txt")
         with open(self.file_path, "r") as f:
@@ -95,6 +115,8 @@ class TextPromptDataset(Dataset):
 
 
 class GenevalPromptDataset(Dataset):
+    """GenEval 数据集：每行是 JSON，除了 prompt 还保留评测 metadata。"""
+
     def __init__(self, dataset, split="train"):
         self.file_path = os.path.join(dataset, f"{split}_metadata.jsonl")
         with open(self.file_path, "r", encoding="utf-8") as f:
@@ -115,28 +137,42 @@ class GenevalPromptDataset(Dataset):
 
 
 class DistributedKRepeatSampler(Sampler):
+    """
+    这个采样器是整份脚本里非常关键的一个部件。
+
+    它的目标不是普通随机采样，而是：
+    - 先抽取 m 个“唯一 prompt”
+    - 每个 prompt 重复 k 次
+    - 再把这些重复后的样本随机打散并分发到各张卡
+
+    这样做的原因是训练需要“同一 prompt 下的多张图像”来计算 reward 统计量，
+    例如 per-prompt advantage normalization。
+    """
+
     def __init__(self, dataset, batch_size, k, num_replicas, rank, seed=0):
         self.dataset = dataset
         self.batch_size = batch_size
         self.k = k
-        self.num_replicas = num_replicas
+        self.num_replicas = num_replicas  # world size
         self.rank = rank
         self.seed = seed
 
-        self.total_samples = self.num_replicas * self.batch_size
+        self.total_samples = self.num_replicas * self.batch_size    # 一个epoch总采样数量为 worldsize * batchsize_per_gpu
         assert (
             self.total_samples % self.k == 0
         ), f"k can not div n*b, k{k}-num_replicas{num_replicas}-batch_size{batch_size}"
-        self.m = self.total_samples // self.k
+        self.m = self.total_samples // self.k    # 由总数量和 samples per prompt 反推 prompt 数
         self.epoch = 0
 
     def __iter__(self):
         while True:
             g = torch.Generator()
             g.manual_seed(self.seed + self.epoch)
+            # 先抽 m 个不同 prompt，再重复 k 次。
             indices = torch.randperm(len(self.dataset), generator=g)[: self.m].tolist()
             repeated_indices = [idx for idx in indices for _ in range(self.k)]
 
+            # 打乱重复后的样本，避免同一 prompt 的 k 个副本总落在一起。
             shuffled_indices = torch.randperm(len(repeated_indices), generator=g).tolist()
             shuffled_samples = [repeated_indices[i] for i in shuffled_indices]
 
@@ -152,12 +188,14 @@ class DistributedKRepeatSampler(Sampler):
 
 
 def gather_tensor_to_all(tensor, world_size):
+    """把每张卡上的 tensor all_gather 到一起，并拼成一个全局 tensor。"""
     gathered_tensors = [torch.zeros_like(tensor) for _ in range(world_size)]
     dist.all_gather(gathered_tensors, tensor)
     return torch.cat(gathered_tensors, dim=0).cpu()
 
 
 def compute_text_embeddings(prompt, text_encoders, tokenizers, max_sequence_length, device):
+    """统一封装 SD3 三个文本编码器的 prompt embedding 计算。"""
     with torch.no_grad():
         prompt_embeds, pooled_prompt_embeds = encode_prompt(text_encoders, tokenizers, prompt, max_sequence_length)
         prompt_embeds = prompt_embeds.to(device)
@@ -166,6 +204,12 @@ def compute_text_embeddings(prompt, text_encoders, tokenizers, max_sequence_leng
 
 
 def return_decay(step, decay_type):
+    """
+    old adapter 的软更新衰减系数。
+
+    返回值越大，说明越保守：
+    tgt = tgt * decay + src * (1 - decay)
+    """
     if decay_type == 0:
         flat = 0
         uprate = 0.0
@@ -189,6 +233,13 @@ def return_decay(step, decay_type):
 
 
 def calculate_zero_std_ratio(prompts, gathered_rewards):
+    """
+    统计“同一 prompt 下 reward 标准差为 0 的比例”。
+
+    这个指标可以帮助判断 reward 是否失去区分度：
+    如果某些 prompt 的所有候选图 reward 都完全一样，
+    那么基于该 prompt 的 advantage 就会退化。
+    """
     prompt_array = np.array(prompts)
     unique_prompts, inverse_indices, counts = np.unique(prompt_array, return_inverse=True, return_counts=True)
     grouped_rewards = gathered_rewards["avg"][np.argsort(inverse_indices), 0]
@@ -201,6 +252,7 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 
 
 def log_scalars(writer, scalars, step):
+    """兼容多种标量类型的 TensorBoard 记录函数。"""
     if writer is None:
         return
     for key, value in scalars.items():
@@ -215,6 +267,7 @@ def log_scalars(writer, scalars, step):
 
 
 def log_image_grid(writer, tag, images, captions, step, max_images=15):
+    """把若干生成图拼网格并配上文本说明，写入 TensorBoard。"""
     if writer is None:
         return
     num_images = min(max_images, len(images))
@@ -244,6 +297,12 @@ def eval_fn(
     transformer_trainable_parameters,
     writer,
 ):
+    """
+    周期性评估函数。
+
+    注意这里会在评估前临时把 EMA 权重拷到当前可训练参数上，
+    评估结束后再恢复，保证看到的是 EMA 平滑后的模型效果。
+    """
     if config.train.ema and ema is not None:
         ema.copy_ema_to(transformer_trainable_parameters, store_temp=True)
 
@@ -258,6 +317,7 @@ def eval_fn(
 
     all_rewards = defaultdict(list)
 
+    # 评估也用分布式 sampler，这样多卡可以并行评估整套测试集。
     test_sampler = (
         DistributedSampler(test_dataloader.dataset, num_replicas=world_size, rank=rank, shuffle=False)
         if world_size > 1
@@ -282,7 +342,7 @@ def eval_fn(
             prompts, text_encoders, tokenizers, max_sequence_length=128, device=device
         )
         current_batch_size = len(prompt_embeds)
-        if current_batch_size < len(sample_neg_prompt_embeds):  # Handle last batch
+        if current_batch_size < len(sample_neg_prompt_embeds):  # 处理最后一个不满 batch 的情况
             current_sample_neg_prompt_embeds = sample_neg_prompt_embeds[:current_batch_size]
             current_sample_neg_pooled_prompt_embeds = sample_neg_pooled_prompt_embeds[:current_batch_size]
         else:
@@ -308,6 +368,7 @@ def eval_fn(
                     model_type="sd3",
                 )
 
+        # 评估 reward 不需要像训练那样只看 strict 项，因此 only_strict=False。
         rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=False)
         time.sleep(0)
         rewards, reward_metadata = rewards_future.result()
@@ -346,6 +407,7 @@ def eval_fn(
 def save_ckpt(
     save_dir, transformer_ddp, global_step, rank, ema, transformer_trainable_parameters, config, optimizer, scaler
 ):
+    """保存 LoRA 权重、优化器状态和 AMP scaler 状态。"""
     if is_main_process(rank):
         save_root = os.path.join(save_dir, "checkpoints", f"checkpoint-{global_step}")
         save_root_lora = os.path.join(save_root, "lora")
@@ -368,6 +430,26 @@ def save_ckpt(
 
 
 def main(_):
+    """
+    训练主函数
+
+    整体结构是：
+    1. 用 old policy 采样一批图像。
+    2. 计算 reward，并在 prompt 内归一化成 advantage。
+    3. 用采样得到的最终 clean latent + timesteps 重新训练 current policy。
+    4. 训练结束后，把 old policy 软更新到新的 current policy 附近。
+    
+    每个 epoch:
+    1. 采样 16 次。
+    2. 每次全局采样 72 (8*9) 张图 = 3 个 prompt × 每个 24 张。
+    3. 所以一个 epoch 全局一共采 1152 （16*72）张图，每卡 144 张。
+    4. 把每张单卡的 144 张图拼成 collated_samples。
+    5. 计算全局 reward 和 per-prompt normalized advantage。
+    6. 单卡 144 个样本切成 16 个 train batch，每个 batch 9 个样本。
+    7. 每个 train batch 再展开 9 个 timestep 子步。
+    8. 所以单卡一共做 16 * 9 = 144 次 backward。
+    9. 因为 effective_grad_accum_steps = 144，所以整个 epoch 只在最后做 1 次 optimizer.step()。
+    """
     config = FLAGS.config
 
     # --- Distributed Setup ---
@@ -405,11 +487,13 @@ def main(_):
     scaler = GradScaler(enabled=enable_amp)
 
     # --- Load pipeline and models ---
+    # 直接加载完整 SD3 pipeline，然后按训练需要冻结其中绝大部分组件。
     pipeline = StableDiffusion3Pipeline.from_pretrained(config.pretrained.model)
     pipeline.vae.requires_grad_(False)
     pipeline.text_encoder.requires_grad_(False)
     pipeline.text_encoder_2.requires_grad_(False)
     pipeline.text_encoder_3.requires_grad_(False)
+    # 如果使用 LoRA，则只训练 LoRA adapter；否则训练整个 transformer。
     pipeline.transformer.requires_grad_(not config.use_lora)
     text_encoders = [pipeline.text_encoder, pipeline.text_encoder_2, pipeline.text_encoder_3]
     tokenizers = [pipeline.tokenizer, pipeline.tokenizer_2, pipeline.tokenizer_3]
@@ -432,6 +516,7 @@ def main(_):
     transformer = pipeline.transformer.to(device)
 
     if config.use_lora:
+        # 只对若干 attention 投影层挂 LoRA
         target_modules = [
             "attn.add_k_proj",
             "attn.add_q_proj",
@@ -446,16 +531,20 @@ def main(_):
             r=32, lora_alpha=64, init_lora_weights="gaussian", target_modules=target_modules
         )
         if config.train.lora_path:
+            # 从已有 LoRA 初始化 current policy
             transformer = PeftModel.from_pretrained(transformer, config.train.lora_path)
             transformer.set_adapter("default")
         else:
             transformer = get_peft_model(transformer, transformer_lora_config)
+        # 额外创建一个 old adapter。
+        # 后面 rollout 时用 old，训练时用 default（current policy)
         transformer.add_adapter("old", transformer_lora_config)
         transformer.set_adapter("default")
     transformer_ddp = DDP(transformer, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
     transformer_ddp.module.set_adapter("default")
     transformer_trainable_parameters = list(filter(lambda p: p.requires_grad, transformer_ddp.module.parameters()))
     transformer_ddp.module.set_adapter("old")
+    # old adapter 和 default adapter 属于两个不同 adapter。
     old_transformer_trainable_parameters = list(filter(lambda p: p.requires_grad, transformer_ddp.module.parameters()))
     transformer_ddp.module.set_adapter("default")
 
@@ -486,9 +575,9 @@ def main(_):
 
     train_sampler = DistributedKRepeatSampler(
         dataset=train_dataset,
-        batch_size=config.sample.train_batch_size,  # This is per-GPU batch size
+        batch_size=config.sample.train_batch_size,  
         k=config.sample.num_image_per_prompt,
-        num_replicas=world_size,
+        num_replicas=world_size, 
         rank=rank,
         seed=config.seed,
     )
@@ -509,6 +598,8 @@ def main(_):
     )
 
     # --- Prompt Embeddings ---
+    # 预先算一个空 prompt embedding。
+    # 做 CFG 时会和真实 prompt embedding 拼接。
     neg_prompt_embed, neg_pooled_prompt_embed = compute_text_embeddings(
         [""], text_encoders, tokenizers, max_sequence_length=128, device=device
     )
@@ -520,19 +611,23 @@ def main(_):
     if config.sample.num_image_per_prompt == 1:
         config.per_prompt_stat_tracking = False
     if config.per_prompt_stat_tracking:
+        # 维护“同一 prompt 的历史 reward 统计”，用于在 prompt group 内做 advantage 标准化。
         stat_tracker = PerPromptStatTracker(config.sample.global_std)
     else:
         assert False
 
+    # reward 计算通常比模型前向慢，所以放进线程池异步执行。
     executor = futures.ThreadPoolExecutor(max_workers=8)  # Async reward computation
 
-    # Train!
-    samples_per_epoch = config.sample.train_batch_size * world_size * config.sample.num_batches_per_epoch
-    total_train_batch_size = config.train.batch_size * world_size * config.train.gradient_accumulation_steps
+    # Train
+    # samples_per_epoch: 每个 outer epoch 采多少张图
+    # total_train_batch_size: 一次 optimizer.step 等效覆盖多少训练样本
+    samples_per_epoch = config.sample.train_batch_size * world_size * config.sample.num_batches_per_epoch  # 9 * 8 * 16 = 1152
+    total_train_batch_size = config.train.batch_size * world_size * config.train.gradient_accumulation_steps  # 9 * 8 * 16 =1152
 
     logger.info("***** Running training *****")
     logger.info(f"  Num Epochs = {config.num_epochs}")
-    logger.info(f"  Sample batch size per device = {config.sample.train_batch_size}")
+    logger.info(f"  Sample batch size per device = {config.sample.train_batch_size}") 
     logger.info(f"  Train batch size per device = {config.train.batch_size}")
     logger.info(f"  Gradient Accumulation steps = {config.train.gradient_accumulation_steps}")
     logger.info("")
@@ -579,15 +674,19 @@ def main(_):
 
     ema = None
     if config.train.ema:
+        # EMA 只跟踪 current policy 的可训练参数。
         ema = EMAModuleWrapper(transformer_trainable_parameters, decay=0.9, update_step_interval=1, device=device)
 
-    num_train_timesteps = int(config.sample.num_steps * config.train.timestep_fraction)
+    # 采样步数和训练步数不完全相等。
+    # 这里允许只对部分 timestep 训练，以减少开销。
+    num_train_timesteps = int(config.sample.num_steps * config.train.timestep_fraction) # int(10*0.99) = 9
 
     logger.info("***** Running training *****")
 
     train_iter = iter(train_dataloader)
     optimizer.zero_grad()
 
+    # 训练开始前，先让 old adapter 完全拷贝 current adapter。
     for src_param, tgt_param in zip(
         transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True
     ):
@@ -599,6 +698,7 @@ def main(_):
             train_sampler.set_epoch(epoch)
 
         # SAMPLING
+        # outer epoch 的第一阶段：用 old policy 收集新数据。
         pipeline.transformer.eval()
         samples_data_list = []
 
@@ -612,11 +712,13 @@ def main(_):
             if hasattr(train_sampler, "set_epoch") and isinstance(train_sampler, DistributedKRepeatSampler):
                 train_sampler.set_epoch(epoch * config.sample.num_batches_per_epoch + i)
 
+            # 这里拿到的是“同一 prompt 重复 k 次并跨卡打散后”分给当前 rank 的 prompts。
             prompts, prompt_metadata = next(train_iter)
 
             prompt_embeds, pooled_prompt_embeds = compute_text_embeddings(
                 prompts, text_encoders, tokenizers, max_sequence_length=128, device=device
             )
+            # prompt_ids 后面只用于把 prompts gather 回来做统计。
             prompt_ids = tokenizers[0](
                 prompts, padding="max_length", max_length=256, truncation=True, return_tensors="pt"
             ).input_ids.to(device)
@@ -656,6 +758,9 @@ def main(_):
             transformer_ddp.module.set_adapter("old")
             with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
                 with torch.no_grad():
+                    # 关键点：rollout 一律由 old policy 负责。
+                    # pipeline_with_logprob 会返回完整 denoising 过程中的 latents 列表，
+                    # 但当前训练只保留最后一个 clean latent。
                     images, latents, _ = pipeline_with_logprob(
                         pipeline,
                         prompt_embeds=prompt_embeds,
@@ -674,9 +779,12 @@ def main(_):
                     )
             transformer_ddp.module.set_adapter("default")
 
+            # latents: list[T] -> tensor[B, T, ...]
             latents = torch.stack(latents, dim=1)
+            # 对每张图记录采样 scheduler 的离散 timestep 序列，供训练阶段重放 forward noising。
             timesteps = pipeline.scheduler.timesteps.repeat(len(prompts), 1).to(device)
 
+            # reward 异步计算，避免 GPU 空等。
             rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=True)
             time.sleep(0)
 
@@ -687,10 +795,13 @@ def main(_):
                     "pooled_prompt_embeds": pooled_prompt_embeds,
                     "timesteps": timesteps,
                     "next_timesteps": torch.concatenate([timesteps[:, 1:], torch.zeros_like(timesteps[:, :1])], dim=1),
+                    # DiffusionNFT 训练阶段只需要最终 clean latent，不需要保存完整轨迹。
                     "latents_clean": latents[:, -1],
                     "rewards_future": rewards_future,  # Store future
                 }
             )
+            
+        
 
         for sample_item in tqdm(
             samples_data_list, desc="Waiting for rewards", disable=not is_main_process(rank), position=0
@@ -700,6 +811,7 @@ def main(_):
             del sample_item["rewards_future"]
 
         # Collate samples
+        # 把本 epoch 内多次 sampling batch 在样本维拼起来，形成训练数据池。
         collated_samples = {
             k: (
                 torch.cat([s[k] for s in samples_data_list], dim=0)
@@ -725,6 +837,7 @@ def main(_):
         )
 
         # Gather rewards across processes
+        # reward/advantage 归一化要看全局数据，不能只看单卡。
         gathered_rewards_dict = {}
         for key, value_tensor in collated_samples["rewards"].items():
             gathered_rewards_dict[key] = gather_tensor_to_all(value_tensor, world_size).numpy()
@@ -748,7 +861,7 @@ def main(_):
             prompts_all_decoded = pipeline.tokenizer.batch_decode(
                 prompt_ids_all.cpu().numpy(), skip_special_tokens=True
             )
-            # Stat tracker update expects numpy arrays for rewards
+            # stat_tracker 会在“同一 prompt 的多次采样图”之间做统计，输出优势值。
             advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
 
             if is_main_process(rank):
@@ -772,8 +885,8 @@ def main(_):
             stat_tracker.clear()
         else:
             avg_rewards_all = gathered_rewards_dict["avg"]
-            advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
-        # Distribute advantages back to processes
+            advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)  # 计算 advantages
+        # 全局 advantage 再切回各张卡本地样本的顺序。
         samples_per_gpu = collated_samples["timesteps"].shape[0]
         if advantages.ndim == 1:
             advantages = advantages[:, None]
@@ -791,16 +904,19 @@ def main(_):
         del collated_samples["rewards"]
         del collated_samples["prompt_ids"]
 
-        num_batches = config.sample.num_batches_per_epoch * config.sample.train_batch_size // config.train.batch_size
+        # 一个 epoch 的训练会把 collated_samples 切成若干 train micro-batch。
+        num_batches = config.sample.num_batches_per_epoch * config.sample.train_batch_size // config.train.batch_size # 16 * 9 // 9 = 16
 
         filtered_samples = collated_samples
 
         total_batch_size_filtered, num_timesteps_filtered = filtered_samples["timesteps"].shape
 
         # TRAINING
+        # 第二阶段：在刚采样到的数据上训练 current policy。
         transformer_ddp.train()  # Sets DDP model and its submodules to train mode.
 
         # Total number of backward passes before an optimizer step
+        # 实际真正的梯度累积步数还要把每个sample的timesteps算在内： 16 * 9
         effective_grad_accum_steps = config.train.gradient_accumulation_steps * num_train_timesteps
 
         current_accumulated_steps = 0  # Counter for backward passes
@@ -810,6 +926,7 @@ def main(_):
             perm = torch.randperm(total_batch_size_filtered, device=device)
             shuffled_filtered_samples = {k: v[perm] for k, v in filtered_samples.items()}
 
+            # 每个样本自己的 timestep 顺序再随机打散，减弱固定 timestep 次序带来的偏差。
             perms_time = torch.stack(
                 [torch.randperm(num_timesteps_filtered, device=device) for _ in range(total_batch_size_filtered)]
             )
@@ -854,6 +971,7 @@ def main(_):
                     pooled_embeds = train_sample_batch["pooled_prompt_embeds"]
 
                 # Loop over timesteps for this micro-batch
+                # 这里不是直接拿采样轨迹做监督，而是用最终 x0 在不同 t 上重新加噪，构造训练样本。
                 for j_idx, j_timestep_orig_idx in tqdm(
                     enumerate(range(num_train_timesteps)),
                     desc="Timestep",
@@ -870,12 +988,14 @@ def main(_):
 
                     noise = torch.randn_like(x0.float())
 
+                    # Rectified flow / flow matching 风格的 forward noising：
+                    # x_t = (1 - t) * x0 + t * noise
                     xt = (1 - t_expanded) * x0 + t_expanded * noise
 
                     with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
                         transformer_ddp.module.set_adapter("old")
                         with torch.no_grad():
-                            # prediction v
+                            # old policy 在同一个 (x_t, t, c) 上的 velocity 预测
                             old_prediction = transformer_ddp(
                                 hidden_states=xt,
                                 timestep=train_sample_batch["timesteps"][:, j_idx],
@@ -885,7 +1005,7 @@ def main(_):
                             )[0].detach()
                         transformer_ddp.module.set_adapter("default")
 
-                        # prediction v
+                        # current policy 在同一个 (x_t, t, c) 上的 velocity 预测
                         forward_prediction = transformer_ddp(
                             hidden_states=xt,
                             timestep=train_sample_batch["timesteps"][:, j_idx],
@@ -895,7 +1015,7 @@ def main(_):
                         )[0]
 
                         with torch.no_grad():  # Reference model part
-                            # For LoRA, disable adapter.
+                            # 参考策略 = 关闭 LoRA adapter 后的 base model。
                             if config.use_lora:
                                 with transformer_ddp.module.disable_adapter():
                                     ref_forward_prediction = transformer_ddp(
@@ -910,6 +1030,7 @@ def main(_):
                                 assert False
                     loss_terms = {}
                     # Policy Gradient Loss
+                    # 训练用 advantage 会先截断到 [-A, A] A=5，再映射到 [0, 1] 作为混合系数 r。
                     advantages_clip = torch.clamp(
                         train_sample_batch["advantages"][:, j_idx],
                         -config.train.adv_clip_max,
@@ -927,19 +1048,30 @@ def main(_):
                         elif config.train.adv_mode == "binary":
                             advantages_clip = torch.sign(advantages_clip)
 
-                    # normalize advantage
-                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
+                    # r 越接近 1，越偏向“正样本目标”；
+                    # r 越接近 0，越偏向“隐式负样本目标”。
+                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5 # 0-1
                     r = torch.clamp(normalized_advantages_clip, 0, 1)
                     loss_terms["x0_norm"] = torch.mean(x0**2).detach()
                     loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
+                    # 原论文实现里的两个隐式目标：
+                    #
+                    # 1. positive_prediction:
+                    #    把 current prediction 和 old prediction 做线性插值，
+                    #    当 beta=1 时就退化成 current prediction 本身。
+                    #
+                    # 2. implicit_negative_prediction:
+                    #    相当于把 current prediction 关于 old prediction 做一次镜像外推，
+                    #    当 beta=1 时变成 2 * old - current。
                     positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
                     implicit_negative_prediction = (
                         1.0 + config.beta
                     ) * old_prediction.detach() - config.beta * forward_prediction
 
-                    # adaptive weighting
+                    # 把 velocity prediction 重新映射回 x0 空间：
+                    # x0_hat = x_t - t * v_hat
                     x0_prediction = xt - t_expanded * positive_prediction
                     with torch.no_grad():
                         weight_factor = (
@@ -959,7 +1091,15 @@ def main(_):
                         dim=tuple(range(1, x0.ndim))
                     )
 
+                    # 原始 DiffusionNFT 的 policy loss：
+                    #   r * positive_loss / beta + (1-r) * negative_loss / beta
+                    #
+                    # 其中：
+                    # - r 来自 reward/advantage
+                    # - positive_loss 倾向于“靠近当前样本”
+                    # - negative_loss 倾向于“远离当前样本”
                     ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
+                    # 再乘 adv_clip_max，把前面 clip 过的 advantage 尺度补回来。
                     policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
                     loss = policy_loss
@@ -970,6 +1110,7 @@ def main(_):
                         dim=tuple(range(1, x0.ndim))
                     )
 
+                    # 这里变量名叫 KL，但实现上其实是 current 与 reference 的 velocity MSE 正则。
                     loss += config.train.beta * torch.mean(kl_div_loss)
                     kl_div_loss = torch.mean(kl_div_loss)
                     loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach()
@@ -982,7 +1123,7 @@ def main(_):
 
                     loss_terms["total_loss"] = loss.detach()
 
-                    # Scale loss for gradient accumulation and DDP (DDP averages grads, so no need to divide by world_size here)
+                    # Scale loss for gradient accumulation
                     scaled_loss = loss / effective_grad_accum_steps
                     if mixed_precision_dtype == torch.float16:
                         scaler.scale(scaled_loss).backward()  # one accumulation
@@ -996,6 +1137,7 @@ def main(_):
                     if current_accumulated_steps % effective_grad_accum_steps == 0:
                         if mixed_precision_dtype == torch.float16:
                             scaler.unscale_(optimizer)
+                        # 在真正 step 前统一做梯度裁剪。
                         torch.nn.utils.clip_grad_norm_(transformer_ddp.module.parameters(), config.train.max_grad_norm)
                         if mixed_precision_dtype == torch.float16:
                             scaler.step(optimizer)
@@ -1037,6 +1179,10 @@ def main(_):
             dist.barrier()
 
         with torch.no_grad():
+            # 每个 outer epoch 结束后，把 old adapter 朝 current adapter 软更新。
+            # 这一步非常关键：
+            # - 下一轮 rollout 用的是 old policy
+            # - implicit_prediction 也依赖 old policy
             decay = return_decay(global_step, config.decay_type)
             for src_param, tgt_param in zip(
                 transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True

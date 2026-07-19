@@ -1,0 +1,354 @@
+
+\subsection{Velocity Addition and Deletion}
+\label{sec:velocity_addition_deletion}
+
+We explicitly edit the
+velocity target induced by each generated sample. The central idea is simple:
+\emph{high-reward samples should be added to the old velocity field, whereas
+low-reward samples should be deleted from it.}
+
+\paragraph{From velocity averaging to addition and deletion.}
+Our motivation starts from the conditional average form of the optimal
+flow-matching velocity. For a given noisy state $\mathbf{x}_t$, the optimal
+velocity can be written as
+\begin{equation}
+\mathbf{v}^{*}(\mathbf{x}_t,t)
+=
+\mathbb{E}_{\mathbf{x}_0\sim p(\cdot\mid \mathbf{x}_t)}
+\left[
+\mathbf{v}_t(\mathbf{x}_t\mid \mathbf{x}_0)
+\right].
+\end{equation}
+This suggests that the velocity prediction can be viewed as an
+average of sample-wise velocity targets. For sample $i$ at timestep $t_i$, we
+denote the old prediction, current prediction, and clean flow-matching target as
+\[
+\mathbf{v}_i^{\mathrm{old}}
+=
+\mathbf{v}_{\theta_{\mathrm{old}}}(\mathbf{x}_{t_i}^i,t_i,c_i),
+\qquad
+\mathbf{v}_i^\theta
+=
+\mathbf{v}_{\theta}(\mathbf{x}_{t_i}^i,t_i,c_i),
+\qquad
+\mathbf{v}_i .
+\]
+Under a finite-sample approximation, the old velocity can be viewed as
+\begin{equation}
+\mathbf{v}_i^{\mathrm{old}}
+\approx
+\frac{1}{N}
+\sum_{j=1}^{N}
+\mathbf{v}_j .
+\end{equation}
+
+If we add one sample-wise velocity $\mathbf{v}_i$ to this average, the
+updated target becomes
+\begin{equation}
+\begin{aligned}
+\mathbf{v}_i^{+}
+&=
+\frac{
+N\mathbf{v}_i^{\mathrm{old}}
++
+\mathbf{v}_i
+}{
+N+1
+}
+\\
+&=
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{1}{N+1}
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{aligned}
+\end{equation}
+Thus, addition moves the target from the old velocity toward the new
+sample-wise velocity. Conversely, if we delete one sample-wise velocity
+$\mathbf{v}_i$ from the average, the updated target becomes
+\begin{equation}
+\begin{aligned}
+\mathbf{v}_i^{-}
+&=
+\frac{
+N\mathbf{v}_i^{\mathrm{old}}
+-
+\mathbf{v}_i
+}{
+N-1
+}
+\\
+&=
+\mathbf{v}_i^{\mathrm{old}}
+-
+\frac{1}{N-1}
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{aligned}
+\end{equation}
+Thus, deletion moves the target away from the sample-wise velocity.
+
+\paragraph{Soft velocity addition.}
+For reward-based fine-tuning, addition should be soft rather than binary. We
+therefore add a fractional amount $w_a r_i^+$ of the sample-wise velocity, where
+$r_i^+\in[0,1]$ is the addition score and $w_a$ controls the maximum addition
+amount. The resulting target is
+\begin{equation}
+\begin{aligned}
+\mathbf{\tau}_i^{+}
+&=
+\frac{
+N\mathbf{v}_i^{\mathrm{old}}
++
+w_a r_i^+\mathbf{v}_i
+}{
+N+w_a r_i^+
+}
+\\
+&=
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{w_a r_i^+}{N+w_a r_i^+}
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{aligned}
+\end{equation}
+When $w_a r_i^+\ll N$, we have
+\begin{equation}
+\frac{w_a r_i^+}{N+w_a r_i^+}
+\approx
+\frac{w_a}{N}r_i^+.
+\end{equation}
+Letting $\beta_a=w_a/N$, the soft addition target becomes
+\begin{equation}
+\label{eq:soft_addition_target}
+\mathbf{\tau}_i^{+}
+\approx
+\mathbf{v}_i^{\mathrm{old}}
++
+\beta_a r_i^+
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{equation}
+
+
+\paragraph{Soft velocity deletion.}
+Similarly, deletion removes a fractional amount $w_d r_i^-$ of the sample-wise
+velocity, where $r_i^-\in[0,1]$ is the deletion score and $w_d$ controls the
+maximum deletion amount. The resulting target is
+\begin{equation}
+\begin{aligned}
+\mathbf{\tau}_i^{-}
+&=
+\frac{
+N\mathbf{v}_i^{\mathrm{old}}
+-
+w_d r_i^-\mathbf{v}_i
+}{
+N-w_d r_i^-
+}
+\\
+&=
+\mathbf{v}_i^{\mathrm{old}}
+-
+\frac{w_d r_i^-}{N-w_d r_i^-}
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{aligned}
+\end{equation}
+When $w_d r_i^-\ll N$, we have
+\begin{equation}
+\frac{w_d r_i^-}{N-w_d r_i^-}
+\approx
+\frac{w_d}{N}r_i^-.
+\end{equation}
+Letting $\beta_d=w_d/N$, the soft deletion target becomes
+\begin{equation}
+\label{eq:soft_deletion_target}
+\mathbf{\tau}_i^{-}
+\approx
+\mathbf{v}_i^{\mathrm{old}}
+-
+\beta_d r_i^-
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{equation}
+Here $r_i^-$ acts as a deletion amount, rather than merely as a negative loss
+weight.
+
+\paragraph{Unified add-delete target.}
+{\color{red} old formulation?}
+Combining soft addition and deletion gives the sample-specific target
+\begin{equation}
+\label{eq:add_delete_target}
+\mathbf{\tau}_i
+=
+\mathbf{v}_i^{\mathrm{old}}
++
+\left(
+\beta_a r_i^+
+-
+\beta_d r_i^-
+\right)
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{equation}
+If $\beta_a r_i^+>\beta_d r_i^-$, the sample residual is added to the old
+velocity field. If $\beta_d r_i^->\beta_a r_i^+$, the residual is deleted by
+placing the target on the opposite side of the old velocity.
+
+In the symmetric case $\beta_a=\beta_d=\beta$ and $r_i^-=1-r_i^+$, this reduces
+to
+\begin{equation}
+\mathbf{\tau}_i
+=
+\mathbf{v}_i^{\mathrm{old}}
++
+\beta(2r_i^+-1)
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{equation}
+Thus, samples above the reward midpoint move the target toward their clean
+velocity, samples below the midpoint move it away, and midpoint samples remain
+near the old velocity.
+
+\paragraph{Reward normalization.}
+For $K$ samples generated from the same prompt, let
+$R_i=R(\mathbf{x}_0^i,c)$ be the raw reward. We normalize rewards within the
+prompt group and clip the normalized score:
+\begin{equation}
+\widehat{A}_i
+=
+\operatorname{clip}
+\left(
+\frac{
+R_i-\frac{1}{K}\sum_{j=1}^{K}R_j
+}{
+Z_c
+},
+-1,1
+\right),
+\qquad
+r_i^+
+=
+\frac{1}{2}
++
+\frac{1}{2}\widehat{A}_i,
+\qquad
+r_i^-
+=
+1-r_i^+ .
+\end{equation}
+With symmetric addition and deletion strengths, Eq.~\eqref{eq:add_delete_target}
+becomes
+\begin{equation}
+\label{eq:add_delete_target_advantage}
+\mathbf{\tau}_i
+=
+\mathbf{v}_i^{\mathrm{old}}
++
+\beta\widehat{A}_i
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{equation}
+Therefore, the normalized advantage controls both the direction and the
+magnitude of the velocity-target edit.
+\\
+{\color{red}
+in the case $\beta_a = \beta_d$,
+$2r^+ - 1
+= A_i$,
+Advantage as the possiblity 
+that the generated sample is kept?}
+
+\paragraph{Training loss.}
+The model is trained by direct regression to the add-delete target, together
+with the reference-anchor regularization used in implementation:
+\begin{equation}
+\label{eq:add_delete_loss}
+\mathcal{L}_{\mathrm{AD}}
+=
+\frac{1}{B}
+\sum_{i=1}^{B}
+\left[
+\left\|
+\mathbf{v}_i^\theta
+-
+\mathbf{\tau}_i
+\right\|_2^2
++
+\lambda_{\mathrm{ref}}
+\left\|
+\mathbf{v}_i^\theta
+-
+\mathbf{v}_i^{\mathrm{ref}}
+\right\|_2^2
+\right],
+\end{equation}
+where
+\[
+\mathbf{v}_i^{\mathrm{ref}}
+=
+\mathbf{v}_{\theta_{\mathrm{ref}}}(\mathbf{x}_{t_i}^i,t_i,c_i)
+\]
+is the velocity predicted by a frozen reference model. The first term implements
+reward-conditioned velocity target editing, while the second term prevents the
+updated model from drifting too far from the reference velocity field.
+
+This objective turns reward optimization into explicit velocity-target
+construction. Positive samples contribute fractional additive mass along
+$\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}$, while negative samples remove
+fractional mass by placing the target in the opposite direction.
+Algorithm~\ref{alg:velocity-add-delete-single-branch} summarizes the practical
+implementation.
+
+
+Algorithm~\ref{alg:velocity-add-delete-single-branch} summarizes the practical implementation. We denote the current prediction by
+$\mathbf{v}_i^{\theta}$, the old-policy prediction by
+$\mathbf{v}_i^{\mathrm{old}}$, and the reference prediction by
+$\mathbf{v}_i^{\mathrm{ref}}$. The algorithm applies the add-delete target in
+the predicted clean-sample space, using
+$\hat{\mathbf{x}}_0=\mathbf{x}_t-t\mathbf{v}$ for rectified flow.
+
+\begin{algorithm}[H]
+\caption{Velocity Addition and Deletion Fine-tuning}
+\label{alg:velocity-add-delete-single-branch}
+\begin{algorithmic}[1]
+\Require Initial model $\theta_0$, reward $R$, prompts $p(c)$, rollout size $K$, batch size $B$, addition strength $\beta_a$, deletion strength $\beta_d$, regularization $\beta_{\mathrm{KL}}$, advantage clip $A$, EMA rate $\eta$.
+\State $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}\leftarrow\theta_0$.
+\For{each training iteration}
+    \State $\mathcal{D}\leftarrow\varnothing$.
+    \For{each prompt $c\sim p(c)$}
+        \State Sample $K$ trajectories with $\theta_{\mathrm{old}}$ and store $\{(\mathbf{x}_0^k,t_{k,j})\}$.
+        \State Compute rewards $R_k=R(\mathbf{x}_0^k,c)$ and normalized advantages $\mathrm{adv}_{k,j}$.
+        \State $r_{k,j}^{+}\leftarrow\operatorname{clip}\big(\operatorname{clip}(\mathrm{adv}_{k,j},-A,A)/(2A)+1/2,0,1\big)$,
+        $r_{k,j}^{-}\leftarrow 1-r_{k,j}^{+}$.
+        \State Add $\{(c,\mathbf{x}_0^k,t_{k,j},r_{k,j}^{+},r_{k,j}^{-})\}$ to $\mathcal{D}$.
+    \EndFor
+    \For{each minibatch $\{(c_i,\mathbf{x}^0_i,t,r_i^{+},r_i^{-})\}_{i=1}^{B}\sim\mathcal{D}$}
+        \State Sample $\boldsymbol{\epsilon}_i\sim\mathcal{N}(0,I)$ and set $\mathbf{x}^{t}_i=(1-t)\mathbf{x}^0_i+t\boldsymbol{\epsilon}_i$.
+        \State $\mathbf{v}_i^{\theta}\leftarrow\mathbf{v}_{\theta}(\mathbf{x}^{t}_i,c_i,t)$.
+        \State $\mathbf{v}_i^{\mathrm{old}}\leftarrow\mathbf{v}_{\theta_{\mathrm{old}}}(\mathbf{x}^{t}_i,c_i,t)$,
+        $\mathbf{v}_i^{\mathrm{ref}}\leftarrow\mathbf{v}_{\theta_{\mathrm{ref}}}(\mathbf{x}^{t}_i,c_i,t)$.
+        \State $\hat{\mathbf{x}}_{0,i}^{\theta}\leftarrow\mathbf{x}^{t}_i-t\mathbf{v}_i^{\theta}$,
+        $\hat{\mathbf{x}}_{0,i}^{\mathrm{old}}\leftarrow\mathbf{x}^{t}_i-t\mathbf{v}_i^{\mathrm{old}}$.
+        \State $\bar{\mathbf{x}}_{0,i}\leftarrow\hat{\mathbf{x}}_{0,i}^{\mathrm{old}}+(\beta_a r_i^{+}-\beta_d r_i^{-})(\mathbf{x}^0_i-\hat{\mathbf{x}}_{0,i}^{\mathrm{old}})$.
+        \State $\mathcal{L}_{\mathrm{AD}}\leftarrow\operatorname{mean}_{i}\left[\frac{2A}{\beta_a + \beta_d }\operatorname{mean}\frac{||\hat{\mathbf{x}}_{0,i}^{\theta}-\bar{\mathbf{x}}_{0,i}||^2}{\operatorname{sg}\big[\operatorname{mean}|\hat{\mathbf{x}}_{0,i}^{\theta}-\bar{\mathbf{x}}_{0,i}|\big]}\right]$.
+        \State $\mathcal{L}\leftarrow\mathcal{L}_{\mathrm{AD}}+\beta_{\mathrm{KL}}\operatorname{mean}_{i}\|\mathbf{v}_i^{\theta}-\mathbf{v}_i^{\mathrm{ref}}\|_2^2$.
+        \State Update $\theta$ by minimizing $\mathcal{L}$.
+    \EndFor
+    \State $\theta_{\mathrm{old}}\leftarrow\eta\theta_{\mathrm{old}}+(1-\eta)\theta$.
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+

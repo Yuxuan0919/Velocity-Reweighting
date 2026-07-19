@@ -946,13 +946,13 @@ def main(_):
                     x0_old_prediction = xt - t_expanded * old_prediction.detach()
                     x0_add_delete_target = x0_old_prediction + add_delete_coeff_expanded * (x0 - x0_old_prediction)
 
-                    # with torch.no_grad():
-                    #     weight_factor = (
-                    #         torch.abs(x0_prediction.double() - x0_add_delete_target.double())
-                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                    #         .clip(min=0.00001)
-                    #     )
-                    weight_factor = t_expanded.square().clamp(min=1e-8)
+                    with torch.no_grad():
+                        weight_factor = (
+                            torch.abs(x0_prediction.double() - x0_add_delete_target.double())
+                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                            .clip(min=0.00001)
+                        )
+                    # weight_factor = t_expanded.square().clamp(min=1e-8)
                     policy_loss = ((x0_prediction - x0_add_delete_target) ** 2 / weight_factor).mean(
                         dim=tuple(range(1, x0.ndim))
                     )

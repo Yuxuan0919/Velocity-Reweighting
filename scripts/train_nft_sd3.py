@@ -934,26 +934,32 @@ def main(_):
                     loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
-                    add_delete_coeff = config.beta * (2.0 * r - 1.0)
-                    add_delete_coeff_expanded = add_delete_coeff.view(-1, *([1] * (x0.ndim - 1)))
+                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
+                    implicit_negative_prediction = (
+                        1.0 + config.beta
+                    ) * old_prediction.detach() - config.beta * forward_prediction
 
-                    # Single-branch x-space counterpart of the add-delete target:
-                    # x_bar = x_old + beta * (2r - 1) * (x0 - x_old).
-                    x0_prediction = xt - t_expanded * forward_prediction
-                    x0_old_prediction = xt - t_expanded * old_prediction.detach()
-                    x0_add_delete_target = x0_old_prediction + add_delete_coeff_expanded * (x0 - x0_old_prediction)
-                    weight_factor = t_expanded.square().clamp(min=1e-8)
-                    # with torch.no_grad():
-                    #     weight_factor = (
-                    #         torch.abs(x0_prediction.double() - x0_add_delete_target.double())
-                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                    #         .clip(min=0.00001)
-                    #     )
-                    single_branch_loss = ((x0_prediction - x0_add_delete_target) ** 2 / weight_factor).mean(
+                    # adaptive weighting
+                    x0_prediction = xt - t_expanded * positive_prediction
+                    with torch.no_grad():
+                        weight_factor = (
+                            torch.abs(x0_prediction.double() - x0.double())
+                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                            .clip(min=0.00001)
+                        )
+                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(dim=tuple(range(1, x0.ndim)))
+                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
+                    with torch.no_grad():
+                        negative_weight_factor = (
+                            torch.abs(negative_x0_prediction.double() - x0.double())
+                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                            .clip(min=0.00001)
+                        )
+                    negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    ori_policy_loss = single_branch_loss / config.beta
+                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
                     policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
                     loss = policy_loss
