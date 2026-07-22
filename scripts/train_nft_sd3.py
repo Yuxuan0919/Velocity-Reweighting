@@ -398,6 +398,12 @@ def save_ckpt(
 def main(_):
     config = FLAGS.config
 
+    if config.train.reward_weighting not in ["linear", "exponential"]:
+        raise ValueError(
+            f"Unsupported reward weighting: {config.train.reward_weighting}. "
+            'Expected "linear" or "exponential".'
+        )
+
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
@@ -854,6 +860,38 @@ def main(_):
         else:
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
+
+        # Keep DiffusionNFT's advantage statistics, including its global_std behavior,
+        # and only change the mapping from those advantages to sample weights.
+        normalized_advantages = np.clip(
+            advantages, -config.train.adv_clip_max, config.train.adv_clip_max
+        ) / config.train.adv_clip_max
+        reward_weight_epsilon = 1e-6
+        if config.train.reward_weighting == "linear":
+            reward_weights = np.maximum(reward_weight_epsilon, 1.0 + normalized_advantages)
+        elif config.train.reward_weighting == "exponential":
+            reward_weights = np.exp(normalized_advantages)
+        else:
+            raise ValueError(
+                f"Unsupported reward weighting: {config.train.reward_weighting}. "
+                'Expected "linear" or "exponential".'
+            )
+
+        prompt_array = np.asarray(prompts_all_decoded)
+        delta_r = np.empty_like(reward_weights)
+        for prompt in np.unique(prompt_array):
+            prompt_mask = prompt_array == prompt
+            delta_r[prompt_mask] = np.mean(
+                reward_weights[prompt_mask] - 1.0, axis=0, keepdims=True
+            )
+
+        mass_denominator = 1.0 + config.beta * delta_r
+        if np.any(mass_denominator <= 0):
+            raise ValueError(
+                "Reward-reweighted target requires 1 + beta * delta_r > 0, "
+                f"but the minimum value is {mass_denominator.min():.6f}."
+            )
+
         # Distribute advantages back to processes
         samples_per_gpu = collated_samples["timesteps"].shape[0]
         if advantages.ndim == 1:
@@ -865,6 +903,13 @@ def main(_):
             ).to(device)
         else:
             assert False
+
+        collated_samples["reward_weights"] = torch.from_numpy(
+            reward_weights.reshape(world_size, samples_per_gpu, -1)[rank]
+        ).to(device=device, dtype=torch.float32)
+        collated_samples["delta_r"] = torch.from_numpy(
+            delta_r.reshape(world_size, samples_per_gpu, -1)[rank]
+        ).to(device=device, dtype=torch.float32)
 
         if is_main_process(rank):
             logger.info(f"Advantages mean: {collated_samples['advantages'].abs().mean().item()}")
@@ -990,62 +1035,93 @@ def main(_):
                             else:  # Full model - this requires a frozen copy of the model
                                 assert False
                     loss_terms = {}
-                    # Policy Gradient Loss
-                    advantages_clip = torch.clamp(
-                        train_sample_batch["advantages"][:, j_idx],
-                        -config.train.adv_clip_max,
-                        config.train.adv_clip_max,
-                    )
-                    if hasattr(config.train, "adv_mode"):
-                        if config.train.adv_mode == "positive_only":
-                            advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
-                        elif config.train.adv_mode == "negative_only":
-                            advantages_clip = torch.clamp(advantages_clip, -config.train.adv_clip_max, 0)
-                        elif config.train.adv_mode == "one_only":
-                            advantages_clip = torch.where(
-                                advantages_clip > 0, torch.ones_like(advantages_clip), torch.zeros_like(advantages_clip)
-                            )
-                        elif config.train.adv_mode == "binary":
-                            advantages_clip = torch.sign(advantages_clip)
-
-                    # normalize advantage
-                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
-                    r = torch.clamp(normalized_advantages_clip, 0, 1)
                     loss_terms["x0_norm"] = torch.mean(x0**2).detach()
                     loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
-                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
-                    implicit_negative_prediction = (
-                        1.0 + config.beta
-                    ) * old_prediction.detach() - config.beta * forward_prediction
 
-                    # adaptive weighting
-                    x0_prediction = xt - t_expanded * positive_prediction
+                    # Original DiffusionNFT two-branch objective (kept for reference):
+                    # # Policy Gradient Loss
+                    # advantages_clip = torch.clamp(
+                    #     train_sample_batch["advantages"][:, j_idx],
+                    #     -config.train.adv_clip_max,
+                    #     config.train.adv_clip_max,
+                    # )
+                    # if hasattr(config.train, "adv_mode"):
+                    #     if config.train.adv_mode == "positive_only":
+                    #         advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
+                    #     elif config.train.adv_mode == "negative_only":
+                    #         advantages_clip = torch.clamp(advantages_clip, -config.train.adv_clip_max, 0)
+                    #     elif config.train.adv_mode == "one_only":
+                    #         advantages_clip = torch.where(
+                    #             advantages_clip > 0,
+                    #             torch.ones_like(advantages_clip),
+                    #             torch.zeros_like(advantages_clip),
+                    #         )
+                    #     elif config.train.adv_mode == "binary":
+                    #         advantages_clip = torch.sign(advantages_clip)
+                    #
+                    # # normalize advantage
+                    # normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
+                    # r = torch.clamp(normalized_advantages_clip, 0, 1)
+                    # positive_prediction = (
+                    #     config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
+                    # )
+                    # implicit_negative_prediction = (
+                    #     1.0 + config.beta
+                    # ) * old_prediction.detach() - config.beta * forward_prediction
+                    #
+                    # # adaptive weighting
+                    # x0_prediction = xt - t_expanded * positive_prediction
+                    # with torch.no_grad():
+                    #     weight_factor = (
+                    #         torch.abs(x0_prediction.double() - x0.double())
+                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                    #         .clip(min=0.00001)
+                    #     )
+                    # positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
+                    #     dim=tuple(range(1, x0.ndim))
+                    # )
+                    # negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
+                    # with torch.no_grad():
+                    #     negative_weight_factor = (
+                    #         torch.abs(negative_x0_prediction.double() - x0.double())
+                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                    #         .clip(min=0.00001)
+                    #     )
+                    # negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
+                    #     dim=tuple(range(1, x0.ndim))
+                    # )
+                    # ori_policy_loss = (
+                    #     r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
+                    # )
+                    # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
+
+                    reward_weights = train_sample_batch["reward_weights"][:, j_idx]
+                    delta_r = train_sample_batch["delta_r"][:, j_idx]
+                    target_coeff = config.beta * (reward_weights - 1.0) / (1.0 + config.beta * delta_r)
+                    target_coeff_expanded = target_coeff.view(-1, *([1] * (x0.ndim - 1)))
+
+                    x0_prediction = xt - t_expanded * forward_prediction
+                    x0_old_prediction = xt - t_expanded * old_prediction.detach()
+                    x0_target = x0_old_prediction + target_coeff_expanded * (x0 - x0_old_prediction)
                     with torch.no_grad():
                         weight_factor = (
-                            torch.abs(x0_prediction.double() - x0.double())
+                            torch.abs(x0_prediction.double() - x0_target.double())
                             .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
                             .clip(min=0.00001)
                         )
-                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(dim=tuple(range(1, x0.ndim)))
-                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
-                    with torch.no_grad():
-                        negative_weight_factor = (
-                            torch.abs(negative_x0_prediction.double() - x0.double())
-                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                            .clip(min=0.00001)
-                        )
-                    negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
+                    ori_policy_loss = ((x0_prediction - x0_target) ** 2 / weight_factor).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
-
-                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
                     policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
+                    loss_terms["reward_weight_mean"] = reward_weights.mean().detach()
+                    loss_terms["delta_r_mean"] = delta_r.mean().detach()
+                    loss_terms["target_coeff_abs_mean"] = target_coeff.abs().mean().detach()
 
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))

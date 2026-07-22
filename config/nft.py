@@ -59,8 +59,6 @@ def _get_config(base_model="sd3", n_gpus=1, gradient_step_per_epoch=1, dataset="
 
     config.decay_type = 1
     config.beta = 1.0
-    config.beta_a = 1.0
-    config.beta_d = 1.0
     config.train.adv_mode = "all"
 
     config.sample.guidance_scale = 1.0

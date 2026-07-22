@@ -82,6 +82,8 @@ def get_config():
     train.num_inner_epochs = 1
     # clip advantages to the range [-adv_clip_max, adv_clip_max].
     train.adv_clip_max = 5
+    # reward-to-weight mapping for reward-reweighted flow matching: "linear" or "exponential".
+    train.reward_weighting = "linear"
     # the fraction of timesteps to train on. if set to less than 1.0, the model will be trained on a subset of the
     # timesteps for each sample. this will speed up training but reduce the accuracy of policy gradient estimates.
     train.timestep_fraction = 0.99

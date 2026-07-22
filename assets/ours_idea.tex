@@ -1,354 +1,1087 @@
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2026_conference,times}
 
-\subsection{Velocity Addition and Deletion}
-\label{sec:velocity_addition_deletion}
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
 
-We explicitly edit the
-velocity target induced by each generated sample. The central idea is simple:
-\emph{high-reward samples should be added to the old velocity field, whereas
-low-reward samples should be deleted from it.}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{colortbl,xcolor}
+\usepackage{makecell}
+\definecolor{indomgray}{gray}{0.9}
+\newcommand{\cellgray}{\cellcolor{indomgray}}
+\newcolumntype{Y}{>{\centering\arraybackslash}X}
+\title{Reinforced Flow Matching}
 
-\paragraph{From velocity averaging to addition and deletion.}
-Our motivation starts from the conditional average form of the optimal
-flow-matching velocity. For a given noisy state $\mathbf{x}_t$, the optimal
-velocity can be written as
-\begin{equation}
+% Authors must not appear in the submitted version. They should be hidden
+% as long as the \iclrfinalcopy macro remains commented out below.
+% Non-anonymous submissions will be rejected without review.
+
+\author{Anonymous Authors}
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+%\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+The abstract.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+\section{Related work}
+\label{sec:related_work}
+
+
+\section{Method}
+
+\subsection{Flow Matching}
+
+Let $\mathbf{x}_0\sim p_{\mathcal{D}}$ denote a clean sample from the
+data distribution and let
+$\boldsymbol{\epsilon}\sim\mathcal{N}(\mathbf{0},\mathbf{I})$ denote
+Gaussian noise. We consider the linear probability path
+\begin{align}
+    \mathbf{x}_t
+    =
+    (1-t)\mathbf{x}_0
+    +
+    t\boldsymbol{\epsilon},
+    \qquad
+    t\sim\mathcal{U}(0,1),
+\end{align}
+with the corresponding conditional velocity
+\begin{align}
+    \mathbf{v}_t
+    (\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+    =
+    \boldsymbol{\epsilon}-\mathbf{x}_0.
+\end{align}
+
+A velocity model $\mathbf{v}_{\boldsymbol{\phi}}$ is trained using the
+flow matching objective
+\begin{align}
+\mathcal{L}_{\mathrm{FM}}(\boldsymbol{\phi})
+=
+\mathbb{E}_{t}
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}},
+\boldsymbol{\epsilon}\sim\mathcal{N}(\mathbf{0},\mathbf{I})}
+\left[
+\left\|
+\mathbf{v}_{\boldsymbol{\phi}}(\mathbf{x}_t,t)
+-
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+\right\|_2^2
+\right].
+\end{align}
+
+Under the squared-error objective, the optimal marginal velocity field
+is the conditional average of all velocities passing through
+the same intermediate state:
+\begin{align}
 \mathbf{v}^{*}(\mathbf{x}_t,t)
 =
-\mathbb{E}_{\mathbf{x}_0\sim p(\cdot\mid \mathbf{x}_t)}
+\mathbb{E}_{\mathbf{x}_0,\boldsymbol{\epsilon}}
 \left[
-\mathbf{v}_t(\mathbf{x}_t\mid \mathbf{x}_0)
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+\mid
+\mathbf{x}_t,t
 \right].
-\end{equation}
-This suggests that the velocity prediction can be viewed as an
-average of sample-wise velocity targets. For sample $i$ at timestep $t_i$, we
-denote the old prediction, current prediction, and clean flow-matching target as
-\[
-\mathbf{v}_i^{\mathrm{old}}
+\label{eq:optimal-fm-velocity}
+\end{align}
+
+For an empirical dataset, this conditional expectation can be written
+as
+\begin{align}
+\mathbf{v}^{*}(\mathbf{x}_t,t)
 =
-\mathbf{v}_{\theta_{\mathrm{old}}}(\mathbf{x}_{t_i}^i,t_i,c_i),
-\qquad
-\mathbf{v}_i^\theta
+\sum_{\mathbf{x}_0\in\mathcal{D}}
+p(\mathbf{x}_0\mid\mathbf{x}_t,t)
+\,
+\mathbb{E}_{\boldsymbol{\epsilon}}
+\left[
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+\mid
+\mathbf{x}_0,\mathbf{x}_t,t
+\right].
+\label{eq:empirical-optimal-velocity}
+\end{align}
+
+Therefore, the optimal velocity is not a uniform average over all clean
+samples. The contribution of each sample depends on its posterior
+probability conditioned on the current intermediate state
+$(\mathbf{x}_t,t)$.
+
+\subsection{Reward-Reweighted Flow Matching}
+
+Our goal is to adjust the probability mass assigned to a set of samples
+according to their rewards. We assume that every sample initially has
+unit weight. For a selected set $\mathcal{D}_r$, we change the weight of
+each sample $\mathbf{x}_0\in\mathcal{D}_r$ from $1$ to
+$W(\mathbf{x}_0)$, while samples outside $\mathcal{D}_r$ retain their
+original unit weights.
+
+The total weighted mass of $\mathcal{D}_r$ is
+\begin{align}
+S_w(\mathcal{D}_r)
 =
-\mathbf{v}_{\theta}(\mathbf{x}_{t_i}^i,t_i,c_i),
-\qquad
-\mathbf{v}_i .
-\]
-Under a finite-sample approximation, the old velocity can be viewed as
-\begin{equation}
-\mathbf{v}_i^{\mathrm{old}}
-\approx
-\frac{1}{N}
-\sum_{j=1}^{N}
-\mathbf{v}_j .
-\end{equation}
+S(\mathcal{D}_r)
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}_r}}
+\left[
+W(\mathbf{x}_0)
+\right].
+\label{eq:weighted-size}
+\end{align}
 
-If we add one sample-wise velocity $\mathbf{v}_i$ to this average, the
-updated target becomes
-\begin{equation}
-\begin{aligned}
-\mathbf{v}_i^{+}
-&=
+The exact reweighted velocity requires the state-conditioned
+contribution of every clean sample. To obtain a tractable expression,
+we approximate the posterior proportions conditioned on
+$(\mathbf{x}_t,t)$ using the global empirical proportions of
+$\mathcal{D}\setminus\mathcal{D}_r$ and $\mathcal{D}_r$. Under this
+dataset-level approximation, the reweighted velocity is
+\begin{align}
+\mathbf{v}_r^*(\mathbf{x}_t,t)
+\approx~&
 \frac{
-N\mathbf{v}_i^{\mathrm{old}}
-+
-\mathbf{v}_i
+S(\mathcal{D}\setminus\mathcal{D}_r)
 }{
-N+1
-}
-\\
-&=
-\mathbf{v}_i^{\mathrm{old}}
+S(\mathcal{D}\setminus\mathcal{D}_r)
 +
-\frac{1}{N+1}
-\left(
-\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
-\right).
-\end{aligned}
-\end{equation}
-Thus, addition moves the target from the old velocity toward the new
-sample-wise velocity. Conversely, if we delete one sample-wise velocity
-$\mathbf{v}_i$ from the average, the updated target becomes
-\begin{equation}
-\begin{aligned}
-\mathbf{v}_i^{-}
-&=
+S_w(\mathcal{D}_r)
+}
+\mathbb{E}_{\mathbf{x}_0\sim
+p_{\mathcal{D}\setminus\mathcal{D}_r}}
+\mathbb{E}_{\boldsymbol{\epsilon}}
+\left[
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+\mid
+\mathbf{x}_0,\mathbf{x}_t,t
+\right]
+\nonumber\\
+&+
 \frac{
-N\mathbf{v}_i^{\mathrm{old}}
--
-\mathbf{v}_i
+S(\mathcal{D}_r)
 }{
-N-1
+S(\mathcal{D}\setminus\mathcal{D}_r)
++
+S_w(\mathcal{D}_r)
 }
-\\
-&=
-\mathbf{v}_i^{\mathrm{old}}
--
-\frac{1}{N-1}
-\left(
-\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
-\right).
-\end{aligned}
-\end{equation}
-Thus, deletion moves the target away from the sample-wise velocity.
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}_r}}
+\left[
+W(\mathbf{x}_0)
+\cdot
+\mathbb{E}_{\boldsymbol{\epsilon}}
+\left[
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+\mid
+\mathbf{x}_0,\mathbf{x}_t,t
+\right]
+\right].
+\label{eq:initial-reweighted-velocity}
+\end{align}
 
-\paragraph{Soft velocity addition.}
-For reward-based fine-tuning, addition should be soft rather than binary. We
-therefore add a fractional amount $w_a r_i^+$ of the sample-wise velocity, where
-$r_i^+\in[0,1]$ is the addition score and $w_a$ controls the maximum addition
-amount. The resulting target is
-\begin{equation}
-\begin{aligned}
-\mathbf{\tau}_i^{+}
-&=
+Equation~\eqref{eq:initial-reweighted-velocity} directly represents our
+motivation. Samples outside $\mathcal{D}_r$ retain their original mass,
+whereas every sample in $\mathcal{D}_r$ changes its mass from $1$ to
+$W(\mathbf{x}_0)$.
+
+Using
+\begin{align}
+&S(\mathcal{D}\setminus\mathcal{D}_r)
+\mathbb{E}_{\mathbf{x}_0\sim
+p_{\mathcal{D}\setminus\mathcal{D}_r}}
+[\cdot]
+\nonumber=
+S(\mathcal{D})
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}}}
+[\cdot]
+-
+S(\mathcal{D}_r)
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}_r}}
+[\cdot],
+\label{eq:set-decomposition}
+\end{align}
+we can rewrite
+Eq.~\eqref{eq:initial-reweighted-velocity} as
+\begin{align}
+\mathbf{v}_r^*(\mathbf{x}_t,t)
+\approx~&
 \frac{
-N\mathbf{v}_i^{\mathrm{old}}
-+
-w_a r_i^+\mathbf{v}_i
+S(\mathcal{D})
 }{
-N+w_a r_i^+
+S(\mathcal{D})-S(\mathcal{D}_r)+S_w(\mathcal{D}_r)
 }
-\\
-&=
-\mathbf{v}_i^{\mathrm{old}}
-+
-\frac{w_a r_i^+}{N+w_a r_i^+}
-\left(
-\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
-\right).
-\end{aligned}
-\end{equation}
-When $w_a r_i^+\ll N$, we have
-\begin{equation}
-\frac{w_a r_i^+}{N+w_a r_i^+}
-\approx
-\frac{w_a}{N}r_i^+.
-\end{equation}
-Letting $\beta_a=w_a/N$, the soft addition target becomes
-\begin{equation}
-\label{eq:soft_addition_target}
-\mathbf{\tau}_i^{+}
-\approx
-\mathbf{v}_i^{\mathrm{old}}
-+
-\beta_a r_i^+
-\left(
-\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
-\right).
-\end{equation}
-
-
-\paragraph{Soft velocity deletion.}
-Similarly, deletion removes a fractional amount $w_d r_i^-$ of the sample-wise
-velocity, where $r_i^-\in[0,1]$ is the deletion score and $w_d$ controls the
-maximum deletion amount. The resulting target is
-\begin{equation}
-\begin{aligned}
-\mathbf{\tau}_i^{-}
-&=
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}}}
+\mathbb{E}_{\boldsymbol{\epsilon}}
+\left[
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+\mid
+\mathbf{x}_0,\mathbf{x}_t,t
+\right]
+\nonumber\\
+&+
 \frac{
-N\mathbf{v}_i^{\mathrm{old}}
--
-w_d r_i^-\mathbf{v}_i
+S(\mathcal{D}_r)
 }{
-N-w_d r_i^-
+S(\mathcal{D})-S(\mathcal{D}_r)+S_w(\mathcal{D}_r)
 }
-\\
-&=
-\mathbf{v}_i^{\mathrm{old}}
--
-\frac{w_d r_i^-}{N-w_d r_i^-}
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}_r}}
+\left[
 \left(
-\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
-\right).
-\end{aligned}
-\end{equation}
-When $w_d r_i^-\ll N$, we have
-\begin{equation}
-\frac{w_d r_i^-}{N-w_d r_i^-}
-\approx
-\frac{w_d}{N}r_i^-.
-\end{equation}
-Letting $\beta_d=w_d/N$, the soft deletion target becomes
-\begin{equation}
-\label{eq:soft_deletion_target}
-\mathbf{\tau}_i^{-}
-\approx
-\mathbf{v}_i^{\mathrm{old}}
--
-\beta_d r_i^-
-\left(
-\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
-\right).
-\end{equation}
-Here $r_i^-$ acts as a deletion amount, rather than merely as a negative loss
-weight.
-
-\paragraph{Unified add-delete target.}
-{\color{red} old formulation?}
-Combining soft addition and deletion gives the sample-specific target
-\begin{equation}
-\label{eq:add_delete_target}
-\mathbf{\tau}_i
-=
-\mathbf{v}_i^{\mathrm{old}}
-+
-\left(
-\beta_a r_i^+
--
-\beta_d r_i^-
+W(\mathbf{x}_0)-1
 \right)
-\left(
-\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
-\right).
-\end{equation}
-If $\beta_a r_i^+>\beta_d r_i^-$, the sample residual is added to the old
-velocity field. If $\beta_d r_i^->\beta_a r_i^+$, the residual is deleted by
-placing the target on the opposite side of the old velocity.
+\cdot
+\mathbb{E}_{\boldsymbol{\epsilon}}
+\left[
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+\mid
+\mathbf{x}_0,\mathbf{x}_t,t
+\right]
+\right].
+\label{eq:reweighted-full-decomposition}
+\end{align}
 
-In the symmetric case $\beta_a=\beta_d=\beta$ and $r_i^-=1-r_i^+$, this reduces
-to
-\begin{equation}
-\mathbf{\tau}_i
+We define
+\begin{align}
+\beta
+&=
+\frac{S(\mathcal{D}_r)}{S(\mathcal{D})},
+\label{eq:beta-definition}
+\\
+\delta_r
+&=
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}_r}}
+\left[
+W(\mathbf{x}_0)-1
+\right].
+\label{eq:delta-definition}
+\end{align}
+
+From Eq.~\eqref{eq:weighted-size}, we have
+\begin{align}
+S_w(\mathcal{D}_r)
 =
-\mathbf{v}_i^{\mathrm{old}}
+S(\mathcal{D}_r)
+\left(
+1+\delta_r
+\right).
+\end{align}
+Therefore,
+\begin{align}
+&S(\mathcal{D})-S(\mathcal{D}_r)+S_w(\mathcal{D}_r)=
+S(\mathcal{D})(1+\beta\delta_r).
+\label{eq:normalization-denominator}
+\end{align}
+
+Using the same dataset-level approximation to replace the full-data
+average by the original optimal velocity, we obtain
+\begin{align}
+\mathbf{v}_r^*(\mathbf{x}_t,t)
+\approx~&
+\frac{1}{1+\beta\delta_r}
+\mathbf{v}^{*}(\mathbf{x}_t,t)
+\nonumber\\
+&+
+\frac{\beta}{1+\beta\delta_r}
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}_r}}
+\left[
+\left(
+W(\mathbf{x}_0)-1
+\right)
+\cdot
+\mathbb{E}_{\boldsymbol{\epsilon}}
+\left[
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+\mid
+\mathbf{x}_0,\mathbf{x}_t,t
+\right]
+\right].
+\label{eq:reweighted-velocity-decomposition}
+\end{align}
+
+We then use
+\begin{align}
+\frac{1}{1+\beta\delta_r}
+=
+1-
+\frac{\beta\delta_r}{1+\beta\delta_r}
+\end{align}
+to write
+\begin{align}
+\mathbf{v}_r^*(\mathbf{x}_t,t)
+\approx~&
+\mathbf{v}^{*}(\mathbf{x}_t,t)
+-
+\frac{\beta\delta_r}{1+\beta\delta_r}
+\mathbf{v}^{*}(\mathbf{x}_t,t)
+\nonumber\\
+&+
+\frac{\beta}{1+\beta\delta_r}
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}_r}}
+\left[
+\left(
+W(\mathbf{x}_0)-1
+\right)
+\cdot
+\mathbb{E}_{\boldsymbol{\epsilon}}
+\left[
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+\mid
+\mathbf{x}_0,\mathbf{x}_t,t
+\right]
+\right].
+\label{eq:separated-normalization}
+\end{align}
+
+Since
+\begin{align}
+\delta_r\mathbf{v}^{*}(\mathbf{x}_t,t)
+=
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}_r}}
+\left[
+\left(
+W(\mathbf{x}_0)-1
+\right)
+\mathbf{v}^{*}(\mathbf{x}_t,t)
+\right],
+\end{align}
+the latter two terms can be combined, yielding
+\begin{align}
+\mathbf{v}_r^*(\mathbf{x}_t,t)
+\approx~&
+\mathbf{v}^{*}(\mathbf{x}_t,t)
+\nonumber\\
+&+
+\frac{\beta}{1+\beta\delta_r}
+\mathbb{E}_{\mathbf{x}_0\sim p_{\mathcal{D}_r}}
+\mathbb{E}_{\boldsymbol{\epsilon}}
+\Big[
+\left(
+W(\mathbf{x}_0)-1
+\right)
+\cdot
+\left(
+\mathbf{v}_t
+(\mathbf{x}_t\mid\mathbf{x}_0,\boldsymbol{\epsilon})
+-
+\mathbf{v}^{*}(\mathbf{x}_t,t)
+\right)
+\mid
+\mathbf{x}_0,\mathbf{x}_t,t
+\Big].
+\label{eq:reward-reweighted-final}
+\end{align}
+
+Equation~\eqref{eq:reward-reweighted-final} shows that changing the
+sample weight from $1$ to $W(\mathbf{x}_0)$ modifies the original
+velocity through the corresponding sample-specific velocity
+difference. When $W(\mathbf{x}_0)>1$, the sample receives additional
+mass and its conditional velocity is reinforced. When
+$W(\mathbf{x}_0)<1$, its original mass is reduced and the model moves
+away from its conditional velocity. When $W(\mathbf{x}_0)=1$, the
+sample produces no change.
+
+\paragraph{Approximation assumptions.}
+
+The derivation above contains several approximations. First, the exact
+optimal velocity in Eq.~\eqref{eq:optimal-fm-velocity} is conditioned
+on the current state $(\mathbf{x}_t,t)$. In
+Eq.~\eqref{eq:initial-reweighted-velocity}, we replace the corresponding
+state-dependent posterior proportions with global dataset proportions.
+As a result, $\beta$ and $\delta_r$ are treated as independent of
+$\mathbf{x}_t$ and $t$.
+
+
+\subsection{Sample-Wise Reweighted Target}
+
+For a clean rollout sample $\mathbf{x}_i^0$, we sample
+$\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$ and
+construct
+\begin{align}
+\mathbf{x}_i^{t_i}
+=
+(1-t_i)\mathbf{x}_i^0
 +
-\beta(2r_i^+-1)
-\left(
-\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
-\right).
-\end{equation}
-Thus, samples above the reward midpoint move the target toward their clean
-velocity, samples below the midpoint move it away, and midpoint samples remain
-near the old velocity.
+t_i\boldsymbol{\epsilon}_i.
+\end{align}
 
-\paragraph{Reward normalization.}
-For $K$ samples generated from the same prompt, let
-$R_i=R(\mathbf{x}_0^i,c)$ be the raw reward. We normalize rewards within the
-prompt group and clip the normalized score:
-\begin{equation}
-\widehat{A}_i
+The old model predicts
+\begin{align}
+\mathbf{v}_i^{\mathrm{old}}
 =
+\mathbf{v}_{\boldsymbol{\theta}_{\mathrm{old}}}
+(\mathbf{x}_i^{t_i},c_i,t_i),
+\end{align}
+from which its clean-sample prediction is
+\begin{align}
+\widehat{\mathbf{x}}_{0,i}^{\mathrm{old}}
+=
+\mathbf{x}_i^{t_i}
+-
+t_i\mathbf{v}_i^{\mathrm{old}}.
+\end{align}
+
+For the sampled linear path,
+\begin{align}
+\mathbf{x}_i^0
+=
+\mathbf{x}_i^{t_i}
+-
+t_i
+\mathbf{v}_{t_i}
+(\mathbf{x}_i^{t_i}
+\mid
+\mathbf{x}_i^0,\boldsymbol{\epsilon}_i).
+\end{align}
+
+Using one rollout sample to estimate the expectation in
+Eq.~\eqref{eq:reward-reweighted-final}, the reweighted clean-sample
+target becomes
+\begin{align}
+\overline{\mathbf{x}}_{0,i}
+=
+\widehat{\mathbf{x}}_{0,i}^{\mathrm{old}}
++
+\frac{
+\beta
+\left(
+W(\mathbf{x}_i^0,c_i)-1
+\right)
+}{
+1+\beta\delta_r(c_i)
+}
+\left(
+\mathbf{x}_i^0
+-
+\widehat{\mathbf{x}}_{0,i}^{\mathrm{old}}
+\right).
+\label{eq:reweighted-clean-target}
+\end{align}
+
+For a sample with $W(\mathbf{x}_i^0,c_i)>1$, the target moves from the
+old prediction toward the clean rollout sample. For a sample with
+$W(\mathbf{x}_i^0,c_i)<1$, the coefficient is negative and the target
+moves away from the rollout sample.
+
+\subsection{Reward-Based Sample Weighting}
+
+For the $K$ rollout samples generated under the same prompt $c$, we
+first standardize and clip their raw rewards:
+\begin{align}
+\overline{R}_c
+&=
+\frac{1}{K}
+\sum_{k=1}^{K}R_k,
+\\
+Z_c
+&=
+\sqrt{
+\frac{1}{K}
+\sum_{k=1}^{K}
+(R_k-\overline{R}_c)^2
++
+\epsilon
+},
+\\
+\widehat{A}_k
+&=
+\frac{1}{A}
 \operatorname{clip}
 \left(
-\frac{
-R_i-\frac{1}{K}\sum_{j=1}^{K}R_j
-}{
-Z_c
-},
--1,1
-\right),
-\qquad
-r_i^+
-=
-\frac{1}{2}
-+
-\frac{1}{2}\widehat{A}_i,
-\qquad
-r_i^-
-=
-1-r_i^+ .
-\end{equation}
-With symmetric addition and deletion strengths, Eq.~\eqref{eq:add_delete_target}
-becomes
-\begin{equation}
-\label{eq:add_delete_target_advantage}
-\mathbf{\tau}_i
-=
-\mathbf{v}_i^{\mathrm{old}}
-+
-\beta\widehat{A}_i
-\left(
-\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\frac{R_k-\overline{R}_c}{Z_c},
+-A,A
 \right).
-\end{equation}
-Therefore, the normalized advantage controls both the direction and the
-magnitude of the velocity-target edit.
-\\
-{\color{red}
-in the case $\beta_a = \beta_d$,
-$2r^+ - 1
-= A_i$,
-Advantage as the possiblity 
-that the generated sample is kept?}
+\label{eq:normalized-reward}
+\end{align}
+This normalization ensures that
+$\widehat{A}_k\in[-1,1]$, where positive and negative values indicate
+above- and below-average rewards, respectively. We consider the
+following two alternative mappings from the normalized reward to the
+sample weight.
 
-\paragraph{Training loss.}
-The model is trained by direct regression to the add-delete target, together
-with the reference-anchor regularization used in implementation:
-\begin{equation}
-\label{eq:add_delete_loss}
-\mathcal{L}_{\mathrm{AD}}
+\paragraph{Exponential weighting.}
+The first option uses an exponential mapping:
+\begin{align}
+W_{\mathrm{exp}}(\mathbf{x}_0^k,c)
 =
-\frac{1}{B}
-\sum_{i=1}^{B}
-\left[
-\left\|
-\mathbf{v}_i^\theta
--
-\mathbf{\tau}_i
-\right\|_2^2
-+
-\lambda_{\mathrm{ref}}
-\left\|
-\mathbf{v}_i^\theta
--
-\mathbf{v}_i^{\mathrm{ref}}
-\right\|_2^2
-\right],
-\end{equation}
-where
-\[
-\mathbf{v}_i^{\mathrm{ref}}
+\exp(\widehat{A}_k).
+\label{eq:exponential-reward-weight}
+\end{align}
+A sample with $\widehat{A}_k=0$ retains its original unit weight,
+while samples with positive and negative normalized rewards receive
+weights above and below one, respectively. Since
+$\widehat{A}_k\in[-1,1]$, the resulting weights satisfy
+\begin{align}
+W_{\mathrm{exp}}(\mathbf{x}_0^k,c)
+\in
+[e^{-1},e].
+\end{align}
+This mapping guarantees strictly positive weights and provides a
+multiplicative adjustment of the original sample mass.
+
+\paragraph{Linear weighting.}
+Alternatively, we directly add the normalized reward to the original
+unit weight:
+\begin{align}
+W_{\mathrm{lin}}(\mathbf{x}_0^k,c)
 =
-\mathbf{v}_{\theta_{\mathrm{ref}}}(\mathbf{x}_{t_i}^i,t_i,c_i)
-\]
-is the velocity predicted by a frozen reference model. The first term implements
-reward-conditioned velocity target editing, while the second term prevents the
-updated model from drifting too far from the reference velocity field.
+1+\widehat{A}_k.
+\label{eq:linear-reward-weight}
+\end{align}
+The resulting weights satisfy
+\begin{align}
+W_{\mathrm{lin}}(\mathbf{x}_0^k,c)
+\in
+[0,2].
+\end{align}
+This mapping provides a direct additive interpretation:
+$\widehat{A}_k=0$ preserves the original weight,
+$\widehat{A}_k=1$ doubles the sample weight, and
+$\widehat{A}_k=-1$ reduces the sample weight to zero. In practice, if
+strictly positive weights are required for numerical stability, the
+linear mapping can be implemented as
+\begin{align}
+W_{\mathrm{lin}}(\mathbf{x}_0^k,c)
+=
+\max\left\{
+\epsilon,\,
+1+\widehat{A}_k
+\right\}.
+\end{align}
 
-This objective turns reward optimization into explicit velocity-target
-construction. Positive samples contribute fractional additive mass along
-$\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}$, while negative samples remove
-fractional mass by placing the target in the opposite direction.
-Algorithm~\ref{alg:velocity-add-delete-single-branch} summarizes the practical
-implementation.
 
 
-Algorithm~\ref{alg:velocity-add-delete-single-branch} summarizes the practical implementation. We denote the current prediction by
-$\mathbf{v}_i^{\theta}$, the old-policy prediction by
-$\mathbf{v}_i^{\mathrm{old}}$, and the reference prediction by
-$\mathbf{v}_i^{\mathrm{ref}}$. The algorithm applies the add-delete target in
-the predicted clean-sample space, using
-$\hat{\mathbf{x}}_0=\mathbf{x}_t-t\mathbf{v}$ for rectified flow.
+
+
 
 \begin{algorithm}[H]
-\caption{Velocity Addition and Deletion Fine-tuning}
-\label{alg:velocity-add-delete-single-branch}
+\caption{REWARD-REWEIGHTED FLOW MATCHING}
+\label{alg:velocity-add-delete}
 \begin{algorithmic}[1]
-\Require Initial model $\theta_0$, reward $R$, prompts $p(c)$, rollout size $K$, batch size $B$, addition strength $\beta_a$, deletion strength $\beta_d$, regularization $\beta_{\mathrm{KL}}$, advantage clip $A$, EMA rate $\eta$.
-\State $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}\leftarrow\theta_0$.
+\Require Initial model $\theta_0$, reward function $R$, prompt distribution
+$p(c)$, rollout size $K$, number of timesteps per sample $J$, batch size $B$,
+reinforcement coefficient $\beta$, advantage clip $A$, reference regularization
+$\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
+
+\State $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}
+\leftarrow\theta_0$.
+
 \For{each training iteration}
     \State $\mathcal{D}\leftarrow\varnothing$.
+
     \For{each prompt $c\sim p(c)$}
-        \State Sample $K$ trajectories with $\theta_{\mathrm{old}}$ and store $\{(\mathbf{x}_0^k,t_{k,j})\}$.
-        \State Compute rewards $R_k=R(\mathbf{x}_0^k,c)$ and normalized advantages $\mathrm{adv}_{k,j}$.
-        \State $r_{k,j}^{+}\leftarrow\operatorname{clip}\big(\operatorname{clip}(\mathrm{adv}_{k,j},-A,A)/(2A)+1/2,0,1\big)$,
-        $r_{k,j}^{-}\leftarrow 1-r_{k,j}^{+}$.
-        \State Add $\{(c,\mathbf{x}_0^k,t_{k,j},r_{k,j}^{+},r_{k,j}^{-})\}$ to $\mathcal{D}$.
+        \State Sample $K$ clean rollout samples
+        $\{\mathbf{x}_0^k\}_{k=1}^{K}$
+        with $\theta_{\mathrm{old}}$ conditioned on $c$.
+
+        \State Compute rewards
+        $R_k\leftarrow R(\mathbf{x}_0^k,c)$
+        for $k=1,\ldots,K$.
+
+        \State $\overline{R}_c
+        \leftarrow
+        K^{-1}\sum_{k=1}^{K}R_k$.
+
+        \State $Z_c
+        \leftarrow
+        \sqrt{
+        K^{-1}\sum_{k=1}^{K}
+        (R_k-\overline{R}_c)^2+\epsilon
+        }$.
+
+        \For{$k=1,\ldots,K$}
+            \State $\widehat{A}_k
+            \leftarrow
+            \operatorname{clip}
+            \left(
+            \frac{R_k-\overline{R}_c}{Z_c},
+            -A,A
+            \right)/A$.
+        
+            \State $W(\mathbf{x}_0^k,c)
+            \leftarrow
+            \max\left\{\epsilon,\,1+\widehat{A}_k\right\}$.
+        \EndFor
+
+        \State $\displaystyle
+        \delta_r(c)
+        \leftarrow
+        \frac{1}{K}
+        \sum_{k=1}^{K}
+        \left(
+        W(\mathbf{x}_0^k,c)-1
+        \right)$.
+
+        % \For{$k=1,\ldots,K$}
+        %     \State Sample or store $J$ training timesteps
+        %     $\{t_{k,j}\}_{j=1}^{J}$ for sample $\mathbf{x}_0^k$.
+
+        %     \For{$j=1,\ldots,J$}
+        %         \State Add
+        %         $\left\{
+        %         c,\mathbf{x}_0^k,t_{k,j},
+        %         W(\mathbf{x}_0^k,c),\delta_r(c)
+        %         \right\}$
+        %         to $\mathcal{D}$.
+        %     \EndFor
+        % \EndFor
     \EndFor
-    \For{each minibatch $\{(c_i,\mathbf{x}^0_i,t,r_i^{+},r_i^{-})\}_{i=1}^{B}\sim\mathcal{D}$}
-        \State Sample $\boldsymbol{\epsilon}_i\sim\mathcal{N}(0,I)$ and set $\mathbf{x}^{t}_i=(1-t)\mathbf{x}^0_i+t\boldsymbol{\epsilon}_i$.
-        \State $\mathbf{v}_i^{\theta}\leftarrow\mathbf{v}_{\theta}(\mathbf{x}^{t}_i,c_i,t)$.
-        \State $\mathbf{v}_i^{\mathrm{old}}\leftarrow\mathbf{v}_{\theta_{\mathrm{old}}}(\mathbf{x}^{t}_i,c_i,t)$,
-        $\mathbf{v}_i^{\mathrm{ref}}\leftarrow\mathbf{v}_{\theta_{\mathrm{ref}}}(\mathbf{x}^{t}_i,c_i,t)$.
-        \State $\hat{\mathbf{x}}_{0,i}^{\theta}\leftarrow\mathbf{x}^{t}_i-t\mathbf{v}_i^{\theta}$,
-        $\hat{\mathbf{x}}_{0,i}^{\mathrm{old}}\leftarrow\mathbf{x}^{t}_i-t\mathbf{v}_i^{\mathrm{old}}$.
-        \State $\bar{\mathbf{x}}_{0,i}\leftarrow\hat{\mathbf{x}}_{0,i}^{\mathrm{old}}+(\beta_a r_i^{+}-\beta_d r_i^{-})(\mathbf{x}^0_i-\hat{\mathbf{x}}_{0,i}^{\mathrm{old}})$.
-        \State $\mathcal{L}_{\mathrm{AD}}\leftarrow\operatorname{mean}_{i}\left[\frac{2A}{\beta_a + \beta_d }\operatorname{mean}\frac{||\hat{\mathbf{x}}_{0,i}^{\theta}-\bar{\mathbf{x}}_{0,i}||^2}{\operatorname{sg}\big[\operatorname{mean}|\hat{\mathbf{x}}_{0,i}^{\theta}-\bar{\mathbf{x}}_{0,i}|\big]}\right]$.
-        \State $\mathcal{L}\leftarrow\mathcal{L}_{\mathrm{AD}}+\beta_{\mathrm{KL}}\operatorname{mean}_{i}\|\mathbf{v}_i^{\theta}-\mathbf{v}_i^{\mathrm{ref}}\|_2^2$.
-        \State Update $\theta$ by minimizing $\mathcal{L}$.
+
+    \State Set the accumulated gradients of $\theta$ to zero.
+
+    \For{each minibatch
+    $\{
+    (c_i,\mathbf{x}_i^0,t_i,
+    W(\mathbf{x}_i^0,c_i),\delta_r(c_i))
+    \}_{i=1}^{B}\sim\mathcal{D}$}
+
+        \State Sample
+        $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$
+        and set
+        $\mathbf{x}_i^{t_i}
+        \leftarrow
+        (1-t_i)\mathbf{x}_i^0
+        +
+        t_i\boldsymbol{\epsilon}_i$
+        for $i=1,\ldots,B$.
+
+        \State $\mathbf{v}_i^{\theta}
+        \leftarrow
+        \mathbf{v}_{\theta}
+        (\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        \State $\mathbf{v}_i^{\mathrm{old}}
+        \leftarrow
+        \mathbf{v}_{\theta_{\mathrm{old}}}
+        (\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        \State $\mathbf{v}_i^{\mathrm{ref}}
+        \leftarrow
+        \mathbf{v}_{\theta_{\mathrm{ref}}}
+        (\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        \State $\widehat{\mathbf{x}}_{0,i}^{\theta}
+        \leftarrow
+        \mathbf{x}_i^{t_i}
+        -
+        t_i\mathbf{v}_i^{\theta}$.
+
+        \State $\widehat{\mathbf{x}}_{0,i}^{\mathrm{old}}
+        \leftarrow
+        \mathbf{x}_i^{t_i}
+        -
+        t_i\mathbf{v}_i^{\mathrm{old}}$.
+
+        \State $\displaystyle
+        \overline{\mathbf{x}}_{0,i}
+        \leftarrow
+        \widehat{\mathbf{x}}_{0,i}^{\mathrm{old}}
+        +
+        \frac{
+        \beta
+        \left(
+        W(\mathbf{x}_i^0,c_i)-1
+        \right)
+        }{
+        1+\beta\delta_r(c_i)
+        }
+        \left(
+        \mathbf{x}_i^0
+        -
+        \widehat{\mathbf{x}}_{0,i}^{\mathrm{old}}
+        \right)$.
+
+        \State $\displaystyle
+        \mathcal{L}_{\mathrm{target}}
+        \leftarrow
+        \frac{A}{B}
+        \sum_{i=1}^{B}
+        \frac{
+        \left\|
+        \widehat{\mathbf{x}}_{0,i}^{\theta}
+        -
+        \overline{\mathbf{x}}_{0,i}
+        \right\|_2^2
+        }{
+        \operatorname{sg}
+        \left[
+        \operatorname{mean}
+        \left|
+        \widehat{\mathbf{x}}_{0,i}^{\theta}
+        -
+        \overline{\mathbf{x}}_{0,i}
+        \right|
+        \right]
+        }$.
+
+        \State $\displaystyle
+        \mathcal{L}_{\mathrm{ref}}
+        \leftarrow
+        \frac{1}{B}
+        \sum_{i=1}^{B}
+        \left\|
+        \mathbf{v}_i^{\theta}
+        -
+        \mathbf{v}_i^{\mathrm{ref}}
+        \right\|_2^2$.
+
+        \State $\mathcal{L}
+        \leftarrow
+        \frac{1}{N_{acc}}(\mathcal{L}_{\mathrm{target}}
+        +
+        \lambda_{\mathrm{ref}}
+        \mathcal{L}_{\mathrm{ref}})$.
+
+        \State Backpropagate $\mathcal{L}$ and accumulate the gradients
+        without updating $\theta$.
     \EndFor
-    \State $\theta_{\mathrm{old}}\leftarrow\eta\theta_{\mathrm{old}}+(1-\eta)\theta$.
+
+    \State Update $\theta$ once using the accumulated gradients.
+
+    \State $\theta_{\mathrm{old}}
+    \leftarrow
+    \eta\theta_{\mathrm{old}}
+    +(1-\eta)\theta$.
 \EndFor
 \end{algorithmic}
 \end{algorithm}
 
+
+
+\newpage            
+
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Experimental setup}
+\label{sec: exp-setting}
+We follow the experimental setup used by DiffusionNFT~\citep{zheng2026diffusionnft}. Unless otherwise specified, all experiments start from SD3.5-Medium~\citep{esser2024scaling} at $512 \times 512$ resolution.
+
+\paragraph{Reward models.}
+We evaluate both rule-based and model-based reward optimization. The rule-based tasks are GenEval for compositional text-to-image alignment~\citep{ghosh2023geneval} and OCR visual text rendering, using the same prompt splits and partial-credit reward design as the DiffusionNFT and FlowGRPO. The model-based rewards include PickScore~\citep{kirstain2023pickapic}, CLIPScore~\citep{hessel2021clipscore}, HPSv2.1~\citep{wu2023human}, Aesthetic score~\citep{schuhmann2022laion}, ImageReward~\citep{xu2023imagereward}, and UnifiedReward~\citep{wang2025unifiedreward}. Following DiffusionNFT, Pick-a-Pic prompts are used for preference-oriented training~\citep{kirstain2023pickapic}, while DrawBench prompts are reserved for out-of-domain evaluation~\citep{saharia2022photorealistic}.
+
+\paragraph{Training protocol.}
+We fine-tune the base model with LoRA~\citep{hu2022lora} using rank $r=32$, scaling factor $\alpha=64$, and learning rate $3 \times 10^{-4}$. Each training epoch contains 48 prompt groups, and each group samples $G=24$ images from the current rollout policy. Rewards are normalized within each group before constructing the optimization weights, so methods are compared under the same reward scale. For single-reward comparisons and ablations, rollouts use 10 sampling steps to match the efficient setting in DiffusionNFT. For multi-reward training and final evaluation, we use 40 sampling steps to reduce sampler-induced quality differences.
+
+\paragraph{Baselines and evaluation.}
+
+\subsection{Main results}
+\begin{table*}[t]
+\centering
+\caption{\textbf{Evaluation Results across tasks and reward settings.}
+\colorbox{indomgray}{Gray-colored} cells indicate in-domain reward performance for each task.
+$\dagger$ indicates evaluated results on official checkpoints.
+$\ddagger$ indicates evaluated under $1024 \times 1024$ resolution. \textbf{Bold} indicates the best result within each task block. For models in Baselines category, we evaluate GenEval and OCR on its corresponding dataset, while other rewards are evaluated on DrawBench \citep{saharia2022photorealistic}. References for models: FlowGRPO \citep{liu2025flowgrpo}, AWM \citep{xue2026advantage}, DiffusionNFT \citep{zheng2026diffusionnft}, Rethinking \citep{choi2026rethinking}.}
+\label{tab:eval_results}
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{0.95}
+\footnotesize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{ll ccccccc}
+\toprule
+Eval. Dataset & Model & GenEval & OCR & PickScore & ClipScore & HPSv2.1 & Aesthetic & ImgRwd \\
+\midrule
+\multirow{5}{*}{Baselines} 
+& SD-XL$^\ddagger$     & 0.55 & 0.14 & 22.42 & 0.287 & 0.280 & 5.60 & 0.76 \\
+& SD3.5-L$^\ddagger$   & 0.71 & 0.68 & 22.91 & 0.289 & 0.288 & 5.50 & 0.96 \\
+& FLUX.1-Dev          & 0.66 & 0.59 & 22.84 & 0.295 & 0.274 & 5.71 & 0.96 \\
+& SD3.5-M             & 0.24 & 0.12 & 20.51 & 0.237 & 0.204 & 5.13 & -0.58 \\
+& \quad + CFG          & 0.63 & 0.59 & 22.34 & 0.285 & 0.279 & 5.36 & 0.85 \\
+\midrule
+\multirow{5}{*}{GenEval} 
+& FlowGRPO$^\dagger$   & \cellgray 0.95 & - & 22.51 & 0.293 & 0.274 & 5.32 & 1.06 \\
+& AWM                 & \cellgray 0.89 & - & 22.00 & 0.302 & 0.242 & 4.94 & 0.84 \\
+& DiffusionNFT        & \cellgray 0.95 & - & 22.88 & 0.303 & 0.289 & 5.25 & 1.21 \\
+& Rethinking (ELBO-ODE) & \cellgray 0.96 & - & 22.85 & 0.305 & 0.289 & 5.33 & 1.26 \\
+& (Ours)              & \cellgray - & - & - & - & - & - & - \\
+\midrule
+\multirow{5}{*}{OCR} 
+& FlowGRPO$^\dagger$   & - & \cellgray 0.92 & 22.41 & 0.290 & 0.280 & 5.32 & 0.95 \\
+& AWM                 & - & \cellgray 0.80 & 20.70 & 0.301 & 0.206 & 4.53 & -0.13 \\
+& DiffusionNFT        & - & \cellgray 0.93 & \cellgray 22.09 & \cellgray 0.307 & \cellgray 0.277 & 5.17 & 0.97 \\
+& Rethinking (ELBO-ODE) & - & \cellgray 0.94 & \cellgray 22.93 & \cellgray 0.315 & \cellgray 0.302 & 5.33 & 1.34 \\
+& (Ours) & - & \cellgray - & \cellgray - & \cellgray - & \cellgray - & - & - \\
+\midrule
+\multirow{4}{*}{Drawbench} 
+& FlowGRPO$^\dagger$   & - & - & \cellgray 23.50 & 0.280 & 0.316 & 5.90 & 1.29 \\
+& DiffusionNFT        & - & - & \cellgray 23.61 & \cellgray 0.288 & \cellgray 0.344 & 6.04 & 1.46 \\
+& Rethinking (ELBO-ODE) & - & - & \cellgray 23.68 & \cellgray 0.296 & \cellgray 0.325 & 6.06 & 1.45 \\
+& (Ours) & - & - & \cellgray - & \cellgray - & \cellgray - & - & - \\
+\bottomrule
+\end{tabular}
+}
+\end{table*}
+
+\subsection{Ablation study}
+
+
+
+
+We conduct ablations to understand the contribution and robustness of our key design choices. Specifically, we study the add-delete target, adaptive loss weighting, rollout-policy update, and target-editing strength under GenEval single-reward training. 
+Unless stated otherwise, every variant uses the same SD3.5-Medium, prompts, LoRA configuration, group-normalized rewards, rollout
+budget, and evaluation sampler described in Section~\ref{sec: exp-setting}. 
+
+
+
+\paragraph{Reweighting coefficient.}
+We ablate the reinforcement coefficient $\beta$, which controls the magnitude
+of the reweighting. We keep all other training
+settings fixed, and compare $\beta\in\{0.1,1,10\}$. 
+
+\begin{table}[H]
+\centering
+\caption{Ablation of the reinforcement coefficient $\beta$ on GenEval.}
+\label{tab:ablation_beta}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{0.5\columnwidth}{@{}X*{6}{c}@{}}
+\toprule
+Reinforcement coefficient
+& \multicolumn{6}{c}{GenEval $\uparrow$ at training iteration} \\
+\cmidrule(l){2-7}
+& 0 & 100 & 200 & 300 & 400 & 500 \\
+\midrule
+$\beta=0.1$ & -- & -- & -- & -- & -- & -- \\
+$\beta=1$   & -- & -- & -- & -- & -- & -- \\
+$\beta=10$  & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+
+
+
+\paragraph{Reward-to-weight mapping.}
+We ablate the choice of reward-to-weight mapping
+$W(\mathbf{x}_0^k,c)$, which determines how the normalized reward
+$\widehat{A}_k$ adjusts the original unit weight of each rollout sample.
+We keep all other training settings fixed and compare the exponential
+mapping in Eq.~\eqref{eq:exponential-reward-weight} with the linear
+mapping in Eq.~\eqref{eq:linear-reward-weight}.
+
+\begin{table}[H]
+\centering
+\caption{Ablation of the reward-to-weight mapping
+$W(\mathbf{x}_0^k,c)$ on GenEval.}
+\label{tab:ablation_weight_mapping}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\columnwidth}{@{}X*{6}{c}@{}}
+\toprule
+Reward-to-weight mapping
+& \multicolumn{6}{c}{GenEval $\uparrow$ at training iteration} \\
+\cmidrule(l){2-7}
+& 0 & 100 & 200 & 300 & 400 & 500 \\
+\midrule
+Exponential weighting & -- & -- & -- & -- & -- & -- \\
+Linear weighting      & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+
+\paragraph{Target components.} We first verify that the single target objective reproduces the original two directions in  DiffusionNFT. We then compare the full add-delete target
+with addition-only and deletion-only variants. The latter three variants use the same signed reward decomposition and adaptive loss normalization, so their differences isolate the contribution of each target direction.
+
+\begin{table}[H]
+\centering
+\caption{Ablation of the velocity target components on GenEval.
+{\color{blue}(After the results are complete, convert to a line plot following DiffusionNFT.)}}
+\label{tab:ablation_target}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\columnwidth}{@{}X*{6}{c}@{}}
+\toprule
+Variant & \multicolumn{6}{c}{GenEval $\uparrow$ at training iteration} \\
+\cmidrule(l){2-7}
+& 0 & 100 & 200 & 300 & 400 & 500 \\
+\midrule
+DiffusionNFT & -- & -- & -- & -- & -- & -- \\
+Equivalent single target objective & -- & -- & -- & -- & -- & -- \\
+\midrule
+Addition only & -- & -- & -- & -- & -- & -- \\
+Deletion only & -- & -- & -- & -- & -- & -- \\
+% Full add-delete & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+
+\paragraph{Adaptive loss weighting.}
+We keep the full add-delete target fixed and compare the self-normalized
+$\hat{\mathbf{x}}_0$ regression with three fixed timestep-weighting functions.
+This comparison measures whether adaptive normalization improves convergence
+without changing the signed target displacement.
+
+\begin{table}[H]
+\centering
+\caption{Ablation of loss weighting on GenEval.}
+\label{tab:ablation_weighting}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\columnwidth}{@{}X*{6}{c}@{}}
+\toprule
+Loss weighting & \multicolumn{6}{c}{GenEval $\uparrow$ at training iteration} \\
+\cmidrule(l){2-7}
+& 0 & 100 & 200 & 300 & 400 & 500 \\
+\midrule
+$w(t)=1-t$ & -- & -- & -- & -- & -- & -- \\
+$w(t)=1$ & -- & -- & -- & -- & -- & -- \\
+$w(t)=t$ & -- & -- & -- & -- & -- & -- \\
+Adaptive normalization & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+
+
+
+\paragraph{Decoupling soft updates for rollout and target construction.}
+The EMA model in our full method serves two distinct roles: it generates
+rollout samples for reward evaluation and provides the base velocity used to
+construct the reward-reweighted training target. To identify where temporal
+smoothing is most beneficial, we decouple these two roles and compare four
+configurations. All
+settings use the same reward weighting, reference regularization, number of
+generated images, and optimization budget.
+
+\begin{table}[H]
+\centering
+\caption{Ablation of soft updates for rollout generation and target
+construction on GenEval. ``Latest'' denotes a detached snapshot of the model
+parameters at the beginning of each training iteration, while ``EMA'' denotes
+the soft-updated model.}
+\label{tab:ablation_soft_update_roles}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\columnwidth}{@{}XX*{6}{c}@{}}
+\toprule
+Rollout policy & Target policy
+& \multicolumn{6}{c}{GenEval $\uparrow$ at training iteration} \\
+\cmidrule(l){3-8}
+& & 0 & 100 & 200 & 300 & 400 & 500 \\
+\midrule
+EMA & EMA
+& -- & -- & -- & -- & -- & -- \\
+
+Latest & EMA
+& -- & -- & -- & -- & -- & -- \\
+
+EMA & Latest
+& -- & -- & -- & -- & -- & -- \\
+
+Latest & Latest
+& -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+
+
+
+\paragraph{Soft update of the rollout policy.}
+We isolate the EMA update by comparing a fully on-policy update ($\eta=0$), a
+fixed slow update ($\eta=0.9$), and the increasing schedule used by our full
+configuration. All three settings use the full add-delete target and the same
+number of generated images.
+
+\begin{table}[H]
+\centering
+\caption{Ablation of rollout-policy updates on GenEval.
+(After the results are complete, convert this table into a line plot following
+DiffusionNFT.)}
+\label{tab:ablation_ema}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\columnwidth}{@{}X*{6}{c}@{}}
+\toprule
+Update schedule & \multicolumn{6}{c}{GenEval $\uparrow$ at training iteration} \\
+\cmidrule(l){2-7}
+& 0 & 100 & 200 & 300 & 400 & 500 \\
+\midrule
+On-policy, $\eta=0$ & -- & -- & -- & -- & -- & -- \\
+Fixed EMA, $\eta=0.9$ & -- & -- & -- & -- & -- & -- \\
+Increasing EMA schedule & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% \paragraph{Addition--deletion strength.}
+% Finally, we first vary the symmetric strength $\beta_a=\beta_d$. We then fix
+% $\beta_a+\beta_d=2$ and vary the relative strength of addition and deletion.
+% The first comparison measures the trade-off between convergence speed and
+% stability, while the second tests whether the two editing directions require
+% comparable strength.
+
+% \begin{table}[H]
+% \centering
+% \caption{Sensitivity to addition and deletion strengths on GenEval.
+% (After the results are complete, convert this table into a line plot following
+% DiffusionNFT.)}
+% \label{tab:ablation_strength}
+% \scriptsize
+% \setlength{\tabcolsep}{2.5pt}
+% \begin{tabularx}{\columnwidth}{@{}Xcc*{6}{c}@{}}
+% \toprule
+% Setting & $\beta_a$ & $\beta_d$ &
+% \multicolumn{6}{c}{GenEval $\uparrow$ at training iteration} \\
+% \cmidrule(l){4-9}
+% & & & 0 & 100 & 200 & 300 & 400 & 500 \\
+% \midrule
+% \multirow{4}{*}{Symmetric}
+% & $0.1$ & $0.1$ & -- & -- & -- & -- & -- & -- \\
+% & $0.5$ & $0.5$ & -- & -- & -- & -- & -- & -- \\
+% & $1.0$ & $1.0$ & -- & -- & -- & -- & -- & -- \\
+% & $2.0$ & $2.0$ & -- & -- & -- & -- & -- & -- \\
+% \midrule
+% \multirow{3}{*}{Fixed sum}
+% & $2/3$ & $4/3$ & -- & -- & -- & -- & -- & -- \\
+% & $1.0$ & $1.0$ & -- & -- & -- & -- & -- & -- \\
+% & $4/3$ & $2/3$ & -- & -- & -- & -- & -- & -- \\
+% \bottomrule
+% \end{tabularx}
+% \end{table}
+
+
+
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+\bibliography{iclr2026_conference}
+\bibliographystyle{iclr2026_conference}
+
+\appendix
+\section{Appendix}
+You may include other additional sections here.
+
+\end{document}
