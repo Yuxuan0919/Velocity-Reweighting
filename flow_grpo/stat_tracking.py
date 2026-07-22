@@ -71,6 +71,42 @@ class PerPromptStatTracker:
             return 0.0
 
         return np.mean(per_prompt_top_means)
+    
+    def state_dict(self) -> dict:
+        """
+        将内部状态序列化为可保存的字典。
+        注意：self.stats 中可能包含 numpy 数组，先转为 list 保证兼容性。
+        """
+        stats_serializable = {}
+        for prompt, rewards in self.stats.items():
+            if isinstance(rewards, np.ndarray):
+                stats_serializable[prompt] = rewards.tolist()
+            elif isinstance(rewards, list):
+                stats_serializable[prompt] = rewards  # 已经是 list
+            else:
+                stats_serializable[prompt] = rewards  # 其他情况，尝试直接保存
+        return {
+            "stats": stats_serializable,
+            "history_prompts": list(self.history_prompts),  # set 转 list 以便序列化
+        }
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        """
+        从保存的字典恢复内部状态。
+        """
+        # 恢复 stats，将 list 转回 numpy array（如果原先是 array）
+        raw_stats = state_dict.get("stats", {})
+        self.stats = {}
+        for prompt, rewards in raw_stats.items():
+            if isinstance(rewards, list):
+                # 尝试转换为 ndarray，但保留为 list 也可（外部使用时会处理）
+                self.stats[prompt] = np.array(rewards, dtype=np.float64)
+            else:
+                self.stats[prompt] = rewards
+
+        # 恢复 history_prompts
+        raw_history = state_dict.get("history_prompts", [])
+        self.history_prompts = set(raw_history)
 
 
 def main():

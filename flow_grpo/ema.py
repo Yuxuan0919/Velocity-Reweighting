@@ -79,10 +79,24 @@ class EMAModuleWrapper:
 
         self.temp_stored_parameters = None
 
-    def load_state_dict(self, state_dict: dict) -> None:
-        self.decay = self.decay if self.decay else state_dict.get("decay", self.decay)
-        self.ema_parameters = state_dict.get("ema_parameters")
-        self.to(self.device)
+    def load_state_dict(self, state_dict: dict, device: torch.device = None) -> None:
+        """
+        从状态字典恢复 EMA 影子参数。
+        Args:
+            state_dict: 包含 "decay" 和 "ema_parameters" 的字典
+            device: 目标设备，默认为 self.device
+        """
+        self.decay = state_dict.get("decay", self.decay)
+        
+        # 关键修复：重新赋值 self.ema_parameters
+        loaded_params = state_dict.get("ema_parameters")
+        if loaded_params is not None:
+            target_device = device if device is not None else self.device
+            self.ema_parameters = [p.clone().detach().to(target_device) for p in loaded_params]
+        else:
+            raise KeyError("Missing 'ema_parameters' in state_dict")
+
+        self.device = target_device if device is not None else self.device
 
     def state_dict(self) -> dict:
         return {

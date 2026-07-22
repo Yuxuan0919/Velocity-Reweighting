@@ -344,27 +344,55 @@ def eval_fn(
 
 
 def save_ckpt(
-    save_dir, transformer_ddp, global_step, rank, ema, transformer_trainable_parameters, config, optimizer, scaler
+    save_dir, transformer_ddp, global_step, rank, ema, transformer_trainable_parameters, config, optimizer, scaler, epoch, stat_tracker=None
 ):
     if is_main_process(rank):
         save_root = os.path.join(save_dir, "checkpoints", f"checkpoint-{global_step}")
-        save_root_lora = os.path.join(save_root, "lora")
-        os.makedirs(save_root_lora, exist_ok=True)
+        save_root_lora_default = os.path.join(save_root, "lora_default")
+        save_root_lora_old = os.path.join(save_root, "lora_old")
+        os.makedirs(save_root_lora_default, exist_ok=True)
+        os.makedirs(save_root_lora_old, exist_ok=True)
 
-        model_to_save = transformer_ddp.module
+        model = transformer_ddp.module
 
         if config.train.ema and ema is not None:
             ema.copy_ema_to(transformer_trainable_parameters, store_temp=True)
 
-        model_to_save.save_pretrained(save_root_lora)  # For LoRA/PEFT models
+        # 保存 default 适配器
+        model.set_adapter("default")
+        model.save_pretrained(save_root_lora_default)
 
+        # 保存 old 适配器
+        model.set_adapter("old")
+        model.save_pretrained(save_root_lora_old)
+
+        model.set_adapter("default")  # 恢复为 default
+
+        # 保存优化器、scaler
         torch.save(optimizer.state_dict(), os.path.join(save_root, "optimizer.pt"))
         if scaler is not None:
             torch.save(scaler.state_dict(), os.path.join(save_root, "scaler.pt"))
 
+        # 保存 epoch 和 global_step 等元信息
+        training_state = {
+            "epoch": epoch,
+            "global_step": global_step,
+        }
+        torch.save(training_state, os.path.join(save_root, "training_state.pt"))
+
         if config.train.ema and ema is not None:
             ema.copy_temp_to(transformer_trainable_parameters)
         logger.info(f"Saved checkpoint to {save_root}")
+        
+        # 保存 EMA 影子参数
+        if config.train.ema and ema is not None:
+            ema_state_path = os.path.join(save_root, "ema_state.pt")
+            torch.save(ema.state_dict(), ema_state_path)
+            
+        # 保存 PerPromptStatTracker 状态（仅在启用时）
+        if config.per_prompt_stat_tracking and stat_tracker is not None:
+            stat_tracker_path = os.path.join(save_root, "stat_tracker.pt")
+            torch.save(stat_tracker.state_dict(), stat_tracker_path)
 
 
 def main(_):
@@ -543,43 +571,84 @@ def main(_):
 
     reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
     eval_reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
+    
+    ema = None
+    if config.train.ema:
+        ema = EMAModuleWrapper(transformer_trainable_parameters, decay=0.9, update_step_interval=1, device=device)
 
     # --- Resume from checkpoint ---
     first_epoch = 0
     global_step = 0
     if config.resume_from:
         logger.info(f"Resuming from {config.resume_from}")
-        # Assuming checkpoint dir contains lora, optimizer.pt, scaler.pt
-        lora_path = os.path.join(config.resume_from, "lora")
-        if os.path.exists(lora_path):  # Check if it's a PEFT model save
-            transformer_ddp.module.load_adapter(lora_path, adapter_name="default", is_trainable=True)
-            transformer_ddp.module.load_adapter(lora_path, adapter_name="old", is_trainable=False)
-        else:  # Try loading full state dict if it's not a PEFT save structure
-            model_ckpt_path = os.path.join(config.resume_from, "transformer_model.pt")  # Or specific name
-            if os.path.exists(model_ckpt_path):
-                transformer_ddp.module.load_state_dict(torch.load(model_ckpt_path, map_location=device))
+        # 加载 default 适配器
+        lora_default_path = os.path.join(config.resume_from, "lora_default")
+        if os.path.exists(lora_default_path):
+            transformer_ddp.module.load_adapter(lora_default_path, adapter_name="default", is_trainable=True)
+        else:
+            # 向后兼容旧格式
+            lora_path = os.path.join(config.resume_from, "lora")
+            if os.path.exists(lora_path):
+                transformer_ddp.module.load_adapter(lora_path, adapter_name="default", is_trainable=True)
 
+        # 加载 old 适配器
+        lora_old_path = os.path.join(config.resume_from, "lora_old")
+        if os.path.exists(lora_old_path):
+            transformer_ddp.module.load_adapter(lora_old_path, adapter_name="old", is_trainable=False)
+        else:
+            # 如果没有 old，则复制 default 作为起点（但会丢失旧策略信息）
+            logger.warning("No 'old' adapter found in checkpoint. Cloning 'default' as 'old'.")
+            # 需要先确保 default 已加载，然后拷贝
+            # 因为 PeftModel 没有直接的克隆方法，可采用以下方式：
+            # 重新加载 default 的权重并作为 old（简单方案：直接 load_adapter 同路径）
+            transformer_ddp.module.load_adapter(lora_default_path, adapter_name="old", is_trainable=False)
+
+        # 确保适配器名称正确
+        transformer_ddp.module.set_adapter("default")
+
+        # 加载优化器
         opt_path = os.path.join(config.resume_from, "optimizer.pt")
         if os.path.exists(opt_path):
             optimizer.load_state_dict(torch.load(opt_path, map_location=device))
 
+        # 加载 scaler
         scaler_path = os.path.join(config.resume_from, "scaler.pt")
         if os.path.exists(scaler_path) and enable_amp:
             scaler.load_state_dict(torch.load(scaler_path, map_location=device))
 
-        # Extract epoch and step from checkpoint name, e.g., "checkpoint-1000" -> global_step = 1000
-        try:
-            global_step = int(os.path.basename(config.resume_from).split("-")[-1])
-            logger.info(f"Resumed global_step to {global_step}. Epoch estimation might be needed.")
-        except ValueError:
-            logger.warning(
-                f"Could not parse global_step from checkpoint name: {config.resume_from}. Starting global_step from 0."
-            )
-            global_step = 0
-
-    ema = None
-    if config.train.ema:
-        ema = EMAModuleWrapper(transformer_trainable_parameters, decay=0.9, update_step_interval=1, device=device)
+        # 加载训练状态（epoch 和 global_step）
+        training_state_path = os.path.join(config.resume_from, "training_state.pt")
+        if os.path.exists(training_state_path):
+            training_state = torch.load(training_state_path, map_location=device)
+            first_epoch = training_state.get("epoch", 0) + 1  # 从下一 epoch 开始
+            global_step = training_state.get("global_step", 0)
+            logger.info(f"Resumed epoch={first_epoch-1}, global_step={global_step}")
+        else:
+            # 尝试从 checkpoint 目录名解析 global_step
+            try:
+                global_step = int(os.path.basename(config.resume_from).split("-")[-1])
+                logger.info(f"Parsed global_step from dirname: {global_step}")
+            except ValueError:
+                logger.warning(f"Could not parse global_step from dirname: {config.resume_from}. Starting from 0.")
+                global_step = 0
+                
+        # 恢复 EMA 影子参数
+        if config.train.ema and ema is not None:
+            ema_state_path = os.path.join(config.resume_from, "ema_state.pt")
+            if os.path.exists(ema_state_path):
+                ema_state = torch.load(ema_state_path, map_location=device)
+                ema.load_state_dict(ema_state, device=device)
+                logger.info("EMA shadow parameters restored from checkpoint.")
+            else:
+                logger.warning("EMA was enabled but no ema_state.pt found in checkpoint. EMA will start fresh.")
+        # 恢复 PerPromptStatTracker 状态
+        if config.per_prompt_stat_tracking:
+            stat_tracker_path = os.path.join(config.resume_from, "stat_tracker.pt")
+            if os.path.exists(stat_tracker_path):
+                stat_tracker.load_state_dict(torch.load(stat_tracker_path, map_location=device))
+                logger.info("PerPromptStatTracker state restored.")
+            else:
+                logger.info("No stat_tracker.pt found, starting fresh.")
 
     num_train_timesteps = int(config.sample.num_steps * config.train.timestep_fraction)
 
@@ -588,11 +657,21 @@ def main(_):
     train_iter = iter(train_dataloader)
     optimizer.zero_grad()
 
-    for src_param, tgt_param in zip(
-        transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True
-    ):
-        tgt_param.data.copy_(src_param.detach().data)
-        assert src_param is not tgt_param
+    # 只在首次训练时同步 old 适配器
+    if not config.resume_from:
+        for src_param, tgt_param in zip(
+            transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True
+        ):
+            tgt_param.data.copy_(src_param.detach().data)
+            assert src_param is not tgt_param
+    else:
+        # 确保 old 适配器参数不会被意外覆盖，保持 checkpoint 加载的状态
+        logger.info("Skipping old adapter initialization (resuming from checkpoint).")
+        # 顺手验证一下 old 是否真正与 default 不同（如果是不同步的，说明加载正确）
+        for src_param, tgt_param in zip(
+            transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True
+        ):
+            assert src_param is not tgt_param
 
     for epoch in range(first_epoch, config.num_epochs):
         if hasattr(train_sampler, "set_epoch"):
@@ -651,6 +730,8 @@ def main(_):
                     config,
                     optimizer,
                     scaler,
+                    epoch,  # 新增参数
+                    stat_tracker=stat_tracker if config.per_prompt_stat_tracking else None,
                 )
 
             transformer_ddp.module.set_adapter("old")
