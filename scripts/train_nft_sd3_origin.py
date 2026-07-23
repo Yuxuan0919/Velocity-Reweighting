@@ -1016,71 +1016,47 @@ def main(_):
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
 
-                    # Original DiffusionNFT two-branch objective (kept for reference):
-                    # positive_prediction = (
-                    #     config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
-                    # )
-                    # implicit_negative_prediction = (
-                    #     1.0 + config.beta
-                    # ) * old_prediction.detach() - config.beta * forward_prediction
-                    #
-                    # # adaptive weighting
-                    # x0_prediction = xt - t_expanded * positive_prediction
+                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
+                    implicit_negative_prediction = (
+                        1.0 + config.beta
+                    ) * old_prediction.detach() - config.beta * forward_prediction
+
+                    x0_prediction = xt - t_expanded * positive_prediction
+
+                    # Official adaptive normalization (kept for reference):
                     # with torch.no_grad():
                     #     weight_factor = (
                     #         torch.abs(x0_prediction.double() - x0.double())
                     #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
                     #         .clip(min=0.00001)
                     #     )
-                    # positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
-                    #     dim=tuple(range(1, x0.ndim))
-                    # )
-                    # negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
+                    with torch.no_grad():
+                        weight_factor = t_expanded.square().clip(min=1e-8)
+                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
+                        dim=tuple(range(1, x0.ndim))
+                    )
+
+                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
+
+                    # Official adaptive normalization (kept for reference):
                     # with torch.no_grad():
                     #     negative_weight_factor = (
                     #         torch.abs(negative_x0_prediction.double() - x0.double())
                     #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
                     #         .clip(min=0.00001)
                     #     )
-                    # negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
-                    #     dim=tuple(range(1, x0.ndim))
-                    # )
-                    # ori_policy_loss = (
-                    #     r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
-                    # )
-                    # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
-
-                    # NFT-SingleBranch.tex gives the equivalent pseudo-target
-                    # tau = v_old + (2r - 1) / beta * (v_clean - v_old).
-                    # The original implementation divides its branch loss by beta,
-                    # so the equivalent single-branch regression keeps one beta factor.
-                    single_branch_coeff = (2.0 * r - 1.0) / config.beta
-                    single_branch_coeff_expanded = single_branch_coeff.view(-1, *([1] * (x0.ndim - 1)))
-
-                    x0_prediction = xt - t_expanded * forward_prediction
-                    x0_old_prediction = xt - t_expanded * old_prediction.detach()
-                    x0_target = x0_old_prediction + single_branch_coeff_expanded * (x0 - x0_old_prediction)
-
-                    # Original adaptive x0-space normalization (kept for reference):
-                    # with torch.no_grad():
-                    #     weight_factor = (
-                    #         torch.abs(x0_prediction.double() - x0_target.double())
-                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                    #         .clip(min=0.00001)
-                    #     )
                     with torch.no_grad():
-                        # x0 error = -t * v error, so dividing by t^2 gives unit coefficient for the corresponding v-prediction loss.
-                        weight_factor = t_expanded.square().clip(min=1e-8)
-                    single_branch_loss = ((x0_prediction - x0_target) ** 2 / weight_factor).mean(
+                        negative_weight_factor = t_expanded.square().clip(min=1e-8)
+                    negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
-                    ori_policy_loss = config.beta * single_branch_loss
+
+                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
                     policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
-                    loss_terms["single_branch_coeff_abs_mean"] = single_branch_coeff.abs().mean().detach()
 
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
