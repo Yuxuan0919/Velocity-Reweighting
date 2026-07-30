@@ -1,0 +1,959 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage[english]{babel}
+\babelprovide[import,onchar=ids fonts]{chinese-simplified}
+\setmainfont{DejaVu Sans}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+\babelfont[chinese-simplified]{rm}[AutoFakeBold=2.0]{Droid Sans Fallback}
+\babelfont[chinese-simplified]{sf}[AutoFakeBold=2.0]{Droid Sans Fallback}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+
+\geometry{
+  left=24mm,
+  right=24mm,
+  top=23mm,
+  bottom=24mm
+}
+
+\definecolor{accent}{HTML}{185A78}
+\definecolor{accentdark}{HTML}{123B50}
+\definecolor{softblue}{HTML}{EAF3F7}
+\definecolor{softgray}{HTML}{F3F5F6}
+\definecolor{textgray}{HTML}{3F4A50}
+\definecolor{codegreen}{HTML}{276749}
+\definecolor{codepurple}{HTML}{6B46C1}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=accentdark,
+  urlcolor=accent,
+  citecolor=accentdark,
+  pdfauthor={DiffusionNFT Project},
+  pdftitle={Reward-Conditioned Branch-Free Adaptive Weight 设计说明}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{textgray}DiffusionNFT Adaptive Weight}
+\fancyhead[R]{\small\color{textgray}技术说明}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{accent}\leaders\hrule height \headrulewidth\hfill}}
+
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.35em}
+\setlength{\headheight}{22pt}
+\addtolength{\topmargin}{-7pt}
+\setlength{\emergencystretch}{2em}
+\setlist[itemize]{leftmargin=2em,itemsep=0.25em,topsep=0.3em}
+\setlist[enumerate]{leftmargin=2.2em,itemsep=0.3em,topsep=0.3em}
+\renewcommand{\contentsname}{目录}
+\renewcommand{\tablename}{表}
+
+\newcommand{\sg}{\operatorname{sg}}
+\newcommand{\mabs}{\operatorname{m}}
+\newcommand{\xcur}{\mathbf{x}_{0,i}^{\theta}}
+\newcommand{\xold}{\mathbf{x}_{0,i}^{\mathrm{old}}}
+\newcommand{\xclean}{\mathbf{x}_{0,i}}
+\newcommand{\xtarget}{\mathbf{x}_{0,i}^{\mathrm{NFT}}}
+\newcommand{\eps}{\epsilon}
+\newcommand{\R}{\mathrm{RC}}
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\lstdefinestyle{pythonstyle}{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{codepurple}\bfseries,
+  commentstyle=\color{codegreen},
+  stringstyle=\color{accentdark},
+  backgroundcolor=\color{softgray},
+  frame=single,
+  rulecolor=\color{softgray},
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  tabsize=4,
+  xleftmargin=0.6em,
+  xrightmargin=0.6em,
+  aboveskip=0.8em,
+  belowskip=0.8em
+}
+
+\begin{document}
+\renewcommand{\contentsname}{目录}
+\renewcommand{\tablename}{表}
+\hypersetup{pageanchor=false}
+
+\begin{titlepage}
+\thispagestyle{empty}
+\vspace*{28mm}
+\noindent{\color{accent}\rule{\textwidth}{2.2pt}}
+\vspace{10mm}
+
+{\sffamily\bfseries\fontsize{23}{31}\selectfont
+Reward-Conditioned Branch-Free\\[2mm]
+Adaptive Weight 设计说明}
+
+\vspace{8mm}
+{\Large 面向 DiffusionNFT single-branch pseudo-target objective}
+
+\vspace{17mm}
+{\large
+从原版双分支归一化出发，构造一个只需要单个 reward-conditioned
+sample weight 的近似形式}
+
+\vfill
+
+\begin{tabular}{@{}ll@{}}
+\textbf{对应推导} & \texttt{assets/ours\_idea.tex}\\
+\textbf{设计版本} & Reward-conditioned root-second-moment normalization\\
+\textbf{日期} & 2026 年 7 月 27 日
+\end{tabular}
+
+\vspace{15mm}
+\noindent{\color{accent}\rule{\textwidth}{0.8pt}}
+\end{titlepage}
+
+\hypersetup{pageanchor=true}
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+\section{核心结论}
+
+新的 adaptive weight 不是把 single-branch loss 自身的误差直接放到分母，
+而是根据 reward、old-to-clean 残差和 current-to-old 更新量，估计一个
+\textbf{reward-conditioned residual second moment}。对第 $i$ 个样本和第
+$j$ 个维度，定义
+\begin{align}
+d_{i,j}
+&=
+\left(\xold-\xclean\right)_j,
+&
+\Delta_{i,j}
+&=
+\left(\xcur-\xold\right)_j,
+&
+s_i
+&=2r_i-1.
+\end{align}
+新的逐元素尺度为
+\begin{equation}
+\boxed{
+q_{i,j}
+=
+\left(d_{i,j}+\beta s_i\Delta_{i,j}\right)^2
++
+4\beta^2r_i(1-r_i)\Delta_{i,j}^2
+}
+\label{eq:q-main}
+\end{equation}
+并构造一个 detached 的 sample-level normalization factor：
+\begin{equation}
+\boxed{
+w_i^{\R}(t)
+=
+\sg\!\left[
+\max\!\left(
+\frac{1}{D}\sum_{j=1}^{D}\sqrt{q_{i,j}},
+\eps
+\right)
+\right].
+}
+\label{eq:w-main}
+\end{equation}
+最终的 single-branch objective 是
+\begin{equation}
+\boxed{
+\ell_{i,\R}
+=
+\frac{\beta}{w_i^{\R}(t)}
+\left\|
+\xcur-\xtarget
+\right\|^2.
+}
+\label{eq:loss-main}
+\end{equation}
+
+这里需要区分两个容易混淆的概念：
+\begin{itemize}
+  \item $w_i^{\R}$ 是放在分母中的 \textbf{normalization factor}；
+  \item 真正乘在该样本 MSE 前面的 \textbf{effective sample weight} 是
+  $\kappa_i^{\R}=\beta/w_i^{\R}$。
+\end{itemize}
+
+这个设计的核心价值是：它只需要一个 sample weight，不构造正负预测，
+但仍保留原版 DiffusionNFT adaptive factor 最重要的残差归一化性质。
+它在 $r_i=0$ 和 $r_i=1$ 两个端点与原版严格一致，在
+$\xcur=\xold$ 的 policy refresh 点与原版具有严格相同的局部梯度；
+对于中间 reward，它是一个有意设计的稳定近似。
+
+\section{问题背景}
+
+\subsection{符号与 pseudo-target}
+
+DiffusionNFT 的 single-branch pseudo-target 可以写成
+\begin{equation}
+\xtarget
+=
+\xold
++
+\frac{2r_i-1}{\beta}
+\left(\xclean-\xold\right).
+\label{eq:pseudo-target}
+\end{equation}
+使用
+\begin{equation}
+d_i=\xold-\xclean,
+\qquad
+\Delta_i=\xcur-\xold,
+\qquad
+s_i=2r_i-1,
+\end{equation}
+可将其改写为
+\begin{equation}
+\xtarget=\xold-\frac{s_i}{\beta}d_i,
+\qquad
+\xcur-\xtarget
+=
+\Delta_i+\frac{s_i}{\beta}d_i.
+\label{eq:target-residual}
+\end{equation}
+
+$s_i\in[-1,1]$ 是 centered reward：
+\begin{itemize}
+  \item $s_i>0$：pseudo-target 从 old prediction 向 clean sample 移动；
+  \item $s_i<0$：pseudo-target 向相反方向移动；
+  \item $s_i=0$：pseudo-target 等于 old prediction。
+\end{itemize}
+
+本文统一使用
+\begin{equation}
+\|\mathbf{u}\|^2=\frac{1}{D}\sum_{j=1}^{D}u_j^2,
+\qquad
+\mabs(\mathbf{u})=\frac{1}{D}\sum_{j=1}^{D}|u_j|.
+\end{equation}
+
+\subsection{原版 adaptive weighting 做了什么}
+
+用 $d_i$ 和 $\Delta_i$ 表示原版的两个残差：
+\begin{equation}
+e_i^+=d_i+\beta\Delta_i,
+\qquad
+e_i^-=d_i-\beta\Delta_i.
+\end{equation}
+对应的 detached normalization factors 是
+\begin{equation}
+w_i^+
+=
+\sg\!\left[\max\!\left(\mabs(e_i^+),\eps\right)\right],
+\qquad
+w_i^-
+=
+\sg\!\left[\max\!\left(\mabs(e_i^-),\eps\right)\right].
+\end{equation}
+原版 adaptive objective 为
+\begin{equation}
+\ell_{i,\mathrm{sep}}
+=
+\frac{1}{\beta}
+\left[
+\frac{r_i}{w_i^+}\|e_i^+\|^2
++
+\frac{1-r_i}{w_i^-}\|e_i^-\|^2
+\right].
+\label{eq:original}
+\end{equation}
+
+这两个分母有两个作用。第一，它们将较大的重建误差除以较大的尺度，
+避免困难样本或困难 timestep 完全主导梯度。第二，当 $w_i^+\neq w_i^-$
+时，它们会改变两个方向的相对贡献，因此不仅改变梯度大小，还会改变严格
+合并后 pseudo-target 的位置。
+
+如果要求与式 \eqref{eq:original} 对任意中间 reward 严格等价，就必须保留
+$w_i^+$、$w_i^-$ 的信息。严格合并后的梯度系数包含
+\begin{equation}
+\beta
+\left(
+\frac{r_i}{w_i^+}
++
+\frac{1-r_i}{w_i^-}
+\right),
+\end{equation}
+而 effective reward 还会变成
+\begin{equation}
+r_i^{\mathrm{eff}}
+=
+\frac{r_i/w_i^+}
+{r_i/w_i^+ + (1-r_i)/w_i^-}.
+\end{equation}
+因此，严格等价版不可避免地较复杂。
+
+\section{为什么直接 post-merge normalization 不够理想}
+
+当前简易版直接使用 single-branch residual：
+\begin{equation}
+w_i^{\mathrm{post}}
+=
+\sg\!\left[
+\max\!\left(
+\mabs(\xcur-\xtarget),
+\eps
+\right)
+\right],
+\qquad
+\ell_{i,\mathrm{post}}
+=
+\frac{\beta}{w_i^{\mathrm{post}}}
+\|\xcur-\xtarget\|^2.
+\label{eq:post}
+\end{equation}
+它实现简单，但分母测量的是“当前模型距离优化目标还有多远”，而原版分母
+测量的是“reward 所作用的重建残差有多大”。这两者并不是同一个量。
+
+\subsection{问题一：拟合 target 时分母必然触发下限}
+
+当 $\xcur\rightarrow\xtarget$ 时，
+\begin{equation}
+\mabs(\xcur-\xtarget)\rightarrow 0.
+\end{equation}
+因此，未截断的分母必然趋近于零，实际实现只能依赖 $\eps$。虽然
+$\eps$ 避免了数值除零，但分母会从 residual-dependent normalization
+退化为由人工常数控制的区域。
+
+尤其当 $r_i=1/2$ 时，$s_i=0$ 且 $\xtarget=\xold$。训练通常从 current
+model 接近 old model 的位置开始，因此一个几乎中性的样本很容易立即落入
+分母下限区域，即使 old prediction 与 clean sample 之间仍存在很大误差。
+
+\subsection{问题二：在 old-policy 点附近会弱化 reward 强度}
+
+在 $\xcur=\xold$，即 $\Delta_i=0$ 时，式 \eqref{eq:target-residual}
+给出
+\begin{equation}
+w_i^{\mathrm{post}}
+=
+\frac{|s_i|}{\beta}\mabs(d_i)
+\qquad
+\text{（忽略 $\eps$）}.
+\end{equation}
+因为 $w_i^{\mathrm{post}}$ 被 detach，其梯度为
+\begin{align}
+\left.
+\nabla_{\xcur}\ell_{i,\mathrm{post}}
+\right|_{\Delta_i=0}
+&=
+\frac{2\beta}{D\,w_i^{\mathrm{post}}}
+\left(\frac{s_i}{\beta}d_i\right)
+\\
+&=
+\frac{2\beta\,\operatorname{sign}(s_i)}
+{D\,\mabs(d_i)}
+d_i,
+\qquad s_i\neq 0.
+\label{eq:post-gradient}
+\end{align}
+可以看到，$|s_i|$ 被分母抵消了。除 $s_i=0$ 的精确点外，一个略高于平均
+的样本和一个 reward 极高的样本，可能获得近似相同的初始归一化梯度大小。
+reward 主要只剩下正负号，而不是连续的置信强度。
+
+这与原版 DiffusionNFT 在 policy refresh 点的行为不同。原版此时
+$w_i^+=w_i^-=\mabs(d_i)$，梯度连续地正比于 $s_i$。新的设计首先要恢复
+这一性质。
+
+\section{新 weight 的推导}
+
+\subsection{设计目标}
+
+我们希望一个新的 normalization factor 同时满足：
+\begin{enumerate}
+  \item 每个样本只计算一个 detached scalar weight；
+  \item weight 显式依赖 reward，但不生成正负 branch prediction；
+  \item 在 current model 等于 old model 时，恢复原版的局部梯度；
+  \item 在 reward 两个端点恢复原版目标；
+  \item 对中间 reward，不因 signed residual 的抵消而异常变小；
+  \item 保留原版使用 mean absolute residual 进行尺度归一化的习惯。
+\end{enumerate}
+
+\subsection{从方向残差的二阶矩出发}
+
+为了说明新公式与原版的关系，可以引入一个只用于推导的方向变量
+$Z_i\in\{-1,+1\}$：
+\begin{equation}
+\Pr(Z_i=+1)=r_i,
+\qquad
+\Pr(Z_i=-1)=1-r_i.
+\end{equation}
+它的均值和方差为
+\begin{equation}
+\mathbb{E}[Z_i]=2r_i-1=s_i,
+\qquad
+\operatorname{Var}(Z_i)=1-s_i^2=4r_i(1-r_i).
+\end{equation}
+考虑第 $j$ 个维度上的方向残差
+\begin{equation}
+E_{i,j}(Z_i)=d_{i,j}+\beta Z_i\Delta_{i,j}.
+\end{equation}
+它的均值是
+\begin{equation}
+\mathbb{E}[E_{i,j}]
+=
+d_{i,j}+\beta s_i\Delta_{i,j},
+\end{equation}
+方差是
+\begin{equation}
+\operatorname{Var}(E_{i,j})
+=
+\beta^2\operatorname{Var}(Z_i)\Delta_{i,j}^2
+=
+4\beta^2r_i(1-r_i)\Delta_{i,j}^2.
+\end{equation}
+由“二阶矩等于均值平方加方差”得到
+\begin{align}
+\mathbb{E}\!\left[E_{i,j}^2\right]
+&=
+\left(
+d_{i,j}+\beta s_i\Delta_{i,j}
+\right)^2
++
+4\beta^2r_i(1-r_i)\Delta_{i,j}^2
+\\
+&=q_{i,j}.
+\end{align}
+
+这就是式 \eqref{eq:q-main}。推导借助了原版的方向分布来解释它为什么合理，
+但实际计算只使用 $d_i$、$\Delta_i$ 和 $r_i$ 三个量，不构造任何 branch
+prediction，也不维护 branch-specific weight。
+
+\subsection{为什么使用
+\texorpdfstring{$\frac{1}{D}\sum_j\sqrt{q_{i,j}}$}{mean root-second-moment}}
+
+$\sqrt{q_{i,j}}$ 是第 $j$ 个维度 residual 的 root second moment。
+先逐元素开方再取平均，是为了尽量保留原版 mean absolute error 的尺度：
+\begin{itemize}
+  \item 当 reward 位于端点时，$\sqrt{q_{i,j}}$ 会严格退化为对应 residual
+  的绝对值；
+  \item 因此 $\frac{1}{D}\sum_j\sqrt{q_{i,j}}$ 会严格退化为原版的
+  $\mabs(e_i^\pm)$；
+  \item 如果改为 $\sqrt{\frac{1}{D}\sum_j q_{i,j}}$，得到的是 global RMS，
+  在 reward 端点也无法与原版 MAE factor 严格一致。
+\end{itemize}
+
+\subsection{为什么必须 stop-gradient}
+
+$w_i^{\R}$ 的目标是度量当前样本的更新尺度，而不是成为模型可以主动优化的
+对象。因此必须使用 $\sg[\cdot]$ 或在代码中置于 \texttt{torch.no\_grad()}
+上下文中。
+
+如果不 detach，梯度会穿过分母。模型可能通过改变 $q_{i,j}$ 来改变自己的
+loss weight，而不只是拟合 pseudo-target。这样不仅破坏与原版 adaptive
+factor 的对应关系，还可能诱导模型增大某些 residual 以减小 effective
+sample weight。
+
+\section{三个关键性质}
+
+\subsection{性质一：两个 reward 端点与原版严格一致}
+
+当 $r_i=1$ 时，$s_i=1$，方差项为零：
+\begin{equation}
+q_{i,j}
+=
+\left(d_{i,j}+\beta\Delta_{i,j}\right)^2,
+\qquad
+w_i^{\R}=w_i^+.
+\end{equation}
+同时
+\begin{equation}
+\xcur-\xtarget
+=
+\Delta_i+\frac{1}{\beta}d_i.
+\end{equation}
+所以
+\begin{equation}
+\ell_{i,\R}
+=
+\frac{\beta}{w_i^+}
+\left\|
+\Delta_i+\frac{d_i}{\beta}
+\right\|^2
+=
+\frac{1}{\beta w_i^+}
+\|d_i+\beta\Delta_i\|^2,
+\end{equation}
+与式 \eqref{eq:original} 在 $r_i=1$ 时完全相同。
+
+同理，当 $r_i=0$ 时，
+\begin{equation}
+q_{i,j}
+=
+\left(d_{i,j}-\beta\Delta_{i,j}\right)^2,
+\qquad
+w_i^{\R}=w_i^-,
+\end{equation}
+并且 $\ell_{i,\R}$ 与原版 $r_i=0$ 的目标完全相同。
+
+\subsection{性质二：在 policy refresh 点与原版梯度严格一致}
+
+当 current model 与 old model 相同时，$\Delta_i=0$。此时对任意 reward，
+\begin{equation}
+q_{i,j}=d_{i,j}^2,
+\qquad
+w_i^{\R}
+=
+\sg\!\left[\max\!\left(\mabs(d_i),\eps\right)\right]
+=w_i^+=w_i^-.
+\label{eq:refresh-weight}
+\end{equation}
+
+记公共 factor 为 $w_i^0$。由式 \eqref{eq:original} 得到原版梯度
+\begin{align}
+\left.
+\nabla_{\xcur}\ell_{i,\mathrm{sep}}
+\right|_{\Delta_i=0}
+&=
+\frac{2}{D}
+\left[
+\frac{r_i}{w_i^0}d_i
+-
+\frac{1-r_i}{w_i^0}d_i
+\right]
+\\
+&=
+\frac{2s_i}{D\,w_i^0}d_i.
+\label{eq:original-local-grad}
+\end{align}
+新 objective 的梯度为
+\begin{align}
+\left.
+\nabla_{\xcur}\ell_{i,\R}
+\right|_{\Delta_i=0}
+&=
+\frac{2\beta}{D\,w_i^0}
+\left(
+\frac{s_i}{\beta}d_i
+\right)
+\\
+&=
+\frac{2s_i}{D\,w_i^0}d_i.
+\label{eq:new-local-grad}
+\end{align}
+式 \eqref{eq:original-local-grad} 与式 \eqref{eq:new-local-grad} 完全相同。
+
+这条性质很重要，因为每次 old policy 更新后，current 与 old 通常接近。
+新 weight 在训练最常访问的局部区域保持了原版 adaptive objective 的
+reward 响应：梯度大小连续地正比于 $s_i=2r_i-1$。它不会像 post-merge
+版本那样把 $|s_i|$ 从初始梯度中归一化掉。
+
+\subsection{性质三：中间 reward 拟合 target 时 factor 不会普遍塌缩}
+
+当 current prediction 正好等于 pseudo-target 时，
+\begin{equation}
+\Delta_i^\star
+=
+-\frac{s_i}{\beta}d_i.
+\end{equation}
+代入式 \eqref{eq:q-main}：
+\begin{align}
+q_{i,j}^\star
+&=
+\left(1-s_i^2\right)^2d_{i,j}^2
++
+\left(1-s_i^2\right)s_i^2d_{i,j}^2
+\\
+&=
+\left(1-s_i^2\right)d_{i,j}^2.
+\end{align}
+因此在忽略 $\eps$ 时，
+\begin{equation}
+\boxed{
+w_i^{\R}(\xcur=\xtarget)
+=
+\sqrt{1-s_i^2}\,\mabs(d_i)
+=
+2\sqrt{r_i(1-r_i)}\,\mabs(d_i).
+}
+\label{eq:target-scale}
+\end{equation}
+
+对任何严格的中间 reward $0<r_i<1$，只要 old-to-clean error 不为零，
+这个 factor 就仍然为正。几个典型情况如下。
+
+\begin{table}[ht]
+\centering
+\small
+\caption{拟合 pseudo-target 时的新 normalization factor，表中省略
+$\mabs(d_i)$ 和 $\eps$。}
+\begin{tabular}{cccccc}
+\toprule
+$r_i$ & $0$ & $0.25$ & $0.5$ & $0.75$ & $1$\\
+\midrule
+$s_i=2r_i-1$ & $-1$ & $-0.5$ & $0$ & $0.5$ & $1$\\
+$2\sqrt{r_i(1-r_i)}$ & $0$ & $0.866$ & $1$ & $0.866$ & $0$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+特别地，$r_i=0.5$ 时
+\begin{equation}
+w_i^{\R}=\mabs(d_i),
+\end{equation}
+而 post-merge factor 为零并触发 $\eps$。端点处新 factor 也会趋于零，
+但这是合理的：此时唯一被 reward 选择的 residual 已经被完全拟合，原版
+factor 同样会触发 $\eps$。
+
+\section{如何理解 reward 的作用}
+
+\subsection{均值项与方差项}
+
+式 \eqref{eq:q-main} 可以分成两部分：
+\begin{equation}
+\underbrace{
+\left(d_{i,j}+\beta s_i\Delta_{i,j}\right)^2
+}_{\text{reward-directed mean residual}}
+\quad+\quad
+\underbrace{
+4\beta^2r_i(1-r_i)\Delta_{i,j}^2
+}_{\text{directional variance}}.
+\end{equation}
+
+均值项描述 reward 指定的净方向；方差项描述当 reward 不确定时，不能被
+一个 signed mean residual 表示的剩余尺度。
+\begin{itemize}
+  \item 当 $r_i$ 接近 $0$ 或 $1$，reward 方向明确，方差项趋于零；
+  \item 当 $r_i=0.5$，方向最不确定，方差系数达到最大值；
+  \item 方差项始终非负，所以即使均值项发生向量抵消，也不会轻易得到一个
+  不合理的小 factor。
+\end{itemize}
+
+\subsection{为什么 refresh 点的 factor 暂时不依赖 reward}
+
+在 $\Delta_i=0$ 时，式 \eqref{eq:refresh-weight} 对所有 reward 都等于
+$\mabs(d_i)$。这不是缺少 reward conditioning，而是有意保留原版的局部
+几何结构。
+
+此时 reward 已经通过 pseudo-target 控制梯度：
+\begin{equation}
+\nabla_{\xcur}\ell_{i,\R}
+\propto
+s_i d_i.
+\end{equation}
+normalization factor 只负责消除不同样本 $d_i$ 尺度的差异，不应再把
+$|s_i|$ 消掉。当 current model 离开 old model 后，$\Delta_i\neq 0$，
+$w_i^{\R}$ 会通过均值项和方差项显式依赖 reward。
+
+\subsection{直接使用 normalized advantage 的形式}
+
+如果后续方法使用归一化 reward 或 advantage
+$\widehat{A}_i\in[-1,1]$，可以直接令
+\begin{equation}
+\widehat{A}_i=s_i=2r_i-1.
+\end{equation}
+此时新 factor 可以写成更适合 single-branch 方法的形式：
+\begin{equation}
+\boxed{
+q_{i,j}
+=
+\left(
+d_{i,j}+\beta\widehat{A}_i\Delta_{i,j}
+\right)^2
++
+\beta^2
+\left(
+1-\widehat{A}_i^2
+\right)
+\Delta_{i,j}^2.
+}
+\label{eq:advantage-form}
+\end{equation}
+这个表达式完全不需要正负 branch 的语义，只需要：
+\begin{itemize}
+  \item old prediction error $d_i$；
+  \item current policy displacement $\Delta_i$；
+  \item 每个样本的 normalized reward $\widehat{A}_i$。
+\end{itemize}
+
+如果使用论文中的线性 sample weight
+$W_i=1+\widehat{A}_i\in[0,2]$，也可以直接使用
+$\widehat{A}_i=W_i-1$ 代入式 \eqref{eq:advantage-form}。因此，这个
+adaptive factor 可以自然接到后续“每个样本只有一个 reward weight”的
+推导中。
+
+\section{与另外两个版本的对比}
+
+\begin{table}[ht]
+\centering
+\footnotesize
+\caption{三种 adaptive weighting 形式的主要差异。}
+\begin{tabularx}{\textwidth}{@{}p{0.19\textwidth}YYY@{}}
+\toprule
+ & 严格等价版 & 直接 post-merge 简易版 & 新 reward-conditioned 版\\
+\midrule
+Normalization factors
+& 两个：$w_i^+,w_i^-$
+& 一个：$w_i^{\mathrm{post}}$
+& 一个：$w_i^{\R}$\\
+\addlinespace
+是否构造方向预测
+& 是
+& 否
+& 否\\
+\addlinespace
+中间 reward 严格等价
+& 是
+& 否
+& 否\\
+\addlinespace
+是否保留 adaptive target shift
+& 是
+& 否
+& 否\\
+\addlinespace
+refresh 点局部梯度
+& 原版基准
+& 一般只保留 reward 符号
+& 与原版严格一致\\
+\addlinespace
+拟合 pseudo-target 时的分母
+& 由两个 residual 决定
+& 普遍触发 $\eps$
+& 中间 reward 通常保持非零\\
+\addlinespace
+reward 如何进入 factor
+& 通过两个 factor 的混合
+& 通过 pseudo-target residual
+& 直接进入均值与方差\\
+\addlinespace
+计算与实现复杂度
+& 最高
+& 最低
+& 介于两者之间，但仍是单 weight\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+严格等价版适合作为理论基准。post-merge 版最简单，但它会把 pseudo-target
+距离和 adaptive normalization 混为同一个量。新版本的定位是：在不恢复
+branch-specific target shift 的前提下，尽可能保留原版的 residual-scale
+normalization、reward 连续性和关键边界行为。
+
+\section{梯度与优化含义}
+
+由于 $w_i^{\R}$ 被 detach，新 loss 对 current prediction 的梯度非常清晰：
+\begin{equation}
+\nabla_{\xcur}\ell_{i,\R}
+=
+\frac{2\beta}{D\,w_i^{\R}}
+\left(
+\xcur-\xtarget
+\right).
+\label{eq:new-gradient}
+\end{equation}
+因此：
+\begin{itemize}
+  \item \textbf{梯度方向}完全由 single-branch pseudo-target 决定；
+  \item \textbf{梯度大小}由单个 sample multiplier
+  $\kappa_i^{\R}=\beta/w_i^{\R}$ 调整；
+  \item adaptive factor 不会像严格等价版那样再次移动 pseudo-target；
+  \item 这一职责分离更符合后续方法的概念结构：归一化 reward 决定样本
+  目标或样本权重；adaptive factor 只负责控制该样本的更新尺度。
+\end{itemize}
+
+对于 residual 很大的样本，$w_i^{\R}$ 通常也较大，因此更新被压缩；对于
+residual 较小但未进入 $\eps$ 区域的样本，更新相对增强。这延续了原版
+DiffusionNFT 的“按样本和 timestep 归一化优化难度”的思想。
+
+\section{PyTorch 实现}
+
+下面给出与公式直接对应的实现框架。关键要求是：用于 factor 的
+\texttt{x0\_prediction} 必须在计算 $q_i$ 时 detach，但用于 MSE 的
+\texttt{x0\_prediction} 必须保留梯度。
+
+\begin{lstlisting}[style=pythonstyle]
+# x0_prediction: current model clean prediction, with gradients
+# x0_old_prediction, x0, reward: detached / no-grad tensors
+x0_prediction = xt - t_expanded * forward_prediction
+x0_old_prediction = xt - t_expanded * old_prediction.detach()
+
+reduce_dims = tuple(range(1, x0.ndim))
+r_view = r.view(-1, *([1] * (x0.ndim - 1)))
+
+with torch.no_grad():
+    d = (x0_old_prediction - x0).double()
+    delta = (x0_prediction - x0_old_prediction).double()
+    r64 = r_view.double()
+    s = 2.0 * r64 - 1.0
+
+    q = (
+        (d + config.beta * s * delta).square()
+        + 4.0
+        * (config.beta ** 2)
+        * r64
+        * (1.0 - r64)
+        * delta.square()
+    )
+
+    # Guard against a tiny negative value caused by finite precision.
+    weight_factor = (
+        q.clamp_min(0.0)
+        .sqrt()
+        .mean(dim=reduce_dims, keepdim=True)
+        .clamp_min(1e-5)
+        .to(x0_prediction.dtype)
+    )
+
+    x0_target = (
+        x0_old_prediction
+        + (s / config.beta).to(x0.dtype)
+        * (x0 - x0_old_prediction)
+    )
+
+sample_loss = (
+    config.beta
+    * (x0_prediction - x0_target).square()
+    / weight_factor
+).mean(dim=reduce_dims)
+
+policy_loss = sample_loss.mean()
+\end{lstlisting}
+
+\subsection{实现注意事项}
+
+\begin{enumerate}
+  \item \textbf{Reward 范围。}
+  公式要求 $r_i\in[0,1]$，等价地要求 $s_i\in[-1,1]$。如果输入是未经
+  限制的 advantage，应先标准化和裁剪。否则
+  $4r_i(1-r_i)$ 或 $1-s_i^2$ 可能为负。
+
+  \item \textbf{精度。}
+  建议像原版 factor 一样使用 \texttt{float64} 计算 $q_i$ 和均值，再转回
+  模型 dtype。特别是在 mixed precision 下，这能减少平方和开方带来的
+  舍入问题。
+
+  \item \textbf{非负保护。}
+  理论上 $q_{i,j}\geq0$，因为它是两个平方项之和。代码中的
+  \texttt{clamp\_min(0)} 只用于防止有限精度产生极小负值。
+
+  \item \textbf{下限 $\eps$。}
+  应与原版使用同一个 $\eps$，例如 $10^{-5}$，这样端点行为和 loss scale
+  更可比。若改变 $\eps$，需同时观察 floor activation ratio。
+
+  \item \textbf{按 sample 归约。}
+  $w_i^{\R}$ 应对通道和空间维度取平均，但保留 batch 维。不要先对整个
+  batch 求平均，否则会失去 sample-wise normalization。
+
+  \item \textbf{日志。}
+  建议记录 $w_i^{\R}$、$\beta/w_i^{\R}$、触发 $\eps$ 的样本比例，以及
+  按 reward 和 timestep 分桶后的均值。
+\end{enumerate}
+
+\section{局限性与实验预期}
+
+\subsection{它不在哪些方面等价}
+
+对 $0<r_i<1$，新版本并不严格等价于原版。原因是原版的两个 detached
+factor 会同时产生：
+\begin{itemize}
+  \item 一个由 $r_i/w_i^+ + (1-r_i)/w_i^-$ 决定的 harmonic-like
+  gradient scale；
+  \item 一个由 $w_i^+$ 与 $w_i^-$ 的差异引起的 adaptive pseudo-target
+  shift。
+\end{itemize}
+
+单个 second-moment factor 无法同时保留这两个自由度。新设计主动放弃
+adaptive target shift，只保留原始 single-branch pseudo-target，并用一个
+reward-conditioned scalar 控制更新大小。
+
+\subsection{为什么预期优于直接简易版}
+
+预期改善来自以下三点，但最终仍需实验验证：
+\begin{enumerate}
+  \item 在 policy refresh 点恢复与原版相同的 reward-linear gradient，
+  不会把 reward magnitude 归一化成近似符号；
+  \item 对中间 reward，即使 current prediction 拟合 pseudo-target，
+  factor 仍保留 old-to-clean residual 的尺度；
+  \item 方差项阻止 signed mean residual 的偶然抵消，使 sample weight
+  随 reward 和 policy displacement 更平滑地变化。
+\end{enumerate}
+
+新 factor 使用 root second moment。由 RMS--AM 关系，它可能比对应的
+reward-weighted mean absolute residual 更保守，因此某些区间的
+$\beta/w_i^{\R}$ 可能偏小。这不是数值错误，而是该近似用稳定性换取简洁性
+的结果。若整体更新显著变小，应优先使用一个全局 loss-scale coefficient
+统一校准，而不是破坏 $q_i$ 的 reward 结构。
+
+\subsection{推荐消融}
+
+为了判断它是否确实优于 post-merge 简易版，建议在完全相同的 rollout、
+reward、$\beta$、学习率和随机种子下比较：
+\begin{itemize}
+  \item exact adaptive single-branch；
+  \item direct post-merge adaptive；
+  \item reward-conditioned branch-free adaptive；
+  \item 不使用 adaptive factor 的 single-branch baseline。
+\end{itemize}
+
+除最终 reward 外，建议同时观察：
+\begin{itemize}
+  \item 训练前期不同 reward bin 的平均梯度范数；
+  \item $w_i$ 与 effective multiplier $\beta/w_i$ 的分布；
+  \item 分母触发 $\eps$ 的比例；
+  \item 不同 timestep 的归一化尺度；
+  \item current model 与 old model 的距离，以及训练是否出现突发梯度。
+\end{itemize}
+
+\section{总结}
+
+新 adaptive weight 可以概括为以下思路：
+\begin{quote}
+\color{accentdark}
+不再分别问“正方向 residual 多大”和“负方向 residual 多大”，而是根据
+当前样本的 centered reward，直接估计 reward-directed residual 的
+二阶尺度，并将它作为该样本唯一的 detached normalization factor。
+\end{quote}
+
+它比严格等价版更简单，因为只计算一个 scalar factor 且不改变
+single-branch pseudo-target；它又比直接 post-merge 版更接近原版，因为
+它恢复了 reward 端点、policy refresh 点和 residual-scale normalization
+的关键行为。
+
+最简洁的 normalized-advantage 表达为
+\begin{equation}
+\boxed{
+w_i^{\R}
+=
+\sg\!\left[
+\max\!\left(
+\frac{1}{D}
+\sum_{j=1}^{D}
+\sqrt{
+\left(d_{i,j}+\beta\widehat{A}_i\Delta_{i,j}\right)^2
++
+\beta^2(1-\widehat{A}_i^2)\Delta_{i,j}^2
+},
+\eps
+\right)
+\right],
+}
+\end{equation}
+其中 $\widehat{A}_i\in[-1,1]$。最终每个样本只有一个 effective weight
+$\beta/w_i^{\R}$，这与后续基于 reward 设计 sample-wise weight 的方法
+具有更一致的概念结构。
+
+\end{document}

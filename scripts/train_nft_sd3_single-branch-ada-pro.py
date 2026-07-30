@@ -987,10 +987,6 @@ def main(_):
         # SAMPLING
         pipeline.transformer.eval()
         samples_data_list = []
-        train_image_log_batches = []
-        pending_train_image_logs = []
-        image_log_num_prompts, image_log_num_images_per_prompt = get_image_log_settings(config)
-        train_image_log_prompt_counts = {}
 
         for i in tqdm(
             range(config.sample.num_batches_per_epoch),
@@ -1074,19 +1070,6 @@ def main(_):
 
             latents = torch.stack(latents, dim=1)
             timesteps = pipeline.scheduler.timesteps.repeat(len(prompts), 1).to(device)
-            if is_main_process(rank):
-                selected_log_indices, selected_log_prompts = select_prompt_image_log_indices(
-                    train_image_log_prompt_counts,
-                    list(prompts),
-                    image_log_num_prompts,
-                    image_log_num_images_per_prompt,
-                )
-                if selected_log_indices:
-                    pending_train_image_logs.append(
-                        (images.detach().cpu()[selected_log_indices], selected_log_prompts, selected_log_indices)
-                    )
-                else:
-                    pending_train_image_logs.append(None)
 
             rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=True)
             time.sleep(0)
@@ -1103,23 +1086,11 @@ def main(_):
                 }
             )
 
-        for sample_idx, sample_item in tqdm(
-            list(enumerate(samples_data_list)),
-            desc="Waiting for rewards",
-            disable=not is_main_process(rank),
-            position=0,
+        for sample_item in tqdm(
+            samples_data_list, desc="Waiting for rewards", disable=not is_main_process(rank), position=0
         ):
             rewards, reward_metadata = sample_item["rewards_future"].result()
             sample_item["rewards"] = {k: torch.as_tensor(v, device=device).float() for k, v in rewards.items()}
-            if is_main_process(rank):
-                pending_log = pending_train_image_logs[sample_idx]
-                if pending_log is not None:
-                    batch_images, batch_prompts, selected_log_indices = pending_log
-                    selected_rewards = {
-                        reward_key: np.asarray(reward_values)[selected_log_indices]
-                        for reward_key, reward_values in rewards.items()
-                    }
-                    train_image_log_batches.append((batch_images, batch_prompts, selected_rewards))
             del sample_item["rewards_future"]
 
         # Collate samples
@@ -1133,33 +1104,16 @@ def main(_):
         }
 
         # Logging images (main process)
-        if epoch % 10 == 0 and is_main_process(rank) and train_image_log_batches:
-            images_to_log = torch.cat([batch_images for batch_images, _, _ in train_image_log_batches], dim=0)
-            prompts_to_log = [
-                prompt for _, batch_prompts, _ in train_image_log_batches for prompt in batch_prompts
+        if epoch % 10 == 0 and is_main_process(rank):
+            images_to_log = images.cpu()  # from last sampling batch on this rank
+            prompts_to_log = prompts  # from last sampling batch on this rank
+            rewards_to_log = collated_samples["rewards"]["avg"][-len(images_to_log) :].cpu()
+            num_to_log = min(15, len(images_to_log))
+            captions = [
+                f"{str(prompts_to_log[idx])[:100]} | avg: {float(rewards_to_log[idx]):.2f}"
+                for idx in range(num_to_log)
             ]
-            rewards_to_log = {
-                reward_key: np.concatenate(
-                    [np.asarray(batch_rewards[reward_key]) for _, _, batch_rewards in train_image_log_batches], axis=0
-                )
-                for reward_key in train_image_log_batches[0][2]
-            }
-            images_to_log, captions = select_prompt_image_logs(
-                images_to_log,
-                prompts_to_log,
-                rewards_to_log,
-                image_log_num_prompts,
-                image_log_num_images_per_prompt,
-            )
-            log_image_grid(
-                writer,
-                "train/images",
-                images_to_log,
-                captions,
-                global_step,
-                max_images=image_log_num_prompts * image_log_num_images_per_prompt,
-                nrow=image_log_num_images_per_prompt,
-            )
+            log_image_grid(writer, "train/images", images_to_log, captions, global_step)
         collated_samples["rewards"]["avg"] = (
             collated_samples["rewards"]["avg"].unsqueeze(1).repeat(1, num_train_timesteps)
         )
@@ -1375,47 +1329,102 @@ def main(_):
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
 
-                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
-                    implicit_negative_prediction = (
-                        1.0 + config.beta
-                    ) * old_prediction.detach() - config.beta * forward_prediction
-
-                    x0_prediction = xt - t_expanded * positive_prediction
-
-                    # Official adaptive normalization (kept for reference):
-                    with torch.no_grad():
-                        weight_factor = (
-                            torch.abs(x0_prediction.double() - x0.double())
-                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                            .clip(min=0.00001)
-                        )
+                    # Original DiffusionNFT two-branch objective (kept for reference):
+                    # positive_prediction = (
+                    #     config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
+                    # )
+                    # implicit_negative_prediction = (
+                    #     1.0 + config.beta
+                    # ) * old_prediction.detach() - config.beta * forward_prediction
+                    #
+                    # # adaptive weighting
+                    # x0_prediction = xt - t_expanded * positive_prediction
                     # with torch.no_grad():
-                        # weight_factor = t_expanded.square().clip(min=1e-8)
-                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
-                        dim=tuple(range(1, x0.ndim))
-                    )
-
-                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
-
-                    # Official adaptive normalization (kept for reference):
-                    with torch.no_grad():
-                        negative_weight_factor = (
-                            torch.abs(negative_x0_prediction.double() - x0.double())
-                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                            .clip(min=0.00001)
-                        )
+                    #     weight_factor = (
+                    #         torch.abs(x0_prediction.double() - x0.double())
+                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                    #         .clip(min=0.00001)
+                    #     )
+                    # positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
+                    #     dim=tuple(range(1, x0.ndim))
+                    # )
+                    # negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
                     # with torch.no_grad():
-                    #     negative_weight_factor = t_expanded.square().clip(min=1e-8)
-                    negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
-                        dim=tuple(range(1, x0.ndim))
-                    )
+                    #     negative_weight_factor = (
+                    #         torch.abs(negative_x0_prediction.double() - x0.double())
+                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                    #         .clip(min=0.00001)
+                    #     )
+                    # negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
+                    #     dim=tuple(range(1, x0.ndim))
+                    # )
+                    # ori_policy_loss = (
+                    #     r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
+                    # )
+                    # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
-                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
+                    # NFT-SingleBranch.tex gives the equivalent pseudo-target
+                    # tau = v_old + (2r - 1) / beta * (v_clean - v_old).
+                    # The original implementation divides its branch loss by beta,
+                    # so the equivalent single-branch regression keeps one beta factor.
+                    centered_reward = 2.0 * r - 1.0
+                    centered_reward_expanded = centered_reward.view(-1, *([1] * (x0.ndim - 1)))
+                    single_branch_coeff = centered_reward / config.beta
+                    single_branch_coeff_expanded = single_branch_coeff.view(-1, *([1] * (x0.ndim - 1)))
+
+                    x0_prediction = xt - t_expanded * forward_prediction
+                    x0_old_prediction = xt - t_expanded * old_prediction.detach()
+                    x0_target = x0_old_prediction + single_branch_coeff_expanded * (x0 - x0_old_prediction)
+
+                    # Reward-conditioned branch-free adaptive normalization.
+                    # q is the element-wise second moment of the original directional
+                    # residuals, evaluated without constructing positive/negative branches.
+                    reduce_dims = tuple(range(1, x0.ndim))
+                    adaptive_eps = 1e-5
+                    with torch.no_grad():
+                        old_to_clean_residual = x0_old_prediction.double() - x0.double()
+                        policy_displacement = x0_prediction.double() - x0_old_prediction.double()
+                        centered_reward_64 = centered_reward_expanded.double()
+                        r_expanded_64 = r.view(-1, *([1] * (x0.ndim - 1))).double()
+
+                        reward_directed_residual = old_to_clean_residual + (
+                            config.beta * centered_reward_64 * policy_displacement
+                        )
+                        residual_second_moment = reward_directed_residual.square() + (
+                            4.0
+                            * (config.beta**2)
+                            * r_expanded_64
+                            * (1.0 - r_expanded_64)
+                            * policy_displacement.square()
+                        )
+
+                        unclipped_weight_factor = (
+                            residual_second_moment.clamp_min(0.0)
+                            .sqrt()
+                            .mean(dim=reduce_dims, keepdim=True)
+                        )
+                        weight_factor = unclipped_weight_factor.clamp_min(adaptive_eps).to(x0_prediction.dtype)
+
+                    single_branch_loss = ((x0_prediction - x0_target) ** 2 / weight_factor).mean(
+                        dim=reduce_dims
+                    )
+                    ori_policy_loss = config.beta * single_branch_loss
                     policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
+                    loss_terms["single_branch_coeff_abs_mean"] = single_branch_coeff.abs().mean().detach()
+                    loss_terms["adaptive_weight_factor"] = weight_factor.mean().detach()
+                    loss_terms["adaptive_effective_multiplier"] = (
+                        config.beta / weight_factor
+                    ).mean().detach()
+                    loss_terms["adaptive_floor_fraction"] = (
+                        unclipped_weight_factor < adaptive_eps
+                    ).float().mean().detach()
+                    loss_terms["adaptive_reward_variance"] = (
+                        4.0 * r * (1.0 - r)
+                    ).mean().detach()
 
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))

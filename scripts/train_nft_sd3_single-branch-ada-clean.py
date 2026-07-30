@@ -15,6 +15,7 @@
 
 from collections import defaultdict
 import os
+import re
 import datetime
 from concurrent import futures
 import time
@@ -66,6 +67,108 @@ def cleanup_distributed():
 
 def is_main_process(rank):
     return rank == 0
+
+
+_CHECKPOINT_PATTERN = re.compile(r"^checkpoint-(\d+)$")
+
+
+def _has_saved_adapter(adapter_dir):
+    if not os.path.isdir(adapter_dir):
+        return False
+    config_path = os.path.join(adapter_dir, "adapter_config.json")
+    weight_paths = (
+        os.path.join(adapter_dir, "adapter_model.safetensors"),
+        os.path.join(adapter_dir, "adapter_model.bin"),
+    )
+    return os.path.isfile(config_path) and any(
+        os.path.isfile(path) and os.path.getsize(path) > 0 for path in weight_paths
+    )
+
+
+def _is_resumable_checkpoint(checkpoint_dir, config):
+    default_adapter_dir = os.path.join(checkpoint_dir, "lora_default")
+    legacy_adapter_dir = os.path.join(checkpoint_dir, "lora")
+    if not (_has_saved_adapter(default_adapter_dir) or _has_saved_adapter(legacy_adapter_dir)):
+        return False
+
+    required_files = [
+        os.path.join(checkpoint_dir, "optimizer.pt"),
+        os.path.join(checkpoint_dir, "training_state.pt"),
+    ]
+    if config.train.ema:
+        required_files.append(os.path.join(checkpoint_dir, "ema_state.pt"))
+    if config.per_prompt_stat_tracking:
+        required_files.append(os.path.join(checkpoint_dir, "stat_tracker.pt"))
+
+    return all(os.path.isfile(path) and os.path.getsize(path) > 0 for path in required_files)
+
+
+def _find_latest_checkpoint(search_dir, config):
+    if not search_dir:
+        return ""
+    search_dir = os.path.abspath(os.path.expanduser(search_dir))
+    exact_match = _CHECKPOINT_PATTERN.fullmatch(os.path.basename(search_dir))
+    if exact_match:
+        return search_dir if _is_resumable_checkpoint(search_dir, config) else ""
+
+    nested_checkpoint_dir = os.path.join(search_dir, "checkpoints")
+    checkpoint_root = nested_checkpoint_dir if os.path.isdir(nested_checkpoint_dir) else search_dir
+    if not os.path.isdir(checkpoint_root):
+        return ""
+
+    candidates = []
+    for entry in os.scandir(checkpoint_root):
+        match = _CHECKPOINT_PATTERN.fullmatch(entry.name)
+        if entry.is_dir() and match:
+            candidates.append((int(match.group(1)), entry.path))
+
+    uses_completion_markers = any(
+        os.path.isfile(os.path.join(checkpoint_dir, "_SUCCESS"))
+        for _, checkpoint_dir in candidates
+    )
+    for _, checkpoint_dir in sorted(candidates, reverse=True):
+        if uses_completion_markers and not os.path.isfile(os.path.join(checkpoint_dir, "_SUCCESS")):
+            logger.warning("Ignoring checkpoint without completion marker: %s", checkpoint_dir)
+            continue
+        if _is_resumable_checkpoint(checkpoint_dir, config):
+            return checkpoint_dir
+        logger.warning("Ignoring incomplete checkpoint: %s", checkpoint_dir)
+    return ""
+
+
+def resolve_resume_checkpoint(config, rank):
+    requested_path = str(config.resume_from).strip()
+    search_dir = requested_path or config.save_dir
+    resolution = {"path": "", "error": ""}
+
+    if is_main_process(rank):
+        try:
+            checkpoint_path = _find_latest_checkpoint(search_dir, config)
+            if requested_path and not checkpoint_path:
+                resolution["error"] = f"No complete checkpoint found at or under: {requested_path}"
+            else:
+                resolution["path"] = checkpoint_path
+        except Exception as error:
+            resolution["error"] = f"Failed to resolve resume checkpoint from {search_dir}: {error}"
+
+    payload = [resolution]
+    dist.broadcast_object_list(
+        payload,
+        src=0,
+        device=torch.device("cuda", torch.cuda.current_device()),
+    )
+    resolution = payload[0]
+    if resolution["error"]:
+        raise FileNotFoundError(resolution["error"])
+
+    checkpoint_path = resolution["path"]
+    if is_main_process(rank):
+        if checkpoint_path:
+            mode = "explicit" if requested_path else "automatic"
+            logger.info("Using %s resume checkpoint: %s", mode, checkpoint_path)
+        else:
+            logger.info("No checkpoint found in %s; starting a new training run.", search_dir)
+    return checkpoint_path
 
 
 def set_seed(seed: int, rank: int = 0):
@@ -214,13 +317,116 @@ def log_scalars(writer, scalars, step):
             writer.add_scalar(key, value, step)
 
 
-def log_image_grid(writer, tag, images, captions, step, max_images=15):
+def get_nested_config_value(config, path, default):
+    value = config
+    for key in path.split("."):
+        if isinstance(value, dict):
+            if key not in value:
+                return default
+            value = value[key]
+        elif hasattr(value, key):
+            value = getattr(value, key)
+        else:
+            return default
+    return value
+
+
+def get_image_log_settings(config):
+    num_prompts = get_nested_config_value(config, "sample.log_num_prompts", None)
+    if num_prompts is None:
+        num_prompts = int(os.getenv("NFT_LOG_NUM_PROMPTS", 5))
+
+    num_images_per_prompt = get_nested_config_value(config, "sample.log_num_images_per_prompt", None)
+    if num_images_per_prompt is None:
+        num_images_per_prompt = int(
+            os.getenv("NFT_LOG_NUM_IMAGES_PER_PROMPT", int(config.sample.num_image_per_prompt))
+        )
+
+    return max(1, int(num_prompts)), max(1, int(num_images_per_prompt))
+
+
+def format_reward_value(value):
+    value = np.asarray(value)
+    if value.size == 0:
+        return None
+    scalar = float(value.reshape(-1)[0])
+    if scalar == -10:
+        return None
+    return f"{scalar:.2f}"
+
+
+def select_prompt_image_logs(images, prompts, rewards, max_prompts, max_images_per_prompt):
+    prompt_to_indices = defaultdict(list)
+    selected_prompt_order = []
+    for idx, prompt in enumerate(prompts):
+        prompt_key = str(prompt)
+        if prompt_key not in prompt_to_indices:
+            if len(selected_prompt_order) >= max_prompts:
+                continue
+            selected_prompt_order.append(prompt_key)
+        if len(prompt_to_indices[prompt_key]) < max_images_per_prompt:
+            prompt_to_indices[prompt_key].append(idx)
+
+    selected_indices = []
+    captions = []
+    for prompt_idx, prompt in enumerate(selected_prompt_order):
+        for image_idx, sample_idx in enumerate(prompt_to_indices[prompt]):
+            selected_indices.append(sample_idx)
+            reward_text_parts = []
+            for reward_key, reward_values in rewards.items():
+                if sample_idx >= len(reward_values):
+                    continue
+                reward_value = format_reward_value(reward_values[sample_idx])
+                if reward_value is not None:
+                    reward_text_parts.append(f"{reward_key}: {reward_value}")
+            reward_text = " | ".join(reward_text_parts)
+            captions.append(
+                f"prompt {prompt_idx}, image {image_idx} | {prompt[:1000]}"
+                + (f" | {reward_text}" if reward_text else "")
+            )
+
+    if not selected_indices:
+        return images[:0], []
+    return images[selected_indices], captions
+
+
+def select_prompt_image_log_indices(prompt_counts, prompts, max_prompts, max_images_per_prompt):
+    selected_indices = []
+    selected_prompts = []
+    for idx, prompt in enumerate(prompts):
+        prompt_key = str(prompt)
+        if prompt_key not in prompt_counts:
+            if len(prompt_counts) >= max_prompts:
+                continue
+            prompt_counts[prompt_key] = 0
+        if prompt_counts[prompt_key] >= max_images_per_prompt:
+            continue
+        prompt_counts[prompt_key] += 1
+        selected_indices.append(idx)
+        selected_prompts.append(prompt)
+    return selected_indices, selected_prompts
+
+
+def append_prompt_image_log_batch(log_batches, prompt_counts, images, prompts, rewards, max_prompts, max_images_per_prompt):
+    selected_indices, selected_prompts = select_prompt_image_log_indices(
+        prompt_counts, prompts, max_prompts, max_images_per_prompt
+    )
+    if not selected_indices:
+        return
+
+    selected_rewards = {
+        reward_key: np.asarray(reward_values)[selected_indices] for reward_key, reward_values in rewards.items()
+    }
+    log_batches.append((images.detach().cpu()[selected_indices], selected_prompts, selected_rewards))
+
+
+def log_image_grid(writer, tag, images, captions, step, max_images=15, nrow=None):
     if writer is None:
         return
     num_images = min(max_images, len(images))
     if num_images == 0:
         return
-    image_grid = make_grid(images[:num_images].float().clamp(0, 1), nrow=min(5, num_images))
+    image_grid = make_grid(images[:num_images].float().clamp(0, 1), nrow=nrow or min(5, num_images))
     writer.add_image(tag, image_grid, step)
     if captions:
         caption_text = "\n".join(f"{idx}. {caption}" for idx, caption in enumerate(captions[:num_images]))
@@ -257,6 +463,9 @@ def eval_fn(
     sample_neg_pooled_prompt_embeds = neg_pooled_prompt_embed.repeat(config.sample.test_batch_size, 1)
 
     all_rewards = defaultdict(list)
+    image_log_num_prompts, image_log_num_images_per_prompt = get_image_log_settings(config)
+    eval_image_log_prompt_items = []
+    eval_image_log_prompt_set = set()
 
     test_sampler = (
         DistributedSampler(test_dataloader.dataset, num_replicas=world_size, rank=rank, shuffle=False)
@@ -311,6 +520,15 @@ def eval_fn(
         rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=False)
         time.sleep(0)
         rewards, reward_metadata = rewards_future.result()
+        if is_main_process(rank):
+            for prompt, metadata in zip(prompts, prompt_metadata):
+                prompt_key = str(prompt)
+                if prompt_key in eval_image_log_prompt_set:
+                    continue
+                if len(eval_image_log_prompt_items) >= image_log_num_prompts:
+                    break
+                eval_image_log_prompt_set.add(prompt_key)
+                eval_image_log_prompt_items.append((prompt, metadata))
 
         for key, value in rewards.items():
             rewards_tensor = torch.as_tensor(value, device=device).float()
@@ -320,16 +538,83 @@ def eval_fn(
     if is_main_process(rank):
         final_rewards = {key: np.concatenate(value_list) for key, value_list in all_rewards.items()}
 
-        images_to_log = images.cpu()
-        prompts_to_log = prompts
-        num_samples_to_log = min(15, len(images_to_log))
-        sampled_prompts_log = [prompts_to_log[i] for i in range(num_samples_to_log)]
-        sampled_rewards_log = [{k: final_rewards[k][i] for k in final_rewards} for i in range(num_samples_to_log)]
-        captions = [
-            f"{prompt[:1000]} | " + " | ".join(f"{k}: {v:.2f}" for k, v in reward.items() if v != -10)
-            for prompt, reward in zip(sampled_prompts_log, sampled_rewards_log)
-        ]
-        log_image_grid(writer, "eval/images", images_to_log, captions, global_step)
+        if eval_image_log_prompt_items:
+            eval_image_log_batches = []
+            eval_image_log_prompt_counts = {}
+            eval_log_prompts = [
+                prompt
+                for prompt, _ in eval_image_log_prompt_items
+                for _ in range(image_log_num_images_per_prompt)
+            ]
+            eval_log_metadata = [
+                metadata
+                for _, metadata in eval_image_log_prompt_items
+                for _ in range(image_log_num_images_per_prompt)
+            ]
+            for start in range(0, len(eval_log_prompts), config.sample.test_batch_size):
+                batch_prompts = eval_log_prompts[start : start + config.sample.test_batch_size]
+                batch_metadata = eval_log_metadata[start : start + config.sample.test_batch_size]
+                prompt_embeds, pooled_prompt_embeds = compute_text_embeddings(
+                    batch_prompts, text_encoders, tokenizers, max_sequence_length=128, device=device
+                )
+                current_batch_size = len(prompt_embeds)
+                with torch_autocast(enabled=(config.mixed_precision in ["fp16", "bf16"]), dtype=mixed_precision_dtype):
+                    with torch.no_grad():
+                        images, _, _ = pipeline_with_logprob(
+                            pipeline,
+                            prompt_embeds=prompt_embeds,
+                            pooled_prompt_embeds=pooled_prompt_embeds,
+                            negative_prompt_embeds=sample_neg_prompt_embeds[:current_batch_size],
+                            negative_pooled_prompt_embeds=sample_neg_pooled_prompt_embeds[:current_batch_size],
+                            num_inference_steps=config.sample.eval_num_steps,
+                            guidance_scale=config.sample.guidance_scale,
+                            output_type="pt",
+                            height=config.resolution,
+                            width=config.resolution,
+                            noise_level=config.sample.noise_level,
+                            deterministic=True,
+                            solver="flow",
+                            model_type="sd3",
+                        )
+                rewards_future = executor.submit(reward_fn, images, batch_prompts, batch_metadata, only_strict=False)
+                time.sleep(0)
+                rewards, reward_metadata = rewards_future.result()
+                append_prompt_image_log_batch(
+                    eval_image_log_batches,
+                    eval_image_log_prompt_counts,
+                    images,
+                    batch_prompts,
+                    rewards,
+                    image_log_num_prompts,
+                    image_log_num_images_per_prompt,
+                )
+
+            images_to_log = torch.cat([batch_images for batch_images, _, _ in eval_image_log_batches], dim=0)
+            prompts_to_log = [
+                prompt for _, batch_prompts, _ in eval_image_log_batches for prompt in batch_prompts
+            ]
+            rewards_to_log = {
+                reward_key: np.concatenate(
+                    [np.asarray(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches], axis=0
+                )
+                for reward_key in eval_image_log_batches[0][2]
+            }
+            images_to_log, captions = select_prompt_image_logs(
+                images_to_log,
+                prompts_to_log,
+                rewards_to_log,
+                image_log_num_prompts,
+                image_log_num_images_per_prompt,
+            )
+            log_image_grid(
+                writer,
+                "eval/images",
+                images_to_log,
+                captions,
+                global_step,
+                max_images=image_log_num_prompts * image_log_num_images_per_prompt,
+                nrow=image_log_num_images_per_prompt,
+            )
         log_scalars(
             writer,
             {f"eval_reward/{key}": np.mean(value[value != -10]) for key, value in final_rewards.items()},
@@ -350,8 +635,11 @@ def save_ckpt(
         save_root = os.path.join(save_dir, "checkpoints", f"checkpoint-{global_step}")
         save_root_lora_default = os.path.join(save_root, "lora_default")
         save_root_lora_old = os.path.join(save_root, "lora_old")
+        completion_marker = os.path.join(save_root, "_SUCCESS")
         os.makedirs(save_root_lora_default, exist_ok=True)
         os.makedirs(save_root_lora_old, exist_ok=True)
+        if os.path.exists(completion_marker):
+            os.remove(completion_marker)
 
         model = transformer_ddp.module
 
@@ -360,11 +648,11 @@ def save_ckpt(
 
         # 保存 default 适配器
         model.set_adapter("default")
-        model.save_pretrained(save_root_lora_default)
+        model.save_pretrained(save_root_lora_default, selected_adapters=["default"])
 
         # 保存 old 适配器
         model.set_adapter("old")
-        model.save_pretrained(save_root_lora_old)
+        model.save_pretrained(save_root_lora_old, selected_adapters=["old"])
 
         model.set_adapter("default")  # 恢复为 default
 
@@ -382,7 +670,6 @@ def save_ckpt(
 
         if config.train.ema and ema is not None:
             ema.copy_temp_to(transformer_trainable_parameters)
-        logger.info(f"Saved checkpoint to {save_root}")
         
         # 保存 EMA 影子参数
         if config.train.ema and ema is not None:
@@ -394,15 +681,15 @@ def save_ckpt(
             stat_tracker_path = os.path.join(save_root, "stat_tracker.pt")
             torch.save(stat_tracker.state_dict(), stat_tracker_path)
 
+        marker_tmp = f"{completion_marker}.tmp"
+        with open(marker_tmp, "w", encoding="utf-8") as marker_file:
+            marker_file.write(f"global_step={global_step}\nepoch={epoch}\n")
+        os.replace(marker_tmp, completion_marker)
+        logger.info(f"Saved checkpoint to {save_root}")
+
 
 def main(_):
     config = FLAGS.config
-
-    if config.train.reward_weighting not in ["linear", "exponential"]:
-        raise ValueError(
-            f"Unsupported reward weighting: {config.train.reward_weighting}. "
-            'Expected "linear" or "exponential".'
-        )
 
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
@@ -410,6 +697,7 @@ def main(_):
     local_rank = int(os.environ["LOCAL_RANK"])
 
     setup_distributed(rank, local_rank, world_size)
+    config.resume_from = resolve_resume_checkpoint(config, rank)
     device = torch.device(f"cuda:{local_rank}")
 
     unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
@@ -590,24 +878,36 @@ def main(_):
         # 加载 default 适配器
         lora_default_path = os.path.join(config.resume_from, "lora_default")
         if os.path.exists(lora_default_path):
-            transformer_ddp.module.load_adapter(lora_default_path, adapter_name="default", is_trainable=True)
+            default_adapter_path = lora_default_path
         else:
             # 向后兼容旧格式
             lora_path = os.path.join(config.resume_from, "lora")
             if os.path.exists(lora_path):
-                transformer_ddp.module.load_adapter(lora_path, adapter_name="default", is_trainable=True)
+                default_adapter_path = lora_path
+            else:
+                raise FileNotFoundError(f"No default LoRA adapter found in {config.resume_from}")
+        transformer_ddp.module.load_adapter(default_adapter_path, adapter_name="default", is_trainable=True)
 
         # 加载 old 适配器
         lora_old_path = os.path.join(config.resume_from, "lora_old")
-        if os.path.exists(lora_old_path):
-            transformer_ddp.module.load_adapter(lora_old_path, adapter_name="old", is_trainable=False)
+        old_adapter_candidates = [
+            os.path.join(lora_old_path, "old"),
+            lora_old_path,
+            os.path.join(lora_default_path, "old"),
+        ]
+        old_adapter_path = next(
+            (path for path in old_adapter_candidates if _has_saved_adapter(path)),
+            "",
+        )
+        if old_adapter_path:
+            transformer_ddp.module.load_adapter(old_adapter_path, adapter_name="old", is_trainable=False)
         else:
             # 如果没有 old，则复制 default 作为起点（但会丢失旧策略信息）
             logger.warning("No 'old' adapter found in checkpoint. Cloning 'default' as 'old'.")
             # 需要先确保 default 已加载，然后拷贝
             # 因为 PeftModel 没有直接的克隆方法，可采用以下方式：
             # 重新加载 default 的权重并作为 old（简单方案：直接 load_adapter 同路径）
-            transformer_ddp.module.load_adapter(lora_default_path, adapter_name="old", is_trainable=False)
+            transformer_ddp.module.load_adapter(default_adapter_path, adapter_name="old", is_trainable=False)
 
         # 确保适配器名称正确
         transformer_ddp.module.set_adapter("default")
@@ -626,9 +926,10 @@ def main(_):
         training_state_path = os.path.join(config.resume_from, "training_state.pt")
         if os.path.exists(training_state_path):
             training_state = torch.load(training_state_path, map_location=device)
-            first_epoch = training_state.get("epoch", 0) + 1  # 从下一 epoch 开始
+            # Checkpoints are saved before sampling/training the recorded epoch.
+            first_epoch = training_state.get("epoch", 0)
             global_step = training_state.get("global_step", 0)
-            logger.info(f"Resumed epoch={first_epoch-1}, global_step={global_step}")
+            logger.info(f"Resuming from epoch={first_epoch}, global_step={global_step}")
         else:
             # 尝试从 checkpoint 目录名解析 global_step
             try:
@@ -725,7 +1026,13 @@ def main(_):
                     writer,
                 )
 
-            if i == 0 and epoch % config.save_freq == 0 and is_main_process(rank) and not config.debug:
+            if (
+                i == 0
+                and epoch % config.save_freq == 0
+                and is_main_process(rank)
+                and not config.debug
+                and not (config.resume_from and epoch == first_epoch)
+            ):
                 save_ckpt(
                     config.save_dir,
                     transformer_ddp,
@@ -860,38 +1167,6 @@ def main(_):
         else:
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
-
-        # Keep DiffusionNFT's advantage statistics, including its global_std behavior,
-        # and only change the mapping from those advantages to sample weights.
-        normalized_advantages = np.clip(
-            advantages, -config.train.adv_clip_max, config.train.adv_clip_max
-        ) / config.train.adv_clip_max
-        reward_weight_epsilon = 1e-6
-        if config.train.reward_weighting == "linear":
-            reward_weights = np.maximum(reward_weight_epsilon, 1.0 + normalized_advantages)
-        elif config.train.reward_weighting == "exponential":
-            reward_weights = np.exp(normalized_advantages)
-        else:
-            raise ValueError(
-                f"Unsupported reward weighting: {config.train.reward_weighting}. "
-                'Expected "linear" or "exponential".'
-            )
-
-        prompt_array = np.asarray(prompts_all_decoded)
-        delta_r = np.empty_like(reward_weights)
-        for prompt in np.unique(prompt_array):
-            prompt_mask = prompt_array == prompt
-            delta_r[prompt_mask] = np.mean(
-                reward_weights[prompt_mask] - 1.0, axis=0, keepdims=True
-            )
-
-        mass_denominator = 1.0 + config.beta * delta_r
-        if np.any(mass_denominator <= 0):
-            raise ValueError(
-                "Reward-reweighted target requires 1 + beta * delta_r > 0, "
-                f"but the minimum value is {mass_denominator.min():.6f}."
-            )
-
         # Distribute advantages back to processes
         samples_per_gpu = collated_samples["timesteps"].shape[0]
         if advantages.ndim == 1:
@@ -903,13 +1178,6 @@ def main(_):
             ).to(device)
         else:
             assert False
-
-        collated_samples["reward_weights"] = torch.from_numpy(
-            reward_weights.reshape(world_size, samples_per_gpu, -1)[rank]
-        ).to(device=device, dtype=torch.float32)
-        collated_samples["delta_r"] = torch.from_numpy(
-            delta_r.reshape(world_size, samples_per_gpu, -1)[rank]
-        ).to(device=device, dtype=torch.float32)
 
         if is_main_process(rank):
             logger.info(f"Advantages mean: {collated_samples['advantages'].abs().mean().item()}")
@@ -1035,35 +1303,33 @@ def main(_):
                             else:  # Full model - this requires a frozen copy of the model
                                 assert False
                     loss_terms = {}
+                    # Policy Gradient Loss
+                    advantages_clip = torch.clamp(
+                        train_sample_batch["advantages"][:, j_idx],
+                        -config.train.adv_clip_max,
+                        config.train.adv_clip_max,
+                    )
+                    if hasattr(config.train, "adv_mode"):
+                        if config.train.adv_mode == "positive_only":
+                            advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
+                        elif config.train.adv_mode == "negative_only":
+                            advantages_clip = torch.clamp(advantages_clip, -config.train.adv_clip_max, 0)
+                        elif config.train.adv_mode == "one_only":
+                            advantages_clip = torch.where(
+                                advantages_clip > 0, torch.ones_like(advantages_clip), torch.zeros_like(advantages_clip)
+                            )
+                        elif config.train.adv_mode == "binary":
+                            advantages_clip = torch.sign(advantages_clip)
+
+                    # normalize advantage
+                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
+                    r = torch.clamp(normalized_advantages_clip, 0, 1)
                     loss_terms["x0_norm"] = torch.mean(x0**2).detach()
                     loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
 
                     # Original DiffusionNFT two-branch objective (kept for reference):
-                    # # Policy Gradient Loss
-                    # advantages_clip = torch.clamp(
-                    #     train_sample_batch["advantages"][:, j_idx],
-                    #     -config.train.adv_clip_max,
-                    #     config.train.adv_clip_max,
-                    # )
-                    # if hasattr(config.train, "adv_mode"):
-                    #     if config.train.adv_mode == "positive_only":
-                    #         advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
-                    #     elif config.train.adv_mode == "negative_only":
-                    #         advantages_clip = torch.clamp(advantages_clip, -config.train.adv_clip_max, 0)
-                    #     elif config.train.adv_mode == "one_only":
-                    #         advantages_clip = torch.where(
-                    #             advantages_clip > 0,
-                    #             torch.ones_like(advantages_clip),
-                    #             torch.zeros_like(advantages_clip),
-                    #         )
-                    #     elif config.train.adv_mode == "binary":
-                    #         advantages_clip = torch.sign(advantages_clip)
-                    #
-                    # # normalize advantage
-                    # normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
-                    # r = torch.clamp(normalized_advantages_clip, 0, 1)
                     # positive_prediction = (
                     #     config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
                     # )
@@ -1097,31 +1363,43 @@ def main(_):
                     # )
                     # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
-                    reward_weights = train_sample_batch["reward_weights"][:, j_idx]
-                    delta_r = train_sample_batch["delta_r"][:, j_idx]
-                    target_coeff = config.beta * (reward_weights - 1.0) / (1.0 + config.beta * delta_r)
-                    target_coeff_expanded = target_coeff.view(-1, *([1] * (x0.ndim - 1)))
+                    # NFT-SingleBranch.tex gives the equivalent pseudo-target
+                    # tau = v_old + (2r - 1) / beta * (v_clean - v_old).
+                    # The original implementation divides its branch loss by beta,
+                    # so the equivalent single-branch regression keeps one beta factor.
+                    single_branch_coeff = (2.0 * r - 1.0) / config.beta
+                    single_branch_coeff_expanded = single_branch_coeff.view(-1, *([1] * (x0.ndim - 1)))
 
                     x0_prediction = xt - t_expanded * forward_prediction
                     x0_old_prediction = xt - t_expanded * old_prediction.detach()
-                    x0_target = x0_old_prediction + target_coeff_expanded * (x0 - x0_old_prediction)
+                    x0_target = x0_old_prediction + single_branch_coeff_expanded * (x0 - x0_old_prediction)
+
+                    # Clean-target adaptive normalization. The numerator still
+                    # fits the NFT pseudo-target, while the detached denominator
+                    # measures the current sample/timestep reconstruction difficulty.
                     with torch.no_grad():
                         weight_factor = (
-                            torch.abs(x0_prediction.double() - x0_target.double())
+                            torch.abs(x0_prediction.double() - x0.double())
                             .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
                             .clip(min=0.00001)
                         )
-                    ori_policy_loss = ((x0_prediction - x0_target) ** 2 / weight_factor).mean(
+
+                    # with torch.no_grad():
+                    #     # x0 error = -t * v error, so dividing by t^2 gives unit coefficient for the corresponding v-prediction loss.
+                    #     weight_factor = t_expanded.square().clip(min=1e-8)
+
+
+                    single_branch_loss = ((x0_prediction - x0_target) ** 2 / weight_factor).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
+                    ori_policy_loss = config.beta * single_branch_loss
                     policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
-                    loss_terms["reward_weight_mean"] = reward_weights.mean().detach()
-                    loss_terms["delta_r_mean"] = delta_r.mean().detach()
-                    loss_terms["target_coeff_abs_mean"] = target_coeff.abs().mean().detach()
+                    loss_terms["single_branch_coeff_abs_mean"] = single_branch_coeff.abs().mean().detach()
+                    loss_terms["clean_weight_factor"] = weight_factor.mean().detach()
 
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))

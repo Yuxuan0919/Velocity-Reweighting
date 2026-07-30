@@ -11,8 +11,8 @@ OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
 REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
 
 LOGDIR="${REPO_DIR}/logs"
-SAVE_DIR="${REPO_DIR}/outputs/nft_sd3_geneval_nft_baseline-w1"
-RUN_NAME="sd35_geneval_h200_8gpu_nft_baseline-w1"
+SAVE_DIR="${REPO_DIR}/outputs/nft_sd3_geneval_nft_baseline-adapt-KL1e-4-1"
+RUN_NAME="sd35_geneval_h200_8gpu_nft_baseline-adapt-KL1e-4-1"
 
 NPROC_PER_NODE=8
 
@@ -43,4 +43,4 @@ torchrun --standalone --nnodes=1 --nproc_per_node="${NPROC_PER_NODE}" scripts/tr
   --config.save_dir="${SAVE_DIR}" \
   --config.run_name="${RUN_NAME}" \
   --config.beta=1 \
-  --config.train.beta=0
+  --config.train.beta=0.0001
