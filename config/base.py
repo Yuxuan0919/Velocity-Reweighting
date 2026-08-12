@@ -87,6 +87,9 @@ def get_config():
     # the fraction of timesteps to train on. if set to less than 1.0, the model will be trained on a subset of the
     # timesteps for each sample. this will speed up training but reduce the accuracy of policy gradient estimates.
     train.timestep_fraction = 0.99
+    # Number of candidate positions in the schedule used for uniform random timestep sampling. The default 1000 keeps
+    # the full training schedule; set this to sample.eval_num_steps (for example, 40) to use the eval inference grid.
+    train.timestep_sampling_num_steps = 1000
     # kl ratio
     train.beta = 0.0001
     # pretrained lora path

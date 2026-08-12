@@ -1,0 +1,227 @@
+
+
+\begin{algorithm}[H]
+\caption{Reinforced Flow Matching}
+\label{alg:velocity-add-delete}
+\begin{algorithmic}[1]
+\Require Initial model $\theta_0$, reward function $R$, prompt distribution
+$p(c)$, Total prompts each training iteration $C$, rollout size for each prompt $K$, batch size $B$, total size $D = KC$, 
+rollout coverage coefficient $\beta$, advantage clip $A$, reference regularization
+$\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
+
+\State $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}
+\leftarrow\theta_0$.
+
+\For{each training iteration}
+            
+    \For{each prompt $c_j\sim p(c)$ (Total C prompts each iteration.)}
+        \State Set $\bar{Z}_{c_j} = 1.$
+        
+        \State Sample $K$ clean rollout samples
+        $\{\mathbf{x}_0^k\}_{k=1}^{K}$
+        with $\theta$ conditioned on $c_j$.
+
+        \State Compute rewards
+        $R_k\leftarrow R(\mathbf{x}_0^k,c_j)$
+        for $k=1,\ldots,K$.
+
+        \For{$k=1,\ldots,K$}
+            \State $\widehat{A}_k
+            \leftarrow
+            \operatorname{clip}
+            \left(
+            \frac{R_k-K^{-1}\sum_{k=1}^{K}R_k}{\sqrt{
+        \frac{1}{K}\sum_{k=1}^{K}
+        (R_k-\overline{R}_c)^2+\epsilon
+        }},
+            -A,A
+            \right)/A$.
+        
+            \State $W(\mathbf{x}_0^k,c_j)
+            \leftarrow
+            \max\left\{\epsilon,\,1+\widehat{A}_k\right\}$.
+
+            \State $\displaystyle
+            \bar{Z}_{c_j}
+            = \bar{Z}_{c_j} + 
+            \frac{\beta}{K}
+            \sum_{k=1}^{K}
+            \left(
+            W(\mathbf{x}_0^k,c_j)-1
+            \right)$.
+        
+        \EndFor
+
+
+
+        % \For{$k=1,\ldots,K$}
+        %     \State Sample or store $J$ training timesteps
+        %     $\{t_{k}\}_{j=1}^{J}$ for sample $\mathbf{x}_0^k$.
+
+        %     \For{$j=1,\ldots$}
+        %         \State Add
+        %         $\left\{
+        %         c,\mathbf{x}_0^k,t_{k},
+        %         W(\mathbf{x}_0^k,c),Z(c)
+        %         \right\}$
+        %         to $\mathcal{D}$.
+        %     \EndFor
+        % \EndFor
+    \EndFor
+
+    \For{each minibatch
+    $\{
+    (c_i,\mathbf{x}_i^0,t_i,
+    W(\mathbf{x}_i^0,c_i),Z(c_i))
+    \}_{i=1}^{B}\sim\mathcal{D}$}
+
+        \State Sample
+        $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$
+        and set
+        $\mathbf{x}_i^{t_i}
+        \leftarrow
+        (1-t_i)\mathbf{x}_i^0
+        +
+        t_i\boldsymbol{\epsilon}_i$
+        for $i=1,\ldots,B$.
+
+        \State $\mathbf{v}_i \leftarrow \boldsymbol{\epsilon}_i - \mathbf{x}_i^0$ 
+
+        \State $\mathbf{v}_i^{\theta}
+        \leftarrow
+        \mathbf{v}_{\theta}
+        (\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        \State $\mathbf{v}_i^{\mathrm{old}}
+        \leftarrow
+        \mathbf{v}_{\theta_{\mathrm{old}}}
+        (\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        \State $\mathbf{v}_i^{\mathrm{ref}}
+        \leftarrow
+        \mathbf{v}_{\theta_{\mathrm{ref}}}
+        (\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        % \State $\widehat{\mathbf{x}}_{0,i}^{\theta}
+        % \leftarrow
+        % \mathbf{x}_i^{t_i}
+        % -
+        % t_i\mathbf{v}_i^{\theta}$.
+
+        % \State $\widehat{\mathbf{x}}_{0,i}^{\mathrm{old}}
+        % \leftarrow
+        % \mathbf{x}_i^{t_i}
+        % -
+        % t_i\mathbf{v}_i^{\mathrm{old}}$.
+
+        % \State $\displaystyle
+        % \overline{\mathbf{v}}_{i}
+        % \leftarrow
+        % \mathbf{v}_i^{\mathrm{old}}
+        % +
+        % \frac{
+        % \beta
+        % \left(
+        % W(\mathbf{x}_i^0,c_i)-1
+        % \right)
+        % }{
+        % \bar{Z}
+        % }
+        % \frac{
+        % \mathbf{v}_i
+        % -
+        % \mathbf{v}_i^{\mathrm{old}}
+        % }{sg[mean |\mathbf{v}_i - \mathbf{v}_i^{\mathrm{old}}|] + \epsilon}$.
+
+
+        % \State $\displaystyle
+        % \mathcal{L}_{\mathrm{target}}
+        % \leftarrow
+        % \frac{1}{B}
+        % \sum_{i=1}^{B}
+        % t_i
+        % \frac{
+        % \beta
+        % W(\mathbf{x}_i^0,c_i)
+        % }{
+        % D\bar{Z}
+        % }
+        % \left\|
+        % \widehat{\mathbf{v}}_{i}^{\theta}
+        % -
+        % \overline{\mathbf{v}}_{i}
+        % \right\|_2^2$.
+
+        \State $\displaystyle
+        \overline{\mathbf{v}}_{i}
+        \leftarrow
+        \mathbf{v}_i^{\mathrm{old}}
+        +
+        \frac{
+        \beta
+        \left(
+        W(\mathbf{x}_i^0,c_i)-1
+        \right)
+        }{
+        \bar{Z}_{c_i}
+        }
+        \frac{
+        \mathbf{v}_i
+        -
+        \mathbf{v}_i^{\mathrm{old}}
+        }{sg[mean |\mathbf{v}_i - \mathbf{v}_i^{\mathrm{old}}|] + \epsilon}
+        .$
+
+
+        \State $\displaystyle
+        \mathcal{L}_{\mathrm{target}}
+        \leftarrow
+        \frac{1}{B}
+        \sum_{i=1}^{B}
+        t_i
+        \frac{
+        \beta
+        W(\mathbf{x}_i^0,c_i)
+        }{
+        D\bar{Z}_{c_i}
+        }
+        \left\|
+        \widehat{\mathbf{v}}_{i}^{\theta}
+        -
+        \overline{\mathbf{v}}_{i}
+        \right\|_2^2
+        .$
+
+        
+        \State $\displaystyle
+        \mathcal{L}_{\mathrm{ref}}
+        \leftarrow
+        \frac{1}{B}
+        \sum_{i=1}^{B}
+        \left\|
+        \mathbf{v}_i^{\theta}
+        -
+        \mathbf{v}_i^{\mathrm{ref}}
+        \right\|_2^2$.
+
+        \State $\mathcal{L}
+        \leftarrow
+        \frac{1}{N_{acc}}(A \mathcal{L}_{\mathrm{target}}
+        +
+        \lambda_{\mathrm{ref}}
+        \mathcal{L}_{\mathrm{ref}})$.
+
+        \State Backpropagate $\mathcal{L}$ and accumulate the gradients
+        without updating $\theta$.
+    \EndFor
+
+    \State Update $\theta$ once using the accumulated gradients.
+
+    \State $\theta_{\mathrm{old}}
+    \leftarrow
+    \eta\theta_{\mathrm{old}}
+    +(1-\eta)\theta$.
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
