@@ -1,0 +1,474 @@
+% Compile with XeLaTeX.
+\documentclass[10pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{fontspec}
+\usepackage{ucharclasses}
+\usepackage{mathtools}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{fancyhdr}
+
+% Use the same algorithm packages as ours_idea.tex when they are available.
+% The minimal fallbacks keep this standalone record compilable in environments
+% where algorithm/algpseudocode are not installed; the algorithm body below is
+% unchanged.
+\IfFileExists{float.sty}{\usepackage{float}}{}
+\IfFileExists{algorithm.sty}{%
+  \usepackage{algorithm}
+}{%
+  \newcounter{algorithm}
+  \newcommand{\fallbackalgorithmcaption}[1]{%
+    \noindent\textbf{Algorithm \thealgorithm}\ ##1\par\smallskip
+  }
+  \newenvironment{algorithm}[1][]{%
+    \par\medskip
+    \refstepcounter{algorithm}%
+    \hrule\smallskip
+    \begingroup
+    \let\caption\fallbackalgorithmcaption
+  }{%
+    \par
+    \endgroup
+    \smallskip\hrule\medskip
+  }
+}
+\IfFileExists{algpseudocode.sty}{%
+  \usepackage{algpseudocode}
+}{%
+  \newcounter{algorithmicline}
+  \newlength{\algorithmicindent}
+  \newcommand{\algorithmiclineprefix}{%
+    \par
+    \stepcounter{algorithmicline}%
+    \hangindent=\dimexpr 2.7em+\algorithmicindent\relax
+    \hangafter=1
+    \noindent
+    \makebox[2em][r]{\thealgorithmicline:}%
+    \hspace{0.7em}%
+    \hspace*{\algorithmicindent}%
+  }
+  \newenvironment{algorithmic}[1][]{%
+    \setcounter{algorithmicline}{0}%
+    \setlength{\algorithmicindent}{0pt}%
+    \par
+  }{\par}
+  \newcommand{\Require}{%
+    \par\noindent\textbf{Require:}\ %
+  }
+  \newcommand{\State}{\algorithmiclineprefix}
+  \newcommand{\For}[1]{%
+    \algorithmiclineprefix
+    \textbf{for} ##1 \textbf{do}%
+    \par
+    \addtolength{\algorithmicindent}{1.5em}%
+  }
+  \newcommand{\EndFor}{%
+    \addtolength{\algorithmicindent}{-1.5em}%
+    \algorithmiclineprefix
+    \textbf{end for}%
+  }
+}
+
+\setmainfont{TeX Gyre Termes}
+\newfontfamily\zhfont{Droid Sans Fallback}[AutoFakeBold=2]
+\setTransitionsForCJK{\zhfont}{\rmfamily}
+% Keep the CJK font active across every pair of CJK Unicode blocks. This also
+% restores it after an inline math group, for which no ordinary class
+% transition may be emitted.
+\makeatletter
+\newcommand{\setCJKTransitionsFrom}[1]{%
+  \begingroup
+  \count@=\csname #1Class\endcsname
+  \def\do##1{%
+    \@tempcnta=\csname ##1Class\endcsname
+    \global\XeTeXinterchartoks\count@\@tempcnta={\zhfont}%
+  }%
+  \CJKClasses
+  \endgroup
+}
+\def\do#1{\setCJKTransitionsFrom{#1}}
+\CJKClasses
+\let\do\@undefined
+\makeatother
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip=0pt plus 1pt
+
+\title{Reinforced Flow Matching\\Our Idea Experimental Record}
+\author{}
+\date{}
+
+\lhead{Reinforced Flow Matching}
+\rhead{Our Idea}
+\pagestyle{fancy}
+
+\begin{document}
+
+\maketitle
+
+\section{Our Idea}
+
+\begin{align}
+\min_{\theta}
+\quad
+\mathbb{E}_{
+\substack{
+t,\mathbf z\sim\pi^{\mathrm{o}}(\mathbf z),\\
+\mathbf x_t\sim p_t(\cdot\mid\mathbf z)
+}
+}
+\left[
+w_D(\mathbf z)
+\left\|
+\mathbf v_{\theta}(\mathbf x_t,t)
+-
+\mathtt{sg}\!\left(
+\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
++
+\mathbf c_t(\mathbf x_t,\mathbf z)
+\right)
+\right\|_2^2
+\right].
+\end{align}
+
+\begin{align}
+\mathbf c_t(\mathbf x_t,\mathbf z)
+=
+\underbrace{
+\alpha_t^{\mathrm{o}}(\mathbf x_t,\mathbf z)
+}_{\text{trajectory contribution}}
+\times
+\underbrace{
+\frac{
+\beta\left(\exp(r(\mathbf z)/\gamma)-1\right)
+}{Z}
+}_{\text{mass shift}}
+\times
+\underbrace{
+\left(
+\mathbf v_t(\mathbf x_t\mid\mathbf z)
+-
+\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
+\right)
+}_{\text{velocity discrepancy}}.
+\end{align}
+
+\begin{align}
+w_D(z)=t.
+\end{align}
+
+\clearpage
+\begin{algorithm}[H]
+\caption{Reinforced Flow Matching}
+\label{alg:velocity-add-delete}
+\begin{algorithmic}[1]
+\Require Initial model $\theta_0$, reward function $R$, prompt distribution
+$p(c)$, Total prompts each training iteration $C$, rollout size for each prompt $K$, batch size $B$, total size $D = KC$,
+rollout coverage coefficient $\beta$, advantage clip $A$, reference regularization
+$\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
+
+\State $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}
+\leftarrow\theta_0$.
+
+\For{each training iteration}
+
+    \For{each prompt $c_j\sim p(c)$ (Total C prompts each iteration.)}
+        \State Set $\bar{Z}_{c_j} = 1.$
+
+        \State Sample $K$ clean rollout samples
+        $\{\mathbf{x}_0^k\}_{k=1}^{K}$
+        with $\theta$ conditioned on $c_j$.
+
+        \State Compute rewards
+        $R_k\leftarrow R(\mathbf{x}_0^k,c_j)$
+        for $k=1,\ldots,K$.
+
+        \For{$k=1,\ldots,K$}
+            \State $\widehat{A}_k
+            \leftarrow
+            \operatorname{clip}
+            \left(
+            \frac{R_k-K^{-1}\sum_{k=1}^{K}R_k}{\sqrt{
+            \frac{1}{K}\sum_{k=1}^{K}
+            (R_k-\overline{R}_c)^2+\epsilon
+            }},
+            -A,A
+            \right)/A$.
+
+            \State $W(\mathbf{x}_0^k,c_j)
+            \leftarrow
+            \max\left\{\epsilon,\,1+\widehat{A}_k\right\}$.
+
+            \State $\displaystyle
+            \bar{Z}_{c_j}
+            = \bar{Z}_{c_j} +
+            \frac{\beta}{K}
+            \sum_{k=1}^{K}
+            \left(
+            W(\mathbf{x}_0^k,c_j)-1
+            \right)$.
+
+        \EndFor
+    \EndFor
+
+    \For{each minibatch
+    $\{
+    (c_i,\mathbf{x}_i^0,t_i,
+    W(\mathbf{x}_i^0,c_i),Z(c_i))
+    \}_{i=1}^{B}\sim\mathcal{D}$}
+
+        \State Sample
+        $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$
+        and set
+        $\mathbf{x}_i^{t_i}
+        \leftarrow
+        (1-t_i)\mathbf{x}_i^0
+        +
+        t_i\boldsymbol{\epsilon}_i$
+        for $i=1,\ldots,B$.
+
+        \State $\mathbf{v}_i \leftarrow \boldsymbol{\epsilon}_i - \mathbf{x}_i^0$
+
+        \State $\mathbf{v}_i^{\theta}
+        \leftarrow
+        \mathbf{v}_{\theta}
+        (\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        \State $\mathbf{v}_i^{\mathrm{old}}
+        \leftarrow
+        \mathbf{v}_{\theta_{\mathrm{old}}}
+        (\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        \State $\mathbf{v}_i^{\mathrm{ref}}
+        \leftarrow
+        \mathbf{v}_{\theta_{\mathrm{ref}}}
+        (\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        \State $\displaystyle
+        \widetilde{\alpha}_i
+        \leftarrow
+        \frac{1}{
+        \mathtt{sg}\!\left[
+        \operatorname{mean}_{\mathrm{feat}}
+        \left|
+        \mathbf v_i-\mathbf v_i^{\mathrm{old}}
+        \right|
+        \right]
+        +\epsilon}$
+        for $i=1,\ldots,B$.
+
+        \State $\displaystyle
+        \alpha_i
+        \leftarrow
+        \frac{\widetilde{\alpha}_i}{
+        B^{-1}\sum_{j=1}^{B}\widetilde{\alpha}_j
+        }$
+        for $i=1,\ldots,B$.
+
+        \State $\displaystyle
+        \mathbf{v}_{i}^{target}
+        \leftarrow
+        \mathbf{v}_i^{\mathrm{old}}
+        +
+        \frac{
+        \beta
+        \left(
+        W(\mathbf{x}_i^0,c_i)-1
+        \right)
+        }{
+        \bar{Z}_{c_i}
+        }
+        \alpha_i
+        \left(
+        \mathbf{v}_i
+        -
+        \mathbf{v}_i^{\mathrm{old}}
+        \right)
+        .$ 
+
+        \State $\displaystyle
+        \mathcal{L}_{\mathrm{target}}
+        \leftarrow
+        \frac{1}{B}
+        \sum_{i=1}^{B}
+        t_i
+        \left\|
+        \widehat{\mathbf{v}}_{i}^{\theta}
+        -
+        \mathbf{v}_{i}^{target}
+        \right\|_2^2
+        .$ 
+
+        \State $\displaystyle
+        \mathcal{L}_{\mathrm{ref}}
+        \leftarrow
+        \frac{1}{B}
+        \sum_{i=1}^{B}
+        \left\|
+        \mathbf{v}_i^{\theta}
+        -
+        \mathbf{v}_i^{\mathrm{ref}}
+        \right\|_2^2$.
+
+        \State $\mathcal{L}
+        \leftarrow
+        \frac{1}{N_{acc}}(A \mathcal{L}_{\mathrm{target}}
+        +
+        \lambda_{\mathrm{ref}}
+        \mathcal{L}_{\mathrm{ref}})$.
+
+        \State Backpropagate $\mathcal{L}$ and accumulate the gradients
+        without updating $\theta$.
+    \EndFor
+
+    \State Update $\theta$ once using the accumulated gradients.
+
+    \State $\theta_{\mathrm{old}}
+    \leftarrow
+    \eta\theta_{\mathrm{old}}
+    +(1-\eta)\theta$.
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Ablation for $W(x_i^0,c_i)$}
+
+对于 prompt $c$ 的 $K$ 个 rollout 样本，记
+$R_i=R(x_i^0,c)$，基准 reward 为 $c_R$。Background 样本的中性权重设为 $1$。
+\begin{align}
+\bar Z_c
+&=1+\frac{\beta}{K}\sum_{j=1}^{K}(W_j-1) \\
+&=(1-\beta)+\frac{\beta}{K}\sum_{j=1}^{K}W_j.
+\end{align}
+$W_i=1$ 表示不调整，$W_i>1$ 表示增加该样本的质量，
+$W_i<1$ 表示减少质量。
+
+\subsubsection*{A. 对称 GRPO-style（当前 baseline）}
+
+\begin{align}
+\widehat A_i
+&=
+\frac{1}{A}
+\operatorname{clip}\!\left(
+\frac{R_i-\bar R_c}
+{\sqrt{\frac{1}{K}\sum_{j=1}^{K}(R_j-\bar R_c)^2+\epsilon}},
+-A,A
+\right), \\
+W_i
+&=\max\{\epsilon,1+\widehat A_i\}.
+\end{align}
+
+更一般地，可写为
+\begin{align}
+W_i
+=\max\!\left\{
+\epsilon,
+1+\operatorname{clip}\!\left(
+\frac{R_i-c_R}{Z},s,l
+\right)
+\right\},
+\end{align}
+其中 $c_R$ 可取 group mean 或其他 background reward，
+$Z$ 可取标准差，$s,l$ 为上下截断界。
+
+\subsubsection*{B. 正、负 advantage 使用不同尺度}
+
+\begin{align}
+a_i
+&=
+\begin{cases}
+\operatorname{clip}\!\left(
+\dfrac{R_i-c_R}{Z_+},0,u_+
+\right),
+& R_i-c_R>0,\\[4pt]
+\operatorname{clip}\!\left(
+\dfrac{R_i-c_R}{Z_-},l_-,0
+\right),
+& R_i-c_R\le 0,
+\end{cases} \\
+W_i
+&=\max\{\epsilon,1+a_i\}.
+\end{align}
+$Z_+$ 和 $Z_-$ 分别控制好/坏样本的放大强度。
+
+\subsubsection*{C. Softmax-style}
+
+先将 background reward 平移为 $0$，并定义
+\begin{align}
+W_i
+=\exp\!\left(
+\frac{R_i-c_R}{t}
+\right).
+\end{align}
+再由 $\bar Z_c$ 归一化。$t$ 控制权重的尖锐程度：
+$t\to0^+$ 时趋近 max selection，$t\to\infty$ 时所有 $W_i\to1$。
+
+\subsubsection*{D. 正负样本非对称的 Softmax-style}
+
+在训练早期重点处理负样本、后期重点学习正样本，
+对正负样本分别使用温度 $t_+(m)$ 和 $t_-(m)$：
+\begin{align}
+W_i
+=
+\begin{cases}
+\exp\!\left(
+\dfrac{R_i-c_R}{t_+(m)}
+\right),
+& R_i-c_R>0,\\[6pt]
+\exp\!\left(
+\dfrac{R_i-c_R}{t_-(m)}
+\right),
+& R_i-c_R\le0.
+\end{cases}
+\end{align}
+其中 $m$ 是当前 training step，$M$ 是总 training steps。
+令 $0<t_{\min}<t_{\max}$，并使用线性 schedule：
+\begin{align}
+t_+(m)
+&=t_{\max}-\frac{m}{M}(t_{\max}-t_{\min}), \\
+t_-(m)
+&=t_{\min}+\frac{m}{M}(t_{\max}-t_{\min}).
+\end{align}
+\begin{itemize}
+  \item 训练早期：$t_-(m)$ 较小，负样本的 $W_i$ 更接近 $0$，
+  因此 $W_i-1$ 的负向修正更强；$t_+(m)$ 较大，正样本修正较弱。
+  \item 训练后期：$t_+(m)$ 逐渐减小，正样本的正向权重被放大；
+  $t_-(m)$ 逐渐增大，负样本修正减弱。
+\end{itemize}
+
+\subsubsection*{E. GRPO-style 单边样本更新}
+
+仍使用 A 中的 GRPO-style normalized advantage $\widehat A_i$，
+但分别只保留正样本或负样本产生的修正。
+
+\noindent\textbf{E1. 只使用正样本。}
+\begin{align}
+W_i
+=
+\begin{cases}
+1+\widehat A_i,
+& \widehat A_i>0,\\
+1,
+& \widehat A_i\le0.
+\end{cases}
+\end{align}
+只增加高于 group baseline 的样本质量，不对负样本进行质量削减。
+
+\medskip
+\noindent\textbf{E2. 只使用负样本。}
+\begin{align}
+W_i
+=
+\begin{cases}
+1,
+& \widehat A_i\ge0,\\
+\max\{\epsilon,1+\widehat A_i\},
+& \widehat A_i<0.
+\end{cases}
+\end{align}
+只削减低于 group baseline 的样本质量，不对正样本进行质量增加。
+两个子设置最后都使用各自的 $W_i$ 重新计算 $\bar Z_c$。
+
+\end{document}

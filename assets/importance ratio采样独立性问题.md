@@ -121,12 +121,11 @@ $z_{\mathrm{out}}$ 决定“在哪个 $x_t$ 上训练”和外层样本的重要
 
 本节描述的是 **scripts/train_nft_sd3_ours_double-sampling.py** 当前实际执行的算法，而不只是理论上的期望形式。
 
-> **实验版本说明：** 当前代码已将前面理论方案中的
-> $v_{i,j}^{\mathrm{cond}}=(x_{t,i}-z_j)/t_i$
-> 注释保留，并实际启用有界 surrogate
-> $v_{i,j}^{\mathrm{surr}}=\varepsilon_i-z_j$。
-> 这样会消除 $(z_i-z_j)/t_i$ 在小 $t_i$ 时的放大，但新量不再是固定
-> $x_{t,i}$ 处严格推导得到的 conditional velocity。下面记录的是这个实验版本的实际效果。
+> **当前版本说明：** 当前代码已经启用固定 $x_{t,i}$ 处的 conditional
+> velocity $v_{i,j}^{\mathrm{cond}}=(x_{t,i}-z_j)/t_i$，并使用 Gaussian
+> bridge likelihood 在同 prompt 的 $K$ 个 candidate 内计算 posterior-compatible
+> $\widehat\alpha_{i,j}$。代码没有加入 ESS fallback；严格的 $t_i=0$ 仍由原有
+> mask 跳过。
 
 ### 1. 符号、代码变量和张量形状
 
@@ -145,12 +144,12 @@ $$
 | $x_{t,i}$ | xt[i] | $[C,H,W]$ | 只由 outer sample $z_i$ 和新采样的 noise 生成 |
 | $v_i^o$ | old_prediction[i] | $[C,H,W]$ | old adapter 在 $(x_{t,i},c_i,t_i)$ 上的 velocity |
 | $v_i^\theta$ | forward_prediction[i] | $[C,H,W]$ | 当前可训练 adapter 的 velocity |
-| $v_{i,j}^{\mathrm{surr}}$ | conditional_velocity[i,j] | $[C,H,W]$ | 共享 outer noise 的有界 correction-direction surrogate $\varepsilon_i-z_j$ |
+| $v_{i,j}^{\mathrm{cond}}$ | conditional_velocity[i,j] | $[C,H,W]$ | 固定 outer $x_{t,i}$ 处的 conditional velocity $(x_{t,i}-z_j)/t_i$ |
 | $W_i$ | importance_weight[i] | scalar | outer sample 的 importance weight |
 | $W_j$ | corr_importance_weight[i,j] | scalar | 第 $j$ 个内层 correction sample 的 weight |
 | $\bar Z_i$ | prompt_normalizer[i] | scalar | outer sample 所属 prompt group 的 normalizer |
 | $\bar Z_j$ | corr_prompt_normalizer[i,j] | scalar | correction sample $j$ 所属 group 的 normalizer |
-| $\widehat\alpha_{i,j}$ | trajectory_alpha[i,j] | $[1,1,1]$ | 固定 $x_{t,i}$ 后，$z_j$ 的 trajectory contribution surrogate |
+| $\widehat\alpha_{i,j}$ | trajectory_alpha[i,j] | $[1,1,1]$ | 固定 $x_{t,i}$ 后，由 Gaussian bridge likelihood 得到的 posterior-compatible trajectory contribution |
 | $\bar c_i$ | mean_velocity_correction[i] | $[C,H,W]$ | $K$ 个子 correction 的算术平均 |
 
 当 latent 是四维 batch tensor 时，corr_z 的完整形状为 $[B,K,C,H,W]$，trajectory_alpha 的形状为 $[B,K,1,1,1]$。
@@ -249,9 +248,9 @@ v_i^o=v_{\theta_{\mathrm{old}}}(x_{t,i},c_i,t_i),
 v_i^\theta=v_\theta(x_{t,i},c_i,t_i).
 $$
 
-old prediction 每个 outer sample 只前向一次。内层 $K$ 个 correction 全部复用同一个 $v_i^o$。需要注意，$v_i^o$ 仍然是在真实 outer $x_{t,i}$ 上计算的，而下面的 $\varepsilon_i-z_j$ 是实验性 correction-direction surrogate；二者的差异被用于构造 correction。
+old prediction 每个 outer sample 只前向一次。内层 $K$ 个 correction 全部复用同一个 $v_i^o$，并且所有 conditional velocity 都在同一个真实 outer $x_{t,i}$ 上计算。
 
-### 5. 一个 $x_{t,i}$ 使用的 $K$ 个有界 velocity surrogate
+### 5. 一个 $x_{t,i}$ 使用的 $K$ 个 fixed-$x_t$ conditional velocity
 
 对固定的 outer $x_{t,i}$，代码从全局 bank 取回
 
@@ -259,113 +258,76 @@ $$
 \{z_1,z_2,\ldots,z_K\}=\mathcal G(c_i),
 $$
 
-然后复用生成 outer $x_{t,i}$ 时采样的同一个 noise $\varepsilon_i$，为每个 $z_j$ 构造
-
-$$
- \boxed{
-v_{i,j}^{\mathrm{surr}}
-=
-\varepsilon_i-z_j
-}.
-$$
-
-这个量可以写成
-
-$$
-v_{i,j}^{\mathrm{surr}}
-=
-(\varepsilon_i-z_i)
-+
-(z_i-z_j).
-$$
-
-所以当前一个 outer sample 使用的 $K$ 个方向具体由以下两部分组成：
-
-- 它们共享 outer sample 的基础 flow-matching velocity $\varepsilon_i-z_i$；
-- 每个 $z_j$ 额外提供有界的跨样本偏移 $z_i-z_j$；
-- 当 $j=i$ 时，$z_i-z_j=0$，所以
-
-$$
-v_{i,i}^{\mathrm{surr}}
-=
-\varepsilon_i-z_i,
-$$
-
-正好退化为原单样本代码中的 noise-x0。因此一个 correction group 包含一个 self direction 和同 prompt 的其他 $K-1$ 个 cross-sample direction。
-
-与原公式相比，
-
-$$
-\underbrace{\frac{x_{t,i}-z_j}{t_i}}_{\text{原 fixed-}x_t\text{ conditional velocity}}
-=
-(\varepsilon_i-z_i)+\frac{z_i-z_j}{t_i},
-$$
-
-当前 surrogate 将跨样本项从 $(z_i-z_j)/t_i$ 改为 $z_i-z_j$，因此它不会在
-$t_i\rightarrow0$ 时出现 $1/t_i$ 放大。不过，$\varepsilon_i-z_j$ 严格对应的是
-由 $z_j$ 和 $\varepsilon_i$ 组成的另一条直线路径：
-
-$$
-x_{t,i,j}'=(1-t_i)z_j+t_i\varepsilon_i,
-\qquad
-\frac{\mathrm d x_{t,i,j}'}{\mathrm d t_i}
-=
-\varepsilon_i-z_j.
-$$
-
-当 $j\ne i$ 时，通常 $x_{t,i,j}'\ne x_{t,i}$。因此当前实现是把这条替代路径的
-velocity 当作真实 outer $x_{t,i}$ 上的 correction-direction surrogate，而不是声称它是
-$v_t(x_{t,i}\mid z_j)$ 的严格解析值。
-
-### 6. $\alpha_{i,j}$ 的实际计算
-
-对每个 $v_{i,j}^{\mathrm{surr}}$，代码先计算它与固定 old velocity $v_i^o$ 的平均绝对误差：
-
-$$
-d_{i,j}
-=
-\operatorname{mean}_{C,H,W}
-\left|
-v_{i,j}^{\mathrm{surr}}-v_i^o
-\right|.
-$$
-
-再计算未归一化的 reciprocal-discrepancy score：
-
-$$
-\widetilde\alpha_{i,j}
-=
-\frac{1}{d_{i,j}+\epsilon}.
-$$
-
-$d_{i,j}$ 越小，说明第 $j$ 个 surrogate direction 与 old model 在该 $x_{t,i}$ 上的 velocity 越一致，因此 $\widetilde\alpha_{i,j}$ 越大。
-
-接下来不是在整个 micro-batch 上归一化，而是对每个固定 outer $x_{t,i}$ 的 $K$ 个 candidate 单独归一化：
+对每个 $z_j$，代码保持 outer $x_{t,i}$ 不变并构造
 
 $$
 \boxed{
-\widehat\alpha_{i,j}
+v_{i,j}^{\mathrm{cond}}
 =
-\frac{
-\widetilde\alpha_{i,j}
-}{
-\frac{1}{K}\sum_{l=1}^{K}\widetilde\alpha_{i,l}
-}
+\frac{x_{t,i}-z_j}{t_i}
 }.
 $$
 
-所以对每个 outer sample $i$ 都满足
+代入 $x_{t,i}=(1-t_i)z_i+t_i\varepsilon_i$ 可得
 
 $$
-\frac{1}{K}
-\sum_{j=1}^{K}
+v_{i,j}^{\mathrm{cond}}
+=
+(\varepsilon_i-z_i)
++\frac{z_i-z_j}{t_i}.
+$$
+
+当 $j=i$ 时，cross-sample 项为零，因此
+
+$$
+v_{i,i}^{\mathrm{cond}}=\varepsilon_i-z_i,
+$$
+
+与标准单样本 flow-matching velocity 完全一致。代码对 $t_i=0$ 使用安全分母完成
+中间张量计算，随后沿用已有的 `valid_t` mask 将该点的最终 correction 置零。
+
+### 6. $\alpha_{i,j}$ 的实际计算
+
+在线性 Gaussian bridge
+
+$$
+x_t=(1-t)z+t\varepsilon,
+\qquad \varepsilon\sim\mathcal N(0,I)
+$$
+
+下，固定 $z_j$ 时有
+
+$$
+p_t(x_{t,i}\mid z_j)
+=
+\mathcal N\!\left(x_{t,i};(1-t_i)z_j,t_i^2I\right).
+$$
+
+由于同一个 outer $i$ 的所有 candidate 共享 $t_i$，与 $j$ 无关的 Gaussian 常数在
+组内 softmax 中抵消。代码计算
+
+$$
+s_{i,j}
+=-
+\frac{
+\left\|x_{t,i}-(1-t_i)z_j\right\|_2^2
+}{2t_i^2},
+\qquad
+\boxed{
 \widehat\alpha_{i,j}
-=1.
+=K\,\operatorname{softmax}_j(s_{i,j})
+}.
 $$
 
-这里 $\widehat\alpha_{i,j}$ 的平均为 $1$、总和为 $K$，它不是总和为 $1$ 的概率。这样既保留 candidate 之间的相对比例，又不让 $\alpha$ 的整体 scale 额外改变 correction 量级；后面的 correction 本身还会沿 $K$ 维取算术平均。
+因此对每个 outer sample 都严格满足
 
-所有 $d_{i,j}$、$\widetilde\alpha_{i,j}$ 和 $\widehat\alpha_{i,j}$ 都在 torch.no_grad() 和 float32 中计算，不通过 target 传播梯度。
+$$
+\frac1K\sum_{j=1}^K\widehat\alpha_{i,j}=1.
+$$
+
+这里 $\widehat\alpha_{i,j}/K$ 是 $K$ 个经验 trajectory 上的 posterior probability；
+$\widehat\alpha_{i,j}$ 本身保持理论要求的 unit-mean scale。likelihood、softmax 和
+$\widehat\alpha$ 都在 `torch.no_grad()` 和 float32 中计算，不通过 target 传播梯度。
 
 ### 7. 一个 $x_{t,i}$ 的平均 correction 包含哪些子项
 
@@ -386,12 +348,12 @@ c_{i,j}
 \widehat\alpha_{i,j}
 \frac{\beta(W_j-1)}{\bar Z_j}
 \left(
-v_{i,j}^{\mathrm{surr}}-v_i^o
+\frac{x_{t,i}-z_j}{t_i}-v_i^o
 \right)
 }.
 $$
 
-将 surrogate velocity 完全展开后，
+将 fixed-$x_t$ conditional velocity 完全展开后，
 
 $$
 c_{i,j}
@@ -400,8 +362,7 @@ c_{i,j}
 \frac{\beta(W_j-1)}{\bar Z_j}
 \left[
 (\varepsilon_i-z_i)
-+
-(z_i-z_j)
++\frac{z_i-z_j}{t_i}
 -v_i^o
 \right].
 $$
@@ -415,20 +376,20 @@ $$
 \widehat\alpha_{i,1}
 \frac{\beta(W_1-1)}{\bar Z_1}
 \left(
-\varepsilon_i-z_1-v_i^o
+\frac{x_{t,i}-z_1}{t_i}-v_i^o
 \right)\\
 &+
 \widehat\alpha_{i,2}
 \frac{\beta(W_2-1)}{\bar Z_2}
 \left(
-\varepsilon_i-z_2-v_i^o
+\frac{x_{t,i}-z_2}{t_i}-v_i^o
 \right)\\
 &+\cdots\\
 &+
 \widehat\alpha_{i,K}
 \frac{\beta(W_K-1)}{\bar Z_K}
 \left(
-\varepsilon_i-z_K-v_i^o
+\frac{x_{t,i}-z_K}{t_i}-v_i^o
 \right)
 \Bigg].
 \end{aligned}
@@ -455,8 +416,7 @@ c_{i,j}
 \frac{\beta(W_j-1)}{\bar Z_j}
 \left[
 (\varepsilon_i-z_i)
-+
-(z_i-z_j)
++\frac{z_i-z_j}{t_i}
 -v_i^o
 \right],
 \qquad j\ne i.
@@ -464,8 +424,8 @@ $$
 
 每个子项由三个因素共同决定：
 
-1. **方向**：$v_{i,j}^{\mathrm{surr}}-v_i^o$，表示第 $j$ 条实验 surrogate trajectory 相对 old velocity 建议如何变化；
-2. **trajectory contribution**：$\widehat\alpha_{i,j}>0$，表示该方向与 old velocity 的相对一致程度；
+1. **方向**：$v_{i,j}^{\mathrm{cond}}-v_i^o$，表示固定 $x_{t,i}$ 处第 $j$ 条 conditional trajectory 相对 old velocity 建议如何变化；
+2. **trajectory contribution**：$\widehat\alpha_{i,j}>0$，表示 $z_j$ 与固定 $x_{t,i}$ 的 Gaussian bridge posterior compatibility；
 3. **reward mass shift**：$\beta(W_j-1)/\bar Z_j$，决定该方向是正向加入还是反向扣除，以及强度多大。
 
 具体来说：
@@ -474,7 +434,7 @@ $$
 - $W_j<1$ 时，$m_j<0$，第 $j$ 个 discrepancy direction 以反方向进入 correction；
 - $W_j=1$ 时，$m_j=0$，该样本仍参与 $\alpha$ 的 group normalization，但自身对 $\bar c_i$ 的直接向量贡献为零。
 
-reward 不参与 $\alpha$ 的计算，$\alpha$ 也不决定 correction 的正负号。$\alpha$ 根据 velocity consistency 分配相对 trajectory contribution，$W_j-1$ 根据 reward/advantage 决定质量偏好和质量转移方向。
+reward 不参与 $\alpha$ 的计算，$\alpha$ 也不决定 correction 的正负号。$\alpha$ 根据 bridge posterior likelihood 分配相对 trajectory contribution，$W_j-1$ 根据 reward/advantage 决定质量偏好和质量转移方向。
 
 ### 8. 在 group mean correction 与 self correction 之间路由
 
@@ -685,9 +645,9 @@ $$
 
 ### 11. $t_i=0$ 时的实际效果
 
-当前实验 surrogate $v_{i,j}^{\mathrm{surr}}=\varepsilon_i-z_j$ 不再包含 $1/t_i$，
-所以代码不需要为了计算该方向而构造 safe denominator。原来的 safe_t 和
-$(x_{t,i}-z_j)/t_i$ 实现已作为注释保留。
+当前 fixed-$x_t$ conditional velocity 包含 $1/t_i$。为了避免在严格 $t_i=0$
+处除零，代码用 $1$ 作为该点的安全中间分母；这个中间结果不会进入 policy
+correction。
 
 为了保持原先“$t_i=0$ 不参与 policy 训练”的行为，代码仍然计算
 valid_t=(t_i>0)，并将 $t_i=0$ 样本的 mean_velocity_correction 置零。因此
@@ -706,15 +666,15 @@ $$
 
 也就是说，$t_i=0$ 样本不产生 policy gradient，但 reference loss 仍正常计算。这在不改变 DDP backward 次数和梯度累积流程的情况下，实现了跳过 $t=0$ policy 训练的效果。
 
-对很小但严格大于零的 $t_i$，当前 surrogate 也始终有界：
+对很小但严格大于零的 $t_i$，cross-sample conditional velocity 仍包含
 
 $$
-v_{i,j}^{\mathrm{surr}}=\varepsilon_i-z_j,
+\frac{z_i-z_j}{t_i}.
 $$
 
-不会再出现 $(z_i-z_j)/t_i$ 的数值放大。不过 cross-sample 偏移
-$z_i-z_j$ 并不会随着 $t_i\to0^+$ 自动消失；只是从原来的 $O(1/t_i)$ 变为
-$O(1)$。这是本实验版本需要通过训练效果验证的行为。
+与此同时，Gaussian bridge posterior-compatible $\widehat\alpha_{i,j}$ 会根据
+$\|x_{t,i}-(1-t_i)z_j\|^2/(2t_i^2)$ 指数压低与固定 $x_{t,i}$ 不兼容的
+cross trajectory。本版本按要求不添加 ESS fallback。
 
 ### 12. 当前算法的逐步伪代码
 
@@ -734,16 +694,16 @@ for each rollout/training iteration:
                    x_t_i = (1 - t_i) * z_i + t_i * epsilon_i
             8. 计算 current velocity v_theta_i 和 old velocity v_old_i
 
-            9. 从 global bank 取回同 prompt 的 {z_1, ..., z_K}
+           9. 从 global bank 取回同 prompt 的 {z_1, ..., z_K}
            10. 对 j = 1, ..., K 计算
-                   v_surr_ij = epsilon_i - z_j
-                   d_ij = mean_feat(abs(v_surr_ij - v_old_i))
-                   alpha_raw_ij = 1 / (d_ij + epsilon)
-           11. 对每个固定 i，沿 K 维归一化
-                   alpha_ij = alpha_raw_ij / mean_j(alpha_raw_ij)
+                   v_cond_ij = (x_t_i - z_j) / t_i
+                   bridge_residual_ij = x_t_i - (1 - t_i) * z_j
+                   posterior_logit_ij = -sum_feat(bridge_residual_ij^2) / (2 * t_i^2)
+           11. 对每个固定 i，沿 K 维计算 posterior-compatible alpha
+                   alpha_ij = K * softmax_j(posterior_logit_ij)
            12. 对 j = 1, ..., K 计算
                    c_ij = alpha_ij * beta * (W_j - 1) / Z_bar_j
-                          * (v_surr_ij - v_old_i)
+                          * (v_cond_ij - v_old_i)
            13. 同时得到两种候选 correction
                    c_group_i = mean_j(c_ij)
                    c_self_i = c_i,i
@@ -778,6 +738,6 @@ for each rollout/training iteration:
    MSE 系数固定为 $1$；
 3. 同 prompt 的 $K$ 个 $z_j$ 和各自的 $W_j-1$ 先产生 group mean correction，同时 $j=i$ 产生 self correction；最终由 correction_mean_mode 和 outer $W_i$ 决定使用哪一个。
 
-对同 prompt 的每个 outer sample $i$，内层使用的 $z_j$、$W_j$ 和 $\bar Z_j$ 集合相同；但因为 $\varepsilon_i$、$x_{t,i}$、$t_i$ 和 $v_i^o$ 不同，不同 outer sample 得到的 $v_{i,j}^{\mathrm{surr}}$、$\alpha_{i,j}$ 和 $\bar c_i$ 仍然不同。因此这不是给同 prompt 的所有 $x_t$ 强行使用同一个 correction vector，而是在每个具体 outer sample 上，使用它自己的 noise 和 old prediction 重新评估同一组 $K$ 条 surrogate direction。
+对同 prompt 的每个 outer sample $i$，内层使用的 $z_j$、$W_j$ 和 $\bar Z_j$ 集合相同；但因为 $x_{t,i}$、$t_i$ 和 $v_i^o$ 不同，不同 outer sample 得到的 $v_{i,j}^{\mathrm{cond}}$、$\alpha_{i,j}$ 和 $\bar c_i$ 仍然不同。因此这不是给同 prompt 的所有 $x_t$ 强行使用同一个 correction vector，而是在每个具体 outer $x_{t,i}$ 上重新评估同一组 $K$ 条 conditional trajectory 及其 bridge posterior compatibility。
 
 最后，当前 double-sampling 是外层/内层职责上的解耦：代码始终使用同 prompt 的完整 $K$ 样本计算 $\alpha_{i,j}$ 和全部 correction 子项，其中也包含 outer sample $z_i$ 自身；随后才根据路由模式选择 $K$ 项平均或单独的 $j=i$ 项。因此它不是两套完全不重叠的 iid rollout，也不是 leave-one-out 估计。当前默认及 Geneval 启动配置都是 all，因此所有 outer sample 都使用 group mean correction，并保留 $W_i/\bar Z_i$。如果切换为 negative_only，则负 outer sample 使用完整 $K$ 项经验平均并保留 $W_i/\bar Z_i$，正/中性 outer sample 使用 self correction且不再乘外层 $W_i/\bar Z_i$。
