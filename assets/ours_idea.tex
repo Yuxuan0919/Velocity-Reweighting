@@ -348,7 +348,6 @@ additional reward-dependent correction:
 w_{\mathcal D}(\mathbf z)
 &=
 \frac{
-\frac{\beta}{D}
 \exp(r(\mathbf z)/\gamma)
 }
 {
@@ -359,44 +358,42 @@ w_{\mathcal D}(\mathbf z)
 \exp(r(\mathbf z_j)/\gamma)
 }.
 \end{align}
-This can be decomposed as
-\begin{align}
-w_{\mathcal D}(\mathbf z)
-&=
-\frac{
-\frac{\beta}{D}
-}
-{
-(1-\beta)
-+
-\frac{\beta}{D}
-\sum_j
-\exp(r(\mathbf z_j)/\gamma)
-}
-+
-\frac{
-\frac{\beta}{D}
-(
-\exp(r(\mathbf z_i)/\gamma)-1
-)
-}
-{
-(1-\beta)
-+
-\frac{\beta}{D}
-\sum_j
-\exp(r(\mathbf z_j)/\gamma)
-}.
-\end{align}
-The first term corresponds to the common mass redistribution shared by all
-observed samples, while the second term represents the
-sample-specific reward-induced correction.
+% This can be decomposed as
+% \begin{align}
+% w_{\mathcal D}(\mathbf z)
+% &=
+% \frac{
+% \frac{\beta}{D}
+% }
+% {
+% (1-\beta)
+% +
+% \frac{\beta}{D}
+% \sum_j
+% \exp(r(\mathbf z_j)/\gamma)
+% }
+% +
+% \frac{
+% \frac{\beta}{D}
+% (
+% \exp(r(\mathbf z_i)/\gamma)-1
+% )
+% }
+% {
+% (1-\beta)
+% +
+% \frac{\beta}{D}
+% \sum_j
+% \exp(r(\mathbf z_j)/\gamma)
+% }.
+% \end{align}
+% The first term corresponds to the common mass redistribution shared by all
+% observed samples, while the second term represents the
+% sample-specific reward-induced correction.
 
-
-
-The observed rollout samples therefore provide an incremental correction to the
-current distribution rather than a complete replacement of the original
-population.
+% The observed rollout samples therefore provide an incremental correction to the
+% current distribution rather than a complete replacement of the original
+% population.
 
 \noindent\textbf{Objective.}
 We train the parameterized velocity field $\mathbf v_{\boldsymbol{\theta}}$
@@ -568,62 +565,52 @@ field:
 \mathbf v_t(\mathbf{x}_t|\mathbf z)
 \right].
 \end{align}
-A trajectory 
+A trajectory
 with a larger posterior contribution
 $\pi(\mathbf{z})\alpha_t(\mathbf{x}_t,\mathbf z)$ is expected to have a conditional velocity
 that is more consistent with the optimal velocity field
-$\mathbf v(\mathbf{x}_t,t)$. Therefore, the velocity discrepancy provides a
-tractable surrogate for measuring the trajectory contribution:
+$\mathbf v(\mathbf{x}_t,t)$. Therefore, for sample $i$ in the current training
+group $\mathcal G$, we measure its velocity discrepancy by the mean absolute
+error over all non-batch dimensions:
 \begin{align}
-d_t(\mathbf{x}_t,\mathbf z)
+d_{t,i}
 =
-\left\|
-\mathbf v(\mathbf{x}_t,t)
--
-\mathbf v_t(\mathbf{x}_t|\mathbf z)
-\right\|_1 .
+\operatorname{mean}_{\mathrm{feat}}
+\left|
+\mathbf v_i-
+\mathbf v_i^{\mathrm{old}}
+\right|,
 \end{align}
-
-We empirically observe that 
-it is also helpful to use it to form the surrogate trajectory contribution weight as
+where $\mathbf v_i$ is the conditional target velocity and
+$\mathbf v_i^{\mathrm{old}}$ is the old-model velocity prediction. We first form
+the unnormalized reciprocal-discrepancy score
 \begin{align}
-\tilde{\alpha}_t(\mathbf{x}_t,\mathbf z)
+\tilde{\alpha}_{t,i}
+=
+\frac{1}{d_{t,i}+\epsilon}.
+\end{align}
+We then normalize these scores within the current training group:
+\begin{align}
+\alpha_{t,i}^{\mathcal G}
 &=
 \frac{
-1
-}
-{
-d_t(\mathbf{x}_t,\mathbf z)+\epsilon
-}
-\\
-&=
-\frac{
-1
-}
-{
-\left\|
-\mathbf v(\mathbf{x}_t,t)
--
-\mathbf v_t(\mathbf{x}_t|\mathbf z)
-\right\|_1+\epsilon
-}.
+\tilde{\alpha}_{t,i}
+}{
+|\mathcal G|^{-1}
+\sum_{j\in\mathcal G}\tilde{\alpha}_{t,j}
+},
+&
+\frac{1}{|\mathcal G|}
+\sum_{i\in\mathcal G}\alpha_{t,i}^{\mathcal G}
+&=1.
 \end{align}
-
-Alternatively, an exponential form can be adopted:
-\begin{align}
-\tilde{\alpha}_t(\mathbf{x}_t,\mathbf z)
-=
-\exp
-\left(
--\lambda
-\left\|
-\mathbf v(\mathbf{x}_t,t)
--
-\mathbf v_t(\mathbf{x}_t|\mathbf z)
-\right\|_1
-\right)
-.
-\end{align}
+In the implementation, $\mathcal G$ is the current per-device training
+minibatch at a fixed training timestep. Both the reciprocal score and its
+group mean are computed with stopped gradients. This empirical unit-mean
+constraint matches the theoretical identity
+$\mathbb{E}_{\mathbf z}[\alpha_t(\mathbf{x}_t,\mathbf z)]=1$, while preserving
+the relative trajectory contributions inside each group and preventing their
+overall scale from changing the correction magnitude across minibatches.
 
 {\color{red}
 The intuition is that the velocity discrepancy is jointly determined by the
@@ -635,21 +622,17 @@ contribution factor $\alpha_t(\mathbf{x}_t,\mathbf z)$. In particular, a small
 velocity discrepancy indicates that the trajectory is more consistent with the
 optimal velocity field and is likely associated with a larger contribution
 factor, whereas a large velocity discrepancy suggests a smaller contribution
-factor.
+factor. The group normalization retains this relative ordering but calibrates
+the average factor to one within every training group.
 }
 
 {\color{red}
 Note that this does not provide an exact estimation of
 $\alpha_t(\mathbf{x}_t,\mathbf z)$, since the velocity field depends on the
 posterior contribution $\pi(\mathbf z)\alpha_t(\mathbf{x}_t,\mathbf z)$.
-Instead, the velocity discrepancy serves as a tractable surrogate for the
-relative contribution among sampled trajectories.
+Instead, $\alpha_{t,i}^{\mathcal G}$ serves as a tractable, group-normalized
+surrogate for the relative contribution among sampled trajectories.
 }
-
-
-Considering $\mathbb{E}_{\mathbf{z}}[\alpha_
-t(\mathbf{x}_t,\mathbf{z})] = 1$, we can normalize the former surrogate by dim(v). The latter surrogate
-introduces an extra hyperparameter, which may increase implementation complexity.
 
 {\color{red}Note that, we still need a timestep adapted factor $w(t) = t$.
 The losses over clean samples
@@ -861,6 +844,27 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         \mathbf{v}_{\theta_{\mathrm{ref}}}
         (\mathbf{x}_i^{t_i},c_i,t_i)$.
 
+        \State $\displaystyle
+        \widetilde{\alpha}_i
+        \leftarrow
+        \frac{1}{
+        \mathtt{sg}\!\left[
+        \operatorname{mean}_{\mathrm{feat}}
+        \left|
+        \mathbf v_i-\mathbf v_i^{\mathrm{old}}
+        \right|
+        \right]
+        +\epsilon}$
+        for $i=1,\ldots,B$.
+
+        \State $\displaystyle
+        \alpha_i
+        \leftarrow
+        \frac{\widetilde{\alpha}_i}{
+        B^{-1}\sum_{j=1}^{B}\widetilde{\alpha}_j
+        }$
+        for $i=1,\ldots,B$.
+
         % \State $\widehat{\mathbf{x}}_{0,i}^{\theta}
         % \leftarrow
         % \mathbf{x}_i^{t_i}
@@ -874,7 +878,7 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         % t_i\mathbf{v}_i^{\mathrm{old}}$.
 
         % \State $\displaystyle
-        % \overline{\mathbf{v}}_{i}
+        % \mathbf{v}_{i}^{target}
         % \leftarrow
         % \mathbf{v}_i^{\mathrm{old}}
         % +
@@ -908,11 +912,11 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         % \left\|
         % \widehat{\mathbf{v}}_{i}^{\theta}
         % -
-        % \overline{\mathbf{v}}_{i}
+        % \mathbf{v}_{i}^{target}
         % \right\|_2^2$.
 
         \State $\displaystyle
-        \overline{\mathbf{v}}_{i}
+        \mathbf{v}_{i}^{target}
         \leftarrow
         \mathbf{v}_i^{\mathrm{old}}
         +
@@ -924,13 +928,32 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         }{
         \bar{Z}_{c_i}
         }
-        \frac{
+        \alpha_i
+        \left(
         \mathbf{v}_i
         -
         \mathbf{v}_i^{\mathrm{old}}
-        }{sg[mean |\mathbf{v}_i - \mathbf{v}_i^{\mathrm{old}}|] + \epsilon}
+        \right)
         .$
 
+
+        % \State $\displaystyle
+        % \mathcal{L}_{\mathrm{target}}
+        % \leftarrow
+        % \frac{1}{B}
+        % \sum_{i=1}^{B}
+        % t_i
+        % \frac{
+        % W(\mathbf{x}_i^0,c_i)
+        % }{
+        % \bar{Z}_{c_i}
+        % }
+        % \left\|
+        % \widehat{\mathbf{v}}_{i}^{\theta}
+        % -
+        % \mathbf{v}_{i}^{target}
+        % \right\|_2^2
+        % .$
 
         \State $\displaystyle
         \mathcal{L}_{\mathrm{target}}
@@ -938,19 +961,12 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         \frac{1}{B}
         \sum_{i=1}^{B}
         t_i
-        \frac{
-        \beta
-        W(\mathbf{x}_i^0,c_i)
-        }{
-        D\bar{Z}_{c_i}
-        }
         \left\|
         \widehat{\mathbf{v}}_{i}^{\theta}
         -
-        \overline{\mathbf{v}}_{i}
+        \mathbf{v}_{i}^{target}
         \right\|_2^2
         .$
-
         
         \State $\displaystyle
         \mathcal{L}_{\mathrm{ref}}
@@ -987,4 +1003,3 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
 
 
 \end{document}
-
