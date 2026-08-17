@@ -307,7 +307,9 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 def compute_reinforced_flow_weights(
     prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
 ):
-    r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
+    # Experiment A docstring retained for comparison:
+    # r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
+    r"""Experiment F: keep only positive or only negative GRPO-style corrections."""
     prompts = np.asarray(prompts)
     rollout_batch_ids = np.asarray(rollout_batch_ids)
     nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
@@ -323,15 +325,29 @@ def compute_reinforced_flow_weights(
     if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
         raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
 
+    # Experiment A mode handling retained for comparison:
+    # advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
+    # if advantage_mode == "positive_only":
+    #     advantages_clip = np.clip(advantages_clip, 0.0, advantage_clip)
+    # elif advantage_mode == "negative_only":
+    #     advantages_clip = np.clip(advantages_clip, -advantage_clip, 0.0)
+    # elif advantage_mode == "one_only":
+    #     advantages_clip = np.where(advantages_clip > 0.0, 1.0, 0.0)
+    # elif advantage_mode == "binary":
+    #     advantages_clip = np.sign(advantages_clip)
+
     advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
     if advantage_mode == "positive_only":
+        # F1: non-positive samples remain neutral (W_i = 1).
         advantages_clip = np.clip(advantages_clip, 0.0, advantage_clip)
     elif advantage_mode == "negative_only":
+        # F2: non-negative samples remain neutral (W_i = 1).
         advantages_clip = np.clip(advantages_clip, -advantage_clip, 0.0)
-    elif advantage_mode == "one_only":
-        advantages_clip = np.where(advantages_clip > 0.0, 1.0, 0.0)
-    elif advantage_mode == "binary":
-        advantages_clip = np.sign(advantages_clip)
+    else:
+        raise ValueError(
+            "Experiment F requires advantage_mode to be 'positive_only' or 'negative_only', "
+            f"got {advantage_mode!r}"
+        )
 
     # This is exactly 2 * r - 1 in the original NFT code:
     # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
@@ -393,17 +409,8 @@ def get_image_log_settings(config):
     return max(1, int(num_prompts)), max(1, int(num_images_per_prompt))
 
 
-def reward_values_to_numpy(reward_values):
-    """Move CUDA reward tensors to host memory before NumPy logging."""
-    if isinstance(reward_values, torch.Tensor):
-        return reward_values.detach().cpu().numpy()
-    if isinstance(reward_values, (list, tuple)):
-        return np.asarray([reward_values_to_numpy(value) for value in reward_values])
-    return np.asarray(reward_values)
-
-
 def format_reward_value(value):
-    value = reward_values_to_numpy(value)
+    value = np.asarray(value)
     if value.size == 0:
         return None
     scalar = float(value.reshape(-1)[0])
@@ -472,8 +479,7 @@ def append_prompt_image_log_batch(log_batches, prompt_counts, images, prompts, r
         return
 
     selected_rewards = {
-        reward_key: reward_values_to_numpy(reward_values)[selected_indices]
-        for reward_key, reward_values in rewards.items()
+        reward_key: np.asarray(reward_values)[selected_indices] for reward_key, reward_values in rewards.items()
     }
     log_batches.append((images.detach().cpu()[selected_indices], selected_prompts, selected_rewards))
 
@@ -653,8 +659,7 @@ def eval_fn(
             ]
             rewards_to_log = {
                 reward_key: np.concatenate(
-                    [reward_values_to_numpy(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches],
-                    axis=0,
+                    [np.asarray(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches], axis=0
                 )
                 for reward_key in eval_image_log_batches[0][2]
             }
@@ -1242,6 +1247,12 @@ def main(_):
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
 
+        one_sided_mode = getattr(config.train, "adv_mode", "positive_only")
+        if one_sided_mode not in {"positive_only", "negative_only"}:
+            raise ValueError(
+                "Experiment F requires config.train.adv_mode to be 'positive_only' (F1) "
+                f"or 'negative_only' (F2), got {one_sided_mode!r}"
+            )
         normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
             prompts_all_decoded,
             rollout_batch_ids_all,
@@ -1249,7 +1260,9 @@ def main(_):
             advantage_clip=float(config.train.adv_clip_max),
             coverage_beta=float(config.beta),
             epsilon=algorithm_epsilon,
-            advantage_mode=getattr(config.train, "adv_mode", "all"),
+            # Experiment A argument retained for comparison:
+            # advantage_mode=getattr(config.train, "adv_mode", "all"),
+            advantage_mode=one_sided_mode,
         )
         total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
         # Distribute advantages back to processes
@@ -1528,8 +1541,8 @@ def main(_):
                         / prompt_normalizer
                     )
                     
-                    # ori_policy_loss = t.float() * target_importance * target_velocity_loss
-                    ori_policy_loss = t.float() * target_velocity_loss
+                    ori_policy_loss = t.float() *  target_velocity_loss
+                    
 
 
                     policy_loss = float(config.train.adv_clip_max) * ori_policy_loss.mean()

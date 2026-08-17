@@ -304,24 +304,44 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 
 
 
+# Experiment A signature retained for comparison:
+# def compute_reinforced_flow_weights(
+#     prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
+# ):
 def compute_reinforced_flow_weights(
-    prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
+    prompts,
+    rollout_batch_ids,
+    nft_advantages,
+    rewards,
+    advantage_clip,
+    coverage_beta,
+    epsilon,
+    advantage_mode="all",
 ):
-    r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
+    # Experiment A docstring retained for comparison:
+    # r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
+    r"""Experiment E: reward-proportional, per-group RMS-normalized W."""
     prompts = np.asarray(prompts)
     rollout_batch_ids = np.asarray(rollout_batch_ids)
     nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
     if nft_advantages.ndim > 1:
         # NFT repeats each clean-sample advantage over training timesteps.
         nft_advantages = nft_advantages[:, 0]
+    rewards = np.asarray(rewards, dtype=np.float64)
+    if rewards.ndim > 1:
+        # Rewards are repeated over training timesteps before all-gather.
+        rewards = rewards[:, 0]
     if advantage_clip <= 0:
         raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
     if not 0.0 <= coverage_beta <= 1.0:
         raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
     if epsilon <= 0:
         raise ValueError(f"epsilon must be positive, got {epsilon}")
-    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
-        raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
+    # Experiment A validation retained for comparison:
+    # if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
+    #     raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
+    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages) == len(rewards)):
+        raise ValueError("prompts, rollout_batch_ids, nft_advantages, and rewards must have the same length")
 
     advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
     if advantage_mode == "positive_only":
@@ -336,7 +356,9 @@ def compute_reinforced_flow_weights(
     # This is exactly 2 * r - 1 in the original NFT code:
     # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
     normalized_advantages = advantages_clip / advantage_clip
-    importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
+    # Experiment A weight mapping retained for comparison:
+    # importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
+    importance_weights = np.empty_like(rewards)
     prompt_normalizers = np.empty_like(importance_weights)
 
     prompt_groups = defaultdict(list)
@@ -345,6 +367,27 @@ def compute_reinforced_flow_weights(
 
     for sample_indices in prompt_groups.values():
         sample_indices = np.asarray(sample_indices, dtype=np.int64)
+        group_rewards = rewards[sample_indices]
+        # Previous behavior retained for comparison: reject a group containing
+        # any negative reward.
+        # if np.any(group_rewards < 0.0):
+        #     raise ValueError(
+        #         "Experiment E requires nonnegative rewards, "
+        #         f"but group minimum is {group_rewards.min()}"
+        #     )
+
+        # Negative rewards are rare in this experiment. Make R nonnegative by
+        # clipping only those values; all already-nonnegative rewards remain
+        # exactly unchanged, and no [0, 1] normalization is applied.
+        group_rewards = np.maximum(group_rewards, 0.0)
+        reward_l2_norm = np.sqrt(np.sum(np.square(group_rewards)))
+        if reward_l2_norm <= epsilon:
+            # The formula is 0/0 for an all-zero group. Following the tex's
+            # equal-reward neutral case, assign W_i = 1 to every sample.
+            group_weights = np.ones_like(group_rewards)
+        else:
+            group_weights = np.sqrt(len(sample_indices)) * group_rewards / reward_l2_norm
+        importance_weights[sample_indices] = group_weights
         prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
         prompt_normalizers[sample_indices] = prompt_z_bar
 
@@ -393,17 +436,8 @@ def get_image_log_settings(config):
     return max(1, int(num_prompts)), max(1, int(num_images_per_prompt))
 
 
-def reward_values_to_numpy(reward_values):
-    """Move CUDA reward tensors to host memory before NumPy logging."""
-    if isinstance(reward_values, torch.Tensor):
-        return reward_values.detach().cpu().numpy()
-    if isinstance(reward_values, (list, tuple)):
-        return np.asarray([reward_values_to_numpy(value) for value in reward_values])
-    return np.asarray(reward_values)
-
-
 def format_reward_value(value):
-    value = reward_values_to_numpy(value)
+    value = np.asarray(value)
     if value.size == 0:
         return None
     scalar = float(value.reshape(-1)[0])
@@ -472,8 +506,7 @@ def append_prompt_image_log_batch(log_batches, prompt_counts, images, prompts, r
         return
 
     selected_rewards = {
-        reward_key: reward_values_to_numpy(reward_values)[selected_indices]
-        for reward_key, reward_values in rewards.items()
+        reward_key: np.asarray(reward_values)[selected_indices] for reward_key, reward_values in rewards.items()
     }
     log_batches.append((images.detach().cpu()[selected_indices], selected_prompts, selected_rewards))
 
@@ -653,8 +686,7 @@ def eval_fn(
             ]
             rewards_to_log = {
                 reward_key: np.concatenate(
-                    [reward_values_to_numpy(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches],
-                    axis=0,
+                    [np.asarray(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches], axis=0
                 )
                 for reward_key in eval_image_log_batches[0][2]
             }
@@ -1242,10 +1274,21 @@ def main(_):
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
 
+        # Experiment A call retained for comparison:
+        # normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
+        #     prompts_all_decoded,
+        #     rollout_batch_ids_all,
+        #     advantages,
+        #     advantage_clip=float(config.train.adv_clip_max),
+        #     coverage_beta=float(config.beta),
+        #     epsilon=algorithm_epsilon,
+        #     advantage_mode=getattr(config.train, "adv_mode", "all"),
+        # )
         normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
             prompts_all_decoded,
             rollout_batch_ids_all,
             advantages,
+            rewards=gathered_rewards_dict["avg"],
             advantage_clip=float(config.train.adv_clip_max),
             coverage_beta=float(config.beta),
             epsilon=algorithm_epsilon,
@@ -1528,8 +1571,8 @@ def main(_):
                         / prompt_normalizer
                     )
                     
-                    # ori_policy_loss = t.float() * target_importance * target_velocity_loss
-                    ori_policy_loss = t.float() * target_velocity_loss
+                    ori_policy_loss = t.float() *  target_velocity_loss
+                    
 
 
                     policy_loss = float(config.train.adv_clip_max) * ori_policy_loss.mean()

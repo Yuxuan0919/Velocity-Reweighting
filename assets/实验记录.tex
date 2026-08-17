@@ -142,7 +142,7 @@ w_D(\mathbf z)
 \times
 \underbrace{
 \frac{
-\beta\left(\exp(r(\mathbf z)/\gamma)-1\right)
+\beta\left(W(z,c)-1\right)
 }{Z}
 }_{\text{mass shift}}
 \times
@@ -199,13 +199,12 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
 
             \State $W(\mathbf{x}_0^k,c_j)
             \leftarrow
-            \max\left\{\epsilon,\,1+\widehat{A}_k\right\}$.
+            1+\widehat{A}_k$.
 
             \State $\displaystyle
             \bar{Z}_{c_j}
             = \bar{Z}_{c_j} +
             \frac{\beta}{K}
-            \sum_{k=1}^{K}
             \left(
             W(\mathbf{x}_0^k,c_j)-1
             \right)$.
@@ -253,7 +252,7 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         \mathtt{sg}\!\left[
         \operatorname{mean}_{\mathrm{feat}}
         \left|
-        \mathbf v_i-\mathbf v_i^{\mathrm{old}}
+        \mathbf v_i-\mathbf v_i^{\theta}
         \right|
         \right]
         +\epsilon}$
@@ -295,7 +294,7 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         \sum_{i=1}^{B}
         t_i
         \left\|
-        \widehat{\mathbf{v}}_{i}^{\theta}
+        \mathbf{v}_{i}^{\theta}
         -
         \mathbf{v}_{i}^{target}
         \right\|_2^2
@@ -333,10 +332,13 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
 \end{algorithmic}
 \end{algorithm}
 
+
+\newpage 
+
 \subsection{Ablation for $W(x_i^0,c_i)$}
 
 对于 prompt $c$ 的 $K$ 个 rollout 样本，记
-$R_i=R(x_i^0,c)$，基准 reward 为 $c_R$。Background 样本的中性权重设为 $1$。
+$R_i=R(x_i^0,c)$，基准 reward 为 $c_R$, 取相同 prompt 下的 group mean。Background 样本的中性权重设为 $1$。
 \begin{align}
 \bar Z_c
 &=1+\frac{\beta}{K}\sum_{j=1}^{K}(W_j-1) \\
@@ -370,32 +372,30 @@ W_i
 \right)
 \right\},
 \end{align}
-其中 $c_R$ 可取 group mean 或其他 background reward，
 $Z$ 可取标准差，$s,l$ 为上下截断界。
 
 \subsubsection*{B. 正、负 advantage 使用不同尺度}
 
 \begin{align}
-a_i
+A_i
 &=
 \begin{cases}
 \operatorname{clip}\!\left(
-\dfrac{R_i-c_R}{Z_+},0,u_+
+\dfrac{R_i-c_R}{Z_+},0,l
 \right),
 & R_i-c_R>0,\\[4pt]
 \operatorname{clip}\!\left(
-\dfrac{R_i-c_R}{Z_-},l_-,0
+\dfrac{R_i-c_R}{Z_-},s,0
 \right),
 & R_i-c_R\le 0,
 \end{cases} \\
 W_i
-&=\max\{\epsilon,1+a_i\}.
+&=\max\{\epsilon,1+A_i\}.
 \end{align}
 $Z_+$ 和 $Z_-$ 分别控制好/坏样本的放大强度。
 
 \subsubsection*{C. Softmax-style}
 
-先将 background reward 平移为 $0$，并定义
 \begin{align}
 W_i
 =\exp\!\left(
@@ -403,7 +403,7 @@ W_i
 \right).
 \end{align}
 再由 $\bar Z_c$ 归一化。$t$ 控制权重的尖锐程度：
-$t\to0^+$ 时趋近 max selection，$t\to\infty$ 时所有 $W_i\to1$。
+$t\to0^+$ 时趋近 max selection，$t\to\infty$ 时所有 $W_i\to1$。第一轮实验取 $t=0.01$。
 
 \subsubsection*{D. 正负样本非对称的 Softmax-style}
 
@@ -438,12 +438,74 @@ t_-(m)
   $t_-(m)$ 逐渐增大，负样本修正减弱。
 \end{itemize}
 
-\subsubsection*{E. GRPO-style 单边样本更新}
+
+
+
+
+\subsubsection*{E. Reward-proportional RMS-normalized reweighting}
+
+由于 reward $R_i$ 先归一化到非负且近似 $[0,1]$ 的范围内，
+直接将其作为样本的相对质量得分，并在每个 rollout group 内进行归一化，使得权重的均方值为 $1$：
+\begin{align}
+W_i
+=
+\frac{\sqrt{K}R_i}
+{\sqrt{\sum_{j=1}^{K}R_j^2}}.
+\end{align}
+因此，
+\begin{align}
+\sum_{i=1}^{K}W_i^2=K,
+\end{align}
+等价地，
+\begin{align}
+\frac{1}{K}\sum_{i=1}^{K}W_i^2=1.
+\end{align}
+
+该策略直接按照样本 reward 的相对大小分配质量。
+reward 越高的样本对应越大的 $W_i$，
+reward 越低的样本对应越小的 $W_i$。
+由于 $R_i\ge0$，因此
+\begin{align}
+0\le W_i\le\sqrt{K}.
+\end{align}
+
+特别地，当一个 rollout group 内所有样本具有相同 reward 时，
+\begin{align}
+R_1=\cdots=R_K,
+\end{align}
+有
+\begin{align}
+W_1=\cdots=W_K=1.
+\end{align}
+因此，$W_i=1$ 自然对应于 group 内无 reward preference 的基准状态；
+$W_i>1$ 的样本获得正向质量修正，而 $W_i<1$ 的样本获得负向质量修正。
+
+与 unit-mean normalization 不同，该归一化并不保证
+\begin{align}
+\frac{1}{K}\sum_{i=1}^{K}W_i=1.
+\end{align}
+因此一般有
+\begin{align}
+\sum_{i=1}^{K}(W_i-1)\neq0,
+\end{align}
+对应的 normalization factor 需要根据当前 rollout group 重新计算：
+\begin{align}
+\bar Z_c
+=
+1+\frac{\beta}{K}
+\sum_{i=1}^{K}(W_i-1).
+\end{align}
+
+
+
+
+
+\subsubsection*{F. GRPO-style 单边样本更新}
 
 仍使用 A 中的 GRPO-style normalized advantage $\widehat A_i$，
 但分别只保留正样本或负样本产生的修正。
 
-\noindent\textbf{E1. 只使用正样本。}
+\noindent\textbf{F1. 只使用正样本。}
 \begin{align}
 W_i
 =
@@ -457,7 +519,7 @@ W_i
 只增加高于 group baseline 的样本质量，不对负样本进行质量削减。
 
 \medskip
-\noindent\textbf{E2. 只使用负样本。}
+\noindent\textbf{F2. 只使用负样本。}
 \begin{align}
 W_i
 =
@@ -470,5 +532,7 @@ W_i
 \end{align}
 只削减低于 group baseline 的样本质量，不对正样本进行质量增加。
 两个子设置最后都使用各自的 $W_i$ 重新计算 $\bar Z_c$。
+
+
 
 \end{document}

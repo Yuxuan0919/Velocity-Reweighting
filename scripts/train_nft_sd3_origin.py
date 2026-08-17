@@ -345,8 +345,17 @@ def get_image_log_settings(config):
     return max(1, int(num_prompts)), max(1, int(num_images_per_prompt))
 
 
+def reward_values_to_numpy(reward_values):
+    """Move CUDA reward tensors to host memory before NumPy-based image logging."""
+    if isinstance(reward_values, torch.Tensor):
+        return reward_values.detach().cpu().numpy()
+    if isinstance(reward_values, (list, tuple)):
+        return np.asarray([reward_values_to_numpy(value) for value in reward_values])
+    return np.asarray(reward_values)
+
+
 def format_reward_value(value):
-    value = np.asarray(value)
+    value = reward_values_to_numpy(value)
     if value.size == 0:
         return None
     scalar = float(value.reshape(-1)[0])
@@ -415,7 +424,8 @@ def append_prompt_image_log_batch(log_batches, prompt_counts, images, prompts, r
         return
 
     selected_rewards = {
-        reward_key: np.asarray(reward_values)[selected_indices] for reward_key, reward_values in rewards.items()
+        reward_key: reward_values_to_numpy(reward_values)[selected_indices]
+        for reward_key, reward_values in rewards.items()
     }
     log_batches.append((images.detach().cpu()[selected_indices], selected_prompts, selected_rewards))
 
@@ -1116,7 +1126,7 @@ def main(_):
                 if pending_log is not None:
                     batch_images, batch_prompts, selected_log_indices = pending_log
                     selected_rewards = {
-                        reward_key: np.asarray(reward_values)[selected_log_indices]
+                        reward_key: reward_values_to_numpy(reward_values)[selected_log_indices]
                         for reward_key, reward_values in rewards.items()
                     }
                     train_image_log_batches.append((batch_images, batch_prompts, selected_rewards))

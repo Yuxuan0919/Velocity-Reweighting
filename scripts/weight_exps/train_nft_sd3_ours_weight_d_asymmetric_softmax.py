@@ -48,10 +48,25 @@ tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/base.py", "Training configuration.")
+flags.DEFINE_float(
+    "softmax_temperature_min",
+    0.01,
+    "Experiment D minimum temperature used by the asymmetric linear schedule.",
+)
+flags.DEFINE_float(
+    "softmax_temperature_max",
+    0.1,
+    "Experiment D maximum temperature used by the asymmetric linear schedule.",
+)
 
 logger = logging.getLogger(__name__)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+# W and Z are transferred to float32 tensors below. Keep exponential weights
+# representable there while preserving the intended near-max-selection regime.
+_FLOAT32_LOG_WEIGHT_MIN = float(np.log(np.finfo(np.float32).tiny))
+_FLOAT32_LOG_WEIGHT_MAX = float(np.log(np.finfo(np.float32).max) - 2.0)
 
 
 def setup_distributed(rank, lock_rank, world_size):
@@ -304,24 +319,50 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 
 
 
+# Experiment A signature retained for comparison:
+# def compute_reinforced_flow_weights(
+#     prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
+# ):
 def compute_reinforced_flow_weights(
-    prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
+    prompts,
+    rollout_batch_ids,
+    nft_advantages,
+    rewards,
+    advantage_clip,
+    coverage_beta,
+    epsilon,
+    softmax_temperature_positive,
+    softmax_temperature_negative,
+    advantage_mode="all",
 ):
-    r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
+    # Experiment A docstring retained for comparison:
+    # r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
+    r"""Experiment D: asymmetric softmax-style W with scheduled temperatures."""
     prompts = np.asarray(prompts)
     rollout_batch_ids = np.asarray(rollout_batch_ids)
     nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
     if nft_advantages.ndim > 1:
         # NFT repeats each clean-sample advantage over training timesteps.
         nft_advantages = nft_advantages[:, 0]
+    rewards = np.asarray(rewards, dtype=np.float64)
+    if rewards.ndim > 1:
+        # Rewards are repeated over training timesteps before all-gather.
+        rewards = rewards[:, 0]
     if advantage_clip <= 0:
         raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
     if not 0.0 <= coverage_beta <= 1.0:
         raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
     if epsilon <= 0:
         raise ValueError(f"epsilon must be positive, got {epsilon}")
-    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
-        raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
+    if softmax_temperature_positive <= 0 or softmax_temperature_negative <= 0:
+        raise ValueError(
+            "softmax_temperature_positive and softmax_temperature_negative must both be positive"
+        )
+    # Experiment A validation retained for comparison:
+    # if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
+    #     raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
+    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages) == len(rewards)):
+        raise ValueError("prompts, rollout_batch_ids, nft_advantages, and rewards must have the same length")
 
     advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
     if advantage_mode == "positive_only":
@@ -336,7 +377,9 @@ def compute_reinforced_flow_weights(
     # This is exactly 2 * r - 1 in the original NFT code:
     # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
     normalized_advantages = advantages_clip / advantage_clip
-    importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
+    # Experiment A weight mapping retained for comparison:
+    # importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
+    importance_weights = np.empty_like(rewards)
     prompt_normalizers = np.empty_like(importance_weights)
 
     prompt_groups = defaultdict(list)
@@ -345,6 +388,22 @@ def compute_reinforced_flow_weights(
 
     for sample_indices in prompt_groups.values():
         sample_indices = np.asarray(sample_indices, dtype=np.int64)
+        group_rewards = rewards[sample_indices]
+        reward_offsets = group_rewards - np.mean(group_rewards)
+        positive_mask = reward_offsets > 0.0
+        group_weights = np.empty_like(group_rewards)
+        positive_log_weights = reward_offsets[positive_mask] / softmax_temperature_positive
+        negative_log_weights = reward_offsets[~positive_mask] / softmax_temperature_negative
+        # Literal Experiment D formulas retained for comparison:
+        # group_weights[positive_mask] = np.exp(positive_log_weights)
+        # group_weights[~positive_mask] = np.exp(negative_log_weights)
+        group_weights[positive_mask] = np.exp(
+            np.clip(positive_log_weights, _FLOAT32_LOG_WEIGHT_MIN, _FLOAT32_LOG_WEIGHT_MAX)
+        )
+        group_weights[~positive_mask] = np.exp(
+            np.clip(negative_log_weights, _FLOAT32_LOG_WEIGHT_MIN, _FLOAT32_LOG_WEIGHT_MAX)
+        )
+        importance_weights[sample_indices] = group_weights
         prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
         prompt_normalizers[sample_indices] = prompt_z_bar
 
@@ -393,17 +452,8 @@ def get_image_log_settings(config):
     return max(1, int(num_prompts)), max(1, int(num_images_per_prompt))
 
 
-def reward_values_to_numpy(reward_values):
-    """Move CUDA reward tensors to host memory before NumPy logging."""
-    if isinstance(reward_values, torch.Tensor):
-        return reward_values.detach().cpu().numpy()
-    if isinstance(reward_values, (list, tuple)):
-        return np.asarray([reward_values_to_numpy(value) for value in reward_values])
-    return np.asarray(reward_values)
-
-
 def format_reward_value(value):
-    value = reward_values_to_numpy(value)
+    value = np.asarray(value)
     if value.size == 0:
         return None
     scalar = float(value.reshape(-1)[0])
@@ -472,8 +522,7 @@ def append_prompt_image_log_batch(log_batches, prompt_counts, images, prompts, r
         return
 
     selected_rewards = {
-        reward_key: reward_values_to_numpy(reward_values)[selected_indices]
-        for reward_key, reward_values in rewards.items()
+        reward_key: np.asarray(reward_values)[selected_indices] for reward_key, reward_values in rewards.items()
     }
     log_batches.append((images.detach().cpu()[selected_indices], selected_prompts, selected_rewards))
 
@@ -653,8 +702,7 @@ def eval_fn(
             ]
             rewards_to_log = {
                 reward_key: np.concatenate(
-                    [reward_values_to_numpy(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches],
-                    axis=0,
+                    [np.asarray(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches], axis=0
                 )
                 for reward_key in eval_image_log_batches[0][2]
             }
@@ -1242,15 +1290,64 @@ def main(_):
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
 
+        # Experiment A call retained for comparison:
+        # normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
+        #     prompts_all_decoded,
+        #     rollout_batch_ids_all,
+        #     advantages,
+        #     advantage_clip=float(config.train.adv_clip_max),
+        #     coverage_beta=float(config.beta),
+        #     epsilon=algorithm_epsilon,
+        #     advantage_mode=getattr(config.train, "adv_mode", "all"),
+        # )
+        training_batches_per_epoch = (
+            config.sample.num_batches_per_epoch
+            * config.sample.train_batch_size
+            // config.train.batch_size
+        )
+        gradient_updates_per_epoch = max(
+            1,
+            config.train.num_inner_epochs
+            * training_batches_per_epoch
+            // config.train.gradient_accumulation_steps,
+        )
+        total_training_steps = max(1, config.num_epochs * gradient_updates_per_epoch)
+        schedule_progress = np.clip(global_step / total_training_steps, 0.0, 1.0)
+        temperature_min = float(FLAGS.softmax_temperature_min)
+        temperature_max = float(FLAGS.softmax_temperature_max)
+        if not 0.0 < temperature_min < temperature_max:
+            raise ValueError(
+                "Experiment D requires 0 < softmax_temperature_min < softmax_temperature_max, "
+                f"got {temperature_min} and {temperature_max}"
+            )
+        softmax_temperature_positive = temperature_max - schedule_progress * (
+            temperature_max - temperature_min
+        )
+        softmax_temperature_negative = temperature_min + schedule_progress * (
+            temperature_max - temperature_min
+        )
         normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
             prompts_all_decoded,
             rollout_batch_ids_all,
             advantages,
+            rewards=gathered_rewards_dict["avg"],
             advantage_clip=float(config.train.adv_clip_max),
             coverage_beta=float(config.beta),
             epsilon=algorithm_epsilon,
+            softmax_temperature_positive=softmax_temperature_positive,
+            softmax_temperature_negative=softmax_temperature_negative,
             advantage_mode=getattr(config.train, "adv_mode", "all"),
         )
+        if is_main_process(rank):
+            log_scalars(
+                writer,
+                {
+                    "weight/schedule_progress": schedule_progress,
+                    "weight/softmax_temperature_positive": softmax_temperature_positive,
+                    "weight/softmax_temperature_negative": softmax_temperature_negative,
+                },
+                global_step,
+            )
         total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
         # Distribute advantages back to processes
         samples_per_gpu = collated_samples["timesteps"].shape[0]
@@ -1528,8 +1625,8 @@ def main(_):
                         / prompt_normalizer
                     )
                     
-                    # ori_policy_loss = t.float() * target_importance * target_velocity_loss
-                    ori_policy_loss = t.float() * target_velocity_loss
+                    ori_policy_loss = t.float() *  target_velocity_loss
+                    
 
 
                     policy_loss = float(config.train.adv_clip_max) * ori_policy_loss.mean()
