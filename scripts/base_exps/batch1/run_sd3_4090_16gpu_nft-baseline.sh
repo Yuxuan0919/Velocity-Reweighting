@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm/project/chineseculture/public/yuxuan/miniconda3}"
 CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
@@ -71,8 +71,8 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-newalpha-beta0.1}"
-RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-newalpha-beta0.1}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/sd35_geneval_4090_${WORLD_SIZE}gpu_nft_baseline-KL1e-4-beta1.0}"
+RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_baseline-KL1e-4-beta1.0}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
@@ -112,7 +112,7 @@ fi
 
 echo "Launching node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
 
-torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours.py \
+torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_origin.py \
   --config=config/nft.py:sd3_geneval \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
@@ -123,5 +123,5 @@ torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" 
   --config.sample.num_batches_per_epoch="${GRADIENT_ACCUMULATION_STEPS}" \
   --config.train.batch_size="${PER_DEVICE_BATCH}" \
   --config.train.gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}" \
-  --config.beta=0.1 \
+  --config.beta=1 \
   --config.train.beta=0.0001

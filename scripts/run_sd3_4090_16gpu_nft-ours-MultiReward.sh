@@ -4,9 +4,10 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm/project/chineseculture/public/yuxuan/miniconda3}"
 CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
-SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
+PYTHON_BIN="${PYTHON_BIN:-${CONDA_ROOT}/envs/${CONDA_ENV}/bin/python}"
 
-OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
+SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
+REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
 
 LOGDIR="${REPO_DIR}/logs"
 NNODES="${NNODES:-2}"
@@ -71,12 +72,34 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-newalpha-beta0.1}"
-RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-newalpha-beta0.1}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_multi_reward_4090_${WORLD_SIZE}gpu_nft_ours-beta0.5}"
+RUN_NAME="${RUN_NAME:-sd35_multi_reward_4090_${WORLD_SIZE}gpu_nft_ours-beta0.5}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
-source "${CONDA_ROOT}/bin/activate" "${CONDA_ENV}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "Python environment not found: ${PYTHON_BIN}" >&2
+  echo "Set CONDA_ROOT/CONDA_ENV (or PYTHON_BIN) to the configured DiffusionNFT environment." >&2
+  exit 1
+fi
+
+for required_path in \
+  "${SD3_MODEL}/model_index.json" \
+  "${REWARD_CKPTS}/open_clip_pytorch_model.bin" \
+  "${REWARD_CKPTS}/HPS_v2.1_compressed.pt" \
+  "${REWARD_CKPTS}/pickscore/processor/config.json" \
+  "${REWARD_CKPTS}/pickscore/processor/tokenizer.json" \
+  "${REWARD_CKPTS}/pickscore/model/config.json" \
+  "${REWARD_CKPTS}/pickscore/model/model.safetensors" \
+  "${REWARD_CKPTS}/clipscore/clip-vit-large-patch14/config.json" \
+  "${REWARD_CKPTS}/clipscore/clip-vit-large-patch14/preprocessor_config.json" \
+  "${REWARD_CKPTS}/clipscore/clip-vit-large-patch14/model.safetensors"; do
+  if [[ ! -s "${required_path}" ]]; then
+    echo "Required model or reward checkpoint is missing: ${required_path}" >&2
+    exit 1
+  fi
+done
+
 cd "${REPO_DIR}"
 
 export PYTHONPATH="${REPO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -93,11 +116,23 @@ if ((NNODES > 1)) && [[ "${MASTER_ADDR}" == "127.0.0.1" || "${MASTER_ADDR}" == "
   exit 2
 fi
 
-export GENEVAL_OPENCLIP_PATH="${OPENCLIP_CKPT}"
 export HF_HOME="${REPO_DIR}/.cache/huggingface"
 export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
 export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
 export DIFFUSERS_CACHE="${HF_HOME}/diffusers"
+export HPS_ROOT="${REPO_DIR}/.cache/hpsv2"
+export XDG_CACHE_HOME="${REPO_DIR}/.cache"
+export REWARD_CKPTS_DIR="${REWARD_CKPTS}"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+
+"${PYTHON_BIN}" -c "import hpsv2.src.open_clip; import flow_grpo.rewards"
+
+if [[ "${CHECK_ONLY:-0}" == "1" ]]; then
+  echo "Multi-reward preflight passed (PickScore + HPSv2 + CLIPScore)."
+  exit 0
+fi
 
 if ((NNODES == 1)); then
   TORCHRUN_DISTRIBUTED_ARGS=(--standalone --nnodes=1)
@@ -112,8 +147,8 @@ fi
 
 echo "Launching node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
 
-torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours.py \
-  --config=config/nft.py:sd3_geneval \
+"${PYTHON_BIN}" -m torch.distributed.run "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours.py \
+  --config=config/nft.py:sd3_multi_reward \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
   --config.save_dir="${SAVE_DIR}" \
@@ -123,5 +158,4 @@ torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" 
   --config.sample.num_batches_per_epoch="${GRADIENT_ACCUMULATION_STEPS}" \
   --config.train.batch_size="${PER_DEVICE_BATCH}" \
   --config.train.gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}" \
-  --config.beta=0.1 \
-  --config.train.beta=0.0001
+  --config.beta=0.5

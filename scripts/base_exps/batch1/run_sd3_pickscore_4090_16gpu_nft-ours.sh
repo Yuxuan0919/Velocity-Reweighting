@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm/project/chineseculture/public/yuxuan/miniconda3}"
 CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 
-OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
+REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
 
 LOGDIR="${REPO_DIR}/logs"
 NNODES="${NNODES:-2}"
@@ -71,8 +71,8 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-newalpha-beta0.1}"
-RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-newalpha-beta0.1}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/sd35_pickscore_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0}"
+RUN_NAME="${RUN_NAME:-sd35_pickscore_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
@@ -93,7 +93,7 @@ if ((NNODES > 1)) && [[ "${MASTER_ADDR}" == "127.0.0.1" || "${MASTER_ADDR}" == "
   exit 2
 fi
 
-export GENEVAL_OPENCLIP_PATH="${OPENCLIP_CKPT}"
+export REWARD_CKPTS_DIR="${REWARD_CKPTS}"
 export HF_HOME="${REPO_DIR}/.cache/huggingface"
 export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
 export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
@@ -113,7 +113,7 @@ fi
 echo "Launching node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
 
 torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours.py \
-  --config=config/nft.py:sd3_geneval \
+  --config=config/nft.py:sd3_pickscore \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
   --config.save_dir="${SAVE_DIR}" \
