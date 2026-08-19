@@ -779,15 +779,6 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
-    correction_mean_mode = str(
-        getattr(config.train, "correction_mean_mode", "negative_only")
-    )
-    valid_correction_mean_modes = {"all", "positive_only", "negative_only"}
-    if correction_mean_mode not in valid_correction_mean_modes:
-        raise ValueError(
-            "config.train.correction_mean_mode must be one of "
-            f"{sorted(valid_correction_mean_modes)}, got {correction_mean_mode!r}"
-        )
 
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
@@ -811,8 +802,6 @@ def main(_):
         writer = SummaryWriter(log_dir=log_dir)
         writer.add_text("config", f"```text\n{config}\n```", 0)
     logger.info(f"\n{config}")
-    logger.info("Correction mean mode: %s", correction_mean_mode)
-
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
 
     # --- Mixed Precision Setup ---
@@ -1342,14 +1331,6 @@ def main(_):
                     int(config.sample.num_image_per_prompt),
                 )[rank]
             ).to(device=device, dtype=torch.long)
-            # Preserve each outer sample's rank-major global bank index through
-            # the later per-rank shuffle so that the j=i correction can be found.
-            collated_samples["global_sample_indices"] = torch.arange(
-                rank * samples_per_gpu,
-                (rank + 1) * samples_per_gpu,
-                device=device,
-                dtype=torch.long,
-            )
         else:
             assert False
 
@@ -1545,65 +1526,10 @@ def main(_):
                     # )
                     # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
-                    # # NFT-SingleBranch.tex gives the equivalent pseudo-target
-                    # # tau = v_old + (2r - 1) / beta * (v_clean - v_old).
-                    # # The original implementation divides its branch loss by beta,
-                    # # so the equivalent single-branch regression keeps one beta factor.
-                    # single_branch_coeff = (2.0 * r - 1.0) / config.beta
-                    # single_branch_coeff_expanded = single_branch_coeff.view(-1, *([1] * (x0.ndim - 1)))
-
-                    # x0_prediction = xt - t_expanded * forward_prediction
-                    # x0_old_prediction = xt - t_expanded * old_prediction.detach()
-                    # x0_target = x0_old_prediction + single_branch_coeff_expanded * (x0 - x0_old_prediction)
-
-                    # # Clean-target adaptive normalization. The numerator still
-                    # # fits the NFT pseudo-target, while the detached denominator
-                    # # measures the current sample/timestep reconstruction difficulty.
-                    # with torch.no_grad():
-                    #     weight_factor = (
-                    #         torch.abs(x0_old_prediction.double() - x0.double())
-                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                    #         .clip(min=0.00001)
-                    #     )
-
-                    # with torch.no_grad():
-                    #     # x0 error = -t * v error, so dividing by t^2 gives unit coefficient for the corresponding v-prediction loss.
-                    #     weight_factor = t_expanded.square().clip(min=1e-8)
-
-
-                    # single_branch_loss = ((x0_prediction - x0_target) ** 2 / weight_factor).mean(
-                    #     dim=tuple(range(1, x0.ndim))
-                    # )
-                    # ori_policy_loss = config.beta * single_branch_loss
-                    # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
-
                     # Algorithm 1: reward-induced target velocity and its
                     # importance-weighted, timestep-adapted regression loss.
                     importance_weight = train_sample_batch["importance_weights"].float()
                     prompt_normalizer = train_sample_batch["prompt_normalizers"].float()
-
-                    # Original single-sample pseudo-target kept for reference:
-                    # with torch.no_grad():
-                    #     conditional_velocity = noise.float() - x0.float()
-                    #     velocity_discrepancy = conditional_velocity - old_prediction.detach().float()
-                    #     trajectory_alpha = 1.0 / (
-                    #         torch.abs(velocity_discrepancy).mean(
-                    #             dim=tuple(range(1, x0.ndim)), keepdim=True
-                    #         )
-                    #         + algorithm_epsilon
-                    #     )
-                    #     # Alpha theoretically has unit expectation; enforce its
-                    #     # empirical mean over the current training batch.
-                    #     trajectory_alpha = trajectory_alpha / trajectory_alpha.mean()
-                    #     correction_coefficient = (
-                    #         float(config.beta) * (importance_weight - 1.0) / prompt_normalizer
-                    #     )
-                    #     correction_coefficient_expanded = correction_coefficient.view(
-                    #         -1, *([1] * (x0.ndim - 1))
-                    #     )
-                    #     target_velocity = old_prediction.detach().float() + correction_coefficient_expanded * (
-                    #         trajectory_alpha * velocity_discrepancy
-                    #     )
 
                     # Double-sampling approximation: for every fixed outer x_t,
                     # average corrections from all K same-prompt clean rollouts.
@@ -1628,24 +1554,14 @@ def main(_):
                             correction_group_indices
                         ]
 
-                        # t=0 may still appear after the per-sample timestep
-                        # permutation.  Its policy correction remains masked; the
-                        # outer t factor also makes its policy loss zero.
-                        valid_t = t.float() > 0.0
-                        # Original fixed-x_t conditional velocity kept for reference:
-                        # safe_t = torch.where(valid_t, t.float(), torch.ones_like(t.float()))
-                        # corr_t_expanded = safe_t.view(
-                        #     -1,
-                        #     1,
-                        #     *([1] * (x0.ndim - 1)),
-                        # )
-                        # fixed_xt = xt.detach().float().unsqueeze(1)
-                        # conditional_velocity = (fixed_xt - corr_z) / corr_t_expanded
+                        corr_t_expanded = t.float().view(
+                            -1,
+                            1,
+                            *([1] * (x0.ndim - 1)),
+                        )
+                        fixed_xt = xt.detach().float().unsqueeze(1)
+                        conditional_velocity = (fixed_xt - corr_z) / corr_t_expanded
 
-                        # Experimental bounded surrogate: pair every same-prompt
-                        # clean latent z_j with the outer sample's noise epsilon_i.
-                        fixed_noise = noise.detach().float().unsqueeze(1)
-                        conditional_velocity = fixed_noise - corr_z
                         fixed_old_prediction = old_prediction.detach().float().unsqueeze(1)
                         velocity_discrepancy = conditional_velocity - fixed_old_prediction
                         inner_feature_dims = tuple(range(2, velocity_discrepancy.ndim))
@@ -1679,59 +1595,7 @@ def main(_):
                             * velocity_discrepancy
                         )
 
-                        # Original behavior kept for reference: every outer
-                        # sample used the K-sample mean correction.
-                        # mean_velocity_correction = correction_terms.mean(dim=1)
-                        group_mean_velocity_correction = correction_terms.mean(dim=1)
-
-                        outer_global_sample_indices = train_sample_batch[
-                            "global_sample_indices"
-                        ].long()
-                        self_matches = correction_group_indices.eq(
-                            outer_global_sample_indices[:, None]
-                        )
-                        self_match_counts = self_matches.sum(dim=1)
-                        if not torch.all(self_match_counts == 1):
-                            raise RuntimeError(
-                                "Each outer sample must appear exactly once in its correction group; "
-                                f"match counts: {self_match_counts.detach().cpu().tolist()}"
-                            )
-                        self_positions = self_matches.to(torch.int64).argmax(dim=1)
-                        batch_positions = torch.arange(
-                            current_micro_batch_size,
-                            device=device,
-                        )
-                        self_velocity_correction = correction_terms[
-                            batch_positions,
-                            self_positions,
-                        ]
-
-                        positive_outer_mask = importance_weight > 1.0
-                        negative_outer_mask = importance_weight < 1.0
-                        if correction_mean_mode == "all":
-                            use_group_mean = torch.ones_like(
-                                positive_outer_mask,
-                                dtype=torch.bool,
-                            )
-                        elif correction_mean_mode == "positive_only":
-                            use_group_mean = positive_outer_mask
-                        else:  # correction_mean_mode == "negative_only"
-                            use_group_mean = negative_outer_mask
-
-                        use_group_mean_expanded = use_group_mean.view(
-                            -1,
-                            *([1] * (x0.ndim - 1)),
-                        )
-                        mean_velocity_correction = torch.where(
-                            use_group_mean_expanded,
-                            group_mean_velocity_correction,
-                            self_velocity_correction,
-                        )
-                        valid_t_expanded = valid_t.view(
-                            -1,
-                            *([1] * (x0.ndim - 1)),
-                        )
-                        mean_velocity_correction = mean_velocity_correction * valid_t_expanded
+                        mean_velocity_correction = correction_terms.mean(dim=1)
                         target_velocity = old_prediction.detach().float() + mean_velocity_correction
 
                         if config.debug and not torch.isfinite(target_velocity).all():
@@ -1741,16 +1605,7 @@ def main(_):
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    # Original behavior kept for reference: every outer sample
-                    # multiplied its target MSE by W_i / Z_bar_i, regardless of
-                    # whether it used the group-mean or self correction.
-                    # target_importance = importance_weight / prompt_normalizer
-                    group_mean_target_importance = importance_weight / prompt_normalizer
-                    target_importance = torch.where(
-                        use_group_mean,
-                        group_mean_target_importance,
-                        torch.ones_like(group_mean_target_importance),
-                    )
+                    target_importance = importance_weight / prompt_normalizer
                     
                     ori_policy_loss = t.float() * target_importance * target_velocity_loss
                     
@@ -1761,8 +1616,6 @@ def main(_):
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
-                    # loss_terms["single_branch_coeff_abs_mean"] = single_branch_coeff.abs().mean().detach()
-                    # loss_terms["clean_weight_factor"] = weight_factor.mean().detach()
                     loss_terms["importance_weight"] = importance_weight.mean().detach()
                     loss_terms["importance_weight_max"] = importance_weight.max().detach()
                     loss_terms["importance_weight_min"] = importance_weight.min().detach()
@@ -1772,10 +1625,6 @@ def main(_):
                     loss_terms["target_importance"] = target_importance.mean().detach()
                     loss_terms["target_importance_max"] = target_importance.max().detach()
                     loss_terms["target_importance_min"] = target_importance.min().detach()
-                    loss_terms["group_mean_target_importance"] = (
-                        group_mean_target_importance.mean().detach()
-                    )
-                    loss_terms["self_unweighted_ratio"] = (~use_group_mean).float().mean().detach()
                     loss_terms["trajectory_alpha"] = trajectory_alpha.mean().detach()
                     loss_terms["trajectory_alpha_max"] = trajectory_alpha.max().detach()
                     loss_terms["trajectory_alpha_min"] = trajectory_alpha.min().detach()
@@ -1796,28 +1645,6 @@ def main(_):
                         .max()
                         .detach()
                     )
-                    loss_terms["group_mean_velocity_correction_norm"] = (
-                        group_mean_velocity_correction.square()
-                        .mean(dim=tuple(range(1, group_mean_velocity_correction.ndim)))
-                        .sqrt()
-                        .mean()
-                        .detach()
-                    )
-                    loss_terms["self_velocity_correction_norm"] = (
-                        self_velocity_correction.square()
-                        .mean(dim=tuple(range(1, self_velocity_correction.ndim)))
-                        .sqrt()
-                        .mean()
-                        .detach()
-                    )
-                    loss_terms["group_mean_usage_ratio"] = use_group_mean.float().mean().detach()
-                    loss_terms["positive_outer_ratio"] = positive_outer_mask.float().mean().detach()
-                    loss_terms["negative_outer_ratio"] = negative_outer_mask.float().mean().detach()
-                    loss_terms["neutral_outer_ratio"] = (
-                        ~(positive_outer_mask | negative_outer_mask)
-                    ).float().mean().detach()
-                    loss_terms["valid_t_ratio"] = valid_t.float().mean().detach()
-
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )

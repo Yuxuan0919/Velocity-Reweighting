@@ -374,25 +374,58 @@ W_i
 \end{align}
 $Z$ 可取标准差，$s,l$ 为上下截断界。
 
-\subsubsection*{B. 正、负 advantage 使用不同尺度}
 
-\begin{align}
-A_i
-&=
+\subsubsection*{B. 正、负 advantage 的动态非对称尺度}
+
+记 A 中的 reward normalization scale 为
+\begin{equation}
+Z=
+\sqrt{
+\frac{1}{K}\sum_{j=1}^{K}(R_j-\bar R_c)^2+\epsilon
+}.
+\end{equation}
+
+为了在训练早期增强负样本、训练后期增强正样本，定义
+\begin{equation}
+Z_+(m)=Z\exp(g(m)),
+\qquad
+Z_-(m)=Z\exp(-g(m)),
+\end{equation}
+其中
+\begin{equation}
+g(m)=
 \begin{cases}
-\operatorname{clip}\!\left(
-\dfrac{R_i-c_R}{Z_+},0,l
+1-\dfrac{m}{T}, & m\le T,\\[6pt]
+-\dfrac{m-T}{M-T}, & m>T,
+\end{cases}
+\end{equation}
+$m$ 为当前 training iteration，$M$ 为总 iterations，$T$ 为正负侧重点的转换位置。
+
+于是
+\begin{equation}
+A_i=
+\begin{cases}
+\displaystyle
+\operatorname{clip}
+\left(
+\frac{R_i-\bar R_c}{Z_+(m)},0,l
 \right),
-& R_i-c_R>0,\\[4pt]
-\operatorname{clip}\!\left(
-\dfrac{R_i-c_R}{Z_-},s,0
+& R_i-\bar R_c>0,\\[10pt]
+\displaystyle
+\operatorname{clip}
+\left(
+\frac{R_i-\bar R_c}{Z_-(m)},s,0
 \right),
-& R_i-c_R\le 0,
-\end{cases} \\
-W_i
-&=\max\{\epsilon,1+A_i\}.
-\end{align}
-$Z_+$ 和 $Z_-$ 分别控制好/坏样本的放大强度。
+& R_i-\bar R_c\le0,
+\end{cases}
+\end{equation}
+并令
+\begin{equation}
+W_i=\max\{\epsilon,1+A_i\}.
+\end{equation}
+
+当 $m<T$ 时，$Z_+>Z_-$，从而放大负样本的修正；当 $m=T$ 时，$Z_+=Z_-=Z$，退化为对称 baseline；当 $m>T$ 时，$Z_+<Z_-$，从而增强正样本的修正。
+
 
 \subsubsection*{C. Softmax-style}
 
@@ -532,6 +565,38 @@ W_i
 \end{align}
 只削减低于 group baseline 的样本质量，不对正样本进行质量增加。
 两个子设置最后都使用各自的 $W_i$ 重新计算 $\bar Z_c$。
+
+
+
+
+
+
+
+
+\subsection{Ablation for $\beta$}
+
+直接在 Geneval Single Reward setting 下做消融实验，提高效率。
+
+
+\subsubsection{$\beta = 0.1$}
+
+
+\subsubsection{$\beta = 0.25$}
+
+
+\subsubsection{$\beta = 0.5$}
+
+
+\subsubsection{$\beta = 1.0$}
+
+
+
+
+
+
+\subsection{Baseline for Multi-Reward Setting}
+
+
 
 
 

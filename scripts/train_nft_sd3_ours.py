@@ -316,8 +316,8 @@ def compute_reinforced_flow_weights(
         nft_advantages = nft_advantages[:, 0]
     if advantage_clip <= 0:
         raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
-    if not 0.0 <= coverage_beta <= 1.0:
-        raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
+    # if not 0.0 <= coverage_beta <= 1.0:
+    #     raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
     if epsilon <= 0:
         raise ValueError(f"epsilon must be positive, got {epsilon}")
     if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
@@ -1461,37 +1461,6 @@ def main(_):
                     # )
                     # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
-                    # # NFT-SingleBranch.tex gives the equivalent pseudo-target
-                    # # tau = v_old + (2r - 1) / beta * (v_clean - v_old).
-                    # # The original implementation divides its branch loss by beta,
-                    # # so the equivalent single-branch regression keeps one beta factor.
-                    # single_branch_coeff = (2.0 * r - 1.0) / config.beta
-                    # single_branch_coeff_expanded = single_branch_coeff.view(-1, *([1] * (x0.ndim - 1)))
-
-                    # x0_prediction = xt - t_expanded * forward_prediction
-                    # x0_old_prediction = xt - t_expanded * old_prediction.detach()
-                    # x0_target = x0_old_prediction + single_branch_coeff_expanded * (x0 - x0_old_prediction)
-
-                    # # Clean-target adaptive normalization. The numerator still
-                    # # fits the NFT pseudo-target, while the detached denominator
-                    # # measures the current sample/timestep reconstruction difficulty.
-                    # with torch.no_grad():
-                    #     weight_factor = (
-                    #         torch.abs(x0_old_prediction.double() - x0.double())
-                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                    #         .clip(min=0.00001)
-                    #     )
-
-                    # with torch.no_grad():
-                    #     # x0 error = -t * v error, so dividing by t^2 gives unit coefficient for the corresponding v-prediction loss.
-                    #     weight_factor = t_expanded.square().clip(min=1e-8)
-
-
-                    # single_branch_loss = ((x0_prediction - x0_target) ** 2 / weight_factor).mean(
-                    #     dim=tuple(range(1, x0.ndim))
-                    # )
-                    # ori_policy_loss = config.beta * single_branch_loss
-                    # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
                     # Algorithm 1: reward-induced target velocity and its
                     # importance-weighted, timestep-adapted regression loss.
@@ -1501,7 +1470,8 @@ def main(_):
                         conditional_velocity = noise.float() - x0.float()
                         velocity_discrepancy = conditional_velocity - old_prediction.detach().float()
                         trajectory_alpha = 1.0 / (
-                            torch.abs(velocity_discrepancy).mean(
+                            # torch.abs(velocity_discrepancy).mean(
+                            torch.abs(conditional_velocity - forward_prediction.float()).mean(
                                 dim=tuple(range(1, x0.ndim)), keepdim=True
                             )
                             + algorithm_epsilon
@@ -1529,6 +1499,7 @@ def main(_):
                     )
                     
                     # ori_policy_loss = t.float() * target_importance * target_velocity_loss
+                    # ori_policy_loss = t.float() / float(config.beta) * target_velocity_loss
                     ori_policy_loss = t.float() * target_velocity_loss
 
 

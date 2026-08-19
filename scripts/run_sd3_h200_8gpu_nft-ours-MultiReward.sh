@@ -11,8 +11,8 @@ SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
 
 LOGDIR="${REPO_DIR}/logs"
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_multi_reward_nft_ours}"
-RUN_NAME="${RUN_NAME:-sd35_multi_reward_h200_8gpu_nft_ours}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_multi_reward_nft_ours-beta0.5}"
+RUN_NAME="${RUN_NAME:-sd35_multi_reward_h200_8gpu_nft_ours-beta0.5}"
 
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 
@@ -75,4 +75,5 @@ fi
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
   --config.save_dir="${SAVE_DIR}" \
-  --config.run_name="${RUN_NAME}"
+  --config.run_name="${RUN_NAME}" \
+  --config.beta=0.5 
