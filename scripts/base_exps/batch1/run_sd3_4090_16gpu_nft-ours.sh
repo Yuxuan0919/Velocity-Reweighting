@@ -123,5 +123,5 @@ torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" 
   --config.sample.num_batches_per_epoch="${GRADIENT_ACCUMULATION_STEPS}" \
   --config.train.batch_size="${PER_DEVICE_BATCH}" \
   --config.train.gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}" \
-  --config.beta=0.1 \
+  --config.beta=1.0 \
   --config.train.beta=0.0001

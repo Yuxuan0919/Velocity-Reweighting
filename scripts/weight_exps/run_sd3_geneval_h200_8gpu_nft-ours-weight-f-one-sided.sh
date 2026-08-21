@@ -13,7 +13,7 @@ OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
 REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
 
 LOGDIR="${REPO_DIR}/logs"
-ONE_SIDED_MODE="${ONE_SIDED_MODE:-positive_only}"
+ONE_SIDED_MODE="${ONE_SIDED_MODE:-negative_only}"
 case "${ONE_SIDED_MODE}" in
   positive_only) EXPERIMENT_TAG="f1-positive-only" ;;
   negative_only) EXPERIMENT_TAG="f2-negative-only" ;;

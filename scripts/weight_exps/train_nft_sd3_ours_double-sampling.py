@@ -48,25 +48,21 @@ tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/base.py", "Training configuration.")
-flags.DEFINE_float(
-    "softmax_temperature_min",
-    0.01,
-    "Experiment D minimum temperature used by the asymmetric linear schedule.",
-)
-flags.DEFINE_float(
-    "softmax_temperature_max",
-    0.1,
-    "Experiment D maximum temperature used by the asymmetric linear schedule.",
-)
 
 logger = logging.getLogger(__name__)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-# W and Z are transferred to float32 tensors below. Keep exponential weights
-# representable there while preserving the intended near-max-selection regime.
-_FLOAT32_LOG_WEIGHT_MIN = float(np.log(np.finfo(np.float32).tiny))
-_FLOAT32_LOG_WEIGHT_MAX = float(np.log(np.finfo(np.float32).max) - 2.0)
+
+def add_file_log_handler(log_dir):
+    """Write rank-0 Python logging records beside the TensorBoard event files."""
+    log_path = os.path.abspath(os.path.join(log_dir, "train.log"))
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(file_handler)
+    return log_path
 
 
 def setup_distributed(rank, lock_rank, world_size):
@@ -275,6 +271,14 @@ def gather_tensor_to_all(tensor, world_size):
     return torch.cat(gathered_tensors, dim=0).cpu()
 
 
+def gather_tensor_to_all_device(tensor, world_size):
+    r"""All-gather a detached tensor while keeping the result on the current device."""
+    tensor = tensor.detach().contiguous()
+    gathered_tensors = [torch.empty_like(tensor) for _ in range(world_size)]
+    dist.all_gather(gathered_tensors, tensor)
+    return torch.cat(gathered_tensors, dim=0)
+
+
 def compute_text_embeddings(prompt, text_encoders, tokenizers, max_sequence_length, device):
     with torch.no_grad():
         prompt_embeds, pooled_prompt_embeds = encode_prompt(text_encoders, tokenizers, prompt, max_sequence_length)
@@ -319,50 +323,32 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 
 
 
-# Experiment A signature retained for comparison:
-# def compute_reinforced_flow_weights(
-#     prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
-# ):
+
 def compute_reinforced_flow_weights(
     prompts,
     rollout_batch_ids,
     nft_advantages,
-    rewards,
     advantage_clip,
     coverage_beta,
     epsilon,
-    softmax_temperature_positive,
-    softmax_temperature_negative,
     advantage_mode="all",
+    group_size=None,
 ):
-    # Experiment A docstring retained for comparison:
-    # r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
-    r"""Experiment D: asymmetric softmax-style W with scheduled temperatures."""
+    r"""Map NFT advantages to \hat A/W/\bar Z and build same-prompt correction groups."""
     prompts = np.asarray(prompts)
     rollout_batch_ids = np.asarray(rollout_batch_ids)
     nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
     if nft_advantages.ndim > 1:
         # NFT repeats each clean-sample advantage over training timesteps.
         nft_advantages = nft_advantages[:, 0]
-    rewards = np.asarray(rewards, dtype=np.float64)
-    if rewards.ndim > 1:
-        # Rewards are repeated over training timesteps before all-gather.
-        rewards = rewards[:, 0]
     if advantage_clip <= 0:
         raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
     if not 0.0 <= coverage_beta <= 1.0:
         raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
     if epsilon <= 0:
         raise ValueError(f"epsilon must be positive, got {epsilon}")
-    if softmax_temperature_positive <= 0 or softmax_temperature_negative <= 0:
-        raise ValueError(
-            "softmax_temperature_positive and softmax_temperature_negative must both be positive"
-        )
-    # Experiment A validation retained for comparison:
-    # if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
-    #     raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
-    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages) == len(rewards)):
-        raise ValueError("prompts, rollout_batch_ids, nft_advantages, and rewards must have the same length")
+    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
+        raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
 
     advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
     if advantage_mode == "positive_only":
@@ -377,10 +363,16 @@ def compute_reinforced_flow_weights(
     # This is exactly 2 * r - 1 in the original NFT code:
     # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
     normalized_advantages = advantages_clip / advantage_clip
-    # Experiment A weight mapping retained for comparison:
-    # importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
-    importance_weights = np.empty_like(rewards)
+    importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
     prompt_normalizers = np.empty_like(importance_weights)
+    if group_size is None or int(group_size) <= 0:
+        raise ValueError(f"group_size must be a positive integer, got {group_size}")
+    group_size = int(group_size)
+    correction_group_indices = np.full(
+        (len(importance_weights), group_size),
+        fill_value=-1,
+        dtype=np.int64,
+    )
 
     prompt_groups = defaultdict(list)
     for sample_idx, (rollout_batch_id, prompt) in enumerate(zip(rollout_batch_ids, prompts, strict=True)):
@@ -388,26 +380,27 @@ def compute_reinforced_flow_weights(
 
     for sample_indices in prompt_groups.values():
         sample_indices = np.asarray(sample_indices, dtype=np.int64)
-        group_rewards = rewards[sample_indices]
-        reward_offsets = group_rewards - np.mean(group_rewards)
-        positive_mask = reward_offsets > 0.0
-        group_weights = np.empty_like(group_rewards)
-        positive_log_weights = reward_offsets[positive_mask] / softmax_temperature_positive
-        negative_log_weights = reward_offsets[~positive_mask] / softmax_temperature_negative
-        # Literal Experiment D formulas retained for comparison:
-        # group_weights[positive_mask] = np.exp(positive_log_weights)
-        # group_weights[~positive_mask] = np.exp(negative_log_weights)
-        group_weights[positive_mask] = np.exp(
-            np.clip(positive_log_weights, _FLOAT32_LOG_WEIGHT_MIN, _FLOAT32_LOG_WEIGHT_MAX)
-        )
-        group_weights[~positive_mask] = np.exp(
-            np.clip(negative_log_weights, _FLOAT32_LOG_WEIGHT_MIN, _FLOAT32_LOG_WEIGHT_MAX)
-        )
-        importance_weights[sample_indices] = group_weights
+        if len(sample_indices) != group_size:
+            raise ValueError(
+                "Each (rollout_batch_id, prompt) correction group must contain "
+                f"exactly K={group_size} samples, but found {len(sample_indices)}. "
+                "If duplicate prompt strings represent distinct groups, propagate a unique prompt_group_id."
+            )
+        if len(np.unique(sample_indices)) != group_size:
+            raise ValueError("Correction group indices must be unique")
         prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
         prompt_normalizers[sample_indices] = prompt_z_bar
+        correction_group_indices[sample_indices] = sample_indices[None, :]
 
-    return normalized_advantages, importance_weights, prompt_normalizers
+    if np.any(correction_group_indices < 0):
+        raise RuntimeError("Some rollout samples were not assigned to a correction group")
+    sample_ids = np.arange(len(importance_weights), dtype=np.int64)[:, None]
+    if not np.all(np.any(correction_group_indices == sample_ids, axis=1)):
+        raise RuntimeError("Every outer sample must be included in its own correction group")
+
+    # Original single-sample return kept for reference:
+    # return normalized_advantages, importance_weights, prompt_normalizers
+    return normalized_advantages, importance_weights, prompt_normalizers, correction_group_indices
 
 
 def log_scalars(writer, scalars, step):
@@ -817,10 +810,11 @@ def main(_):
     if is_main_process(rank):
         log_dir = os.path.join(config.logdir, config.run_name)
         os.makedirs(log_dir, exist_ok=True)
+        log_path = add_file_log_handler(log_dir)
         writer = SummaryWriter(log_dir=log_dir)
         writer.add_text("config", f"```text\n{config}\n```", 0)
+        logger.info("Writing command-line logs to %s", log_path)
     logger.info(f"\n{config}")
-
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
 
     # --- Mixed Precision Setup ---
@@ -1290,69 +1284,48 @@ def main(_):
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
 
-        # Experiment A call retained for comparison:
+        # Original single-sample weight return kept for reference:
         # normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
-        #     prompts_all_decoded,
-        #     rollout_batch_ids_all,
-        #     advantages,
-        #     advantage_clip=float(config.train.adv_clip_max),
-        #     coverage_beta=float(config.beta),
-        #     epsilon=algorithm_epsilon,
-        #     advantage_mode=getattr(config.train, "adv_mode", "all"),
-        # )
-        training_batches_per_epoch = (
-            config.sample.num_batches_per_epoch
-            * config.sample.train_batch_size
-            // config.train.batch_size
-        )
-        gradient_updates_per_epoch = max(
-            1,
-            config.train.num_inner_epochs
-            * training_batches_per_epoch
-            // config.train.gradient_accumulation_steps,
-        )
-        total_training_steps = max(1, config.num_epochs * gradient_updates_per_epoch)
-        schedule_progress = np.clip(global_step / total_training_steps, 0.0, 1.0)
-        temperature_min = float(FLAGS.softmax_temperature_min)
-        temperature_max = float(FLAGS.softmax_temperature_max)
-        if not 0.0 < temperature_min < temperature_max:
-            raise ValueError(
-                "Experiment D requires 0 < softmax_temperature_min < softmax_temperature_max, "
-                f"got {temperature_min} and {temperature_max}"
+        normalized_advantages, importance_weights, prompt_normalizers, correction_group_indices = (
+            compute_reinforced_flow_weights(
+                prompts_all_decoded,
+                rollout_batch_ids_all,
+                advantages,
+                advantage_clip=float(config.train.adv_clip_max),
+                coverage_beta=float(config.beta),
+                epsilon=algorithm_epsilon,
+                advantage_mode=getattr(config.train, "adv_mode", "all"),
+                group_size=int(config.sample.num_image_per_prompt),
             )
-        softmax_temperature_positive = temperature_max - schedule_progress * (
-            temperature_max - temperature_min
         )
-        softmax_temperature_negative = temperature_min + schedule_progress * (
-            temperature_max - temperature_min
-        )
-        normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
-            prompts_all_decoded,
-            rollout_batch_ids_all,
-            advantages,
-            rewards=gathered_rewards_dict["avg"],
-            advantage_clip=float(config.train.adv_clip_max),
-            coverage_beta=float(config.beta),
-            epsilon=algorithm_epsilon,
-            softmax_temperature_positive=softmax_temperature_positive,
-            softmax_temperature_negative=softmax_temperature_negative,
-            advantage_mode=getattr(config.train, "adv_mode", "all"),
-        )
-        if is_main_process(rank):
-            log_scalars(
-                writer,
-                {
-                    "weight/schedule_progress": schedule_progress,
-                    "weight/softmax_temperature_positive": softmax_temperature_positive,
-                    "weight/softmax_temperature_negative": softmax_temperature_negative,
-                },
-                global_step,
-            )
         total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
         # Distribute advantages back to processes
         samples_per_gpu = collated_samples["timesteps"].shape[0]
         if advantages.ndim == 1:
             advantages = advantages[:, None]
+
+        # The K same-prompt correction samples may be distributed over multiple
+        # ranks and training micro-batches.  Keep one rank-major global bank on
+        # every rank; its order matches prompt_ids_all and the global W/Z arrays.
+        with torch.no_grad():
+            global_corr_latents = gather_tensor_to_all_device(
+                collated_samples["latents_clean"], world_size
+            )
+            global_corr_importance_weights = torch.as_tensor(
+                importance_weights, device=device, dtype=torch.float32
+            )
+            global_corr_prompt_normalizers = torch.as_tensor(
+                prompt_normalizers, device=device, dtype=torch.float32
+            )
+
+        if not (
+            global_corr_latents.shape[0]
+            == global_corr_importance_weights.shape[0]
+            == global_corr_prompt_normalizers.shape[0]
+            == correction_group_indices.shape[0]
+            == total_rollout_size
+        ):
+            raise RuntimeError("Global correction bank tensors must use the same rank-major sample order")
 
         if advantages.shape[0] == world_size * samples_per_gpu:
             collated_samples["advantages"] = torch.from_numpy(
@@ -1364,16 +1337,24 @@ def main(_):
             collated_samples["prompt_normalizers"] = torch.from_numpy(
                 prompt_normalizers.reshape(world_size, samples_per_gpu)[rank]
             ).to(device=device, dtype=torch.float32)
+            collated_samples["correction_group_indices"] = torch.from_numpy(
+                correction_group_indices.reshape(
+                    world_size,
+                    samples_per_gpu,
+                    int(config.sample.num_image_per_prompt),
+                )[rank]
+            ).to(device=device, dtype=torch.long)
         else:
             assert False
 
         if is_main_process(rank):
             logger.info(f"Advantages mean: {collated_samples['advantages'].abs().mean().item()}")
             logger.info(
-                "Importance weights mean: %.6f; prompt normalizers mean: %.6f; D: %d",
+                "Importance weights mean: %.6f; prompt normalizers mean: %.6f; D: %d; K: %d",
                 collated_samples["importance_weights"].mean().item(),
                 collated_samples["prompt_normalizers"].mean().item(),
                 total_rollout_size,
+                int(config.sample.num_image_per_prompt),
             )
 
         del collated_samples["rewards"]
@@ -1558,74 +1539,88 @@ def main(_):
                     # )
                     # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
-                    # # NFT-SingleBranch.tex gives the equivalent pseudo-target
-                    # # tau = v_old + (2r - 1) / beta * (v_clean - v_old).
-                    # # The original implementation divides its branch loss by beta,
-                    # # so the equivalent single-branch regression keeps one beta factor.
-                    # single_branch_coeff = (2.0 * r - 1.0) / config.beta
-                    # single_branch_coeff_expanded = single_branch_coeff.view(-1, *([1] * (x0.ndim - 1)))
-
-                    # x0_prediction = xt - t_expanded * forward_prediction
-                    # x0_old_prediction = xt - t_expanded * old_prediction.detach()
-                    # x0_target = x0_old_prediction + single_branch_coeff_expanded * (x0 - x0_old_prediction)
-
-                    # # Clean-target adaptive normalization. The numerator still
-                    # # fits the NFT pseudo-target, while the detached denominator
-                    # # measures the current sample/timestep reconstruction difficulty.
-                    # with torch.no_grad():
-                    #     weight_factor = (
-                    #         torch.abs(x0_old_prediction.double() - x0.double())
-                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                    #         .clip(min=0.00001)
-                    #     )
-
-                    # with torch.no_grad():
-                    #     # x0 error = -t * v error, so dividing by t^2 gives unit coefficient for the corresponding v-prediction loss.
-                    #     weight_factor = t_expanded.square().clip(min=1e-8)
-
-
-                    # single_branch_loss = ((x0_prediction - x0_target) ** 2 / weight_factor).mean(
-                    #     dim=tuple(range(1, x0.ndim))
-                    # )
-                    # ori_policy_loss = config.beta * single_branch_loss
-                    # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
-
                     # Algorithm 1: reward-induced target velocity and its
                     # importance-weighted, timestep-adapted regression loss.
                     importance_weight = train_sample_batch["importance_weights"].float()
                     prompt_normalizer = train_sample_batch["prompt_normalizers"].float()
+
+                    # Double-sampling approximation: for every fixed outer x_t,
+                    # average corrections from all K same-prompt clean rollouts.
                     with torch.no_grad():
-                        conditional_velocity = noise.float() - x0.float()
-                        velocity_discrepancy = conditional_velocity - old_prediction.detach().float()
+                        correction_group_indices = train_sample_batch["correction_group_indices"].long()
+                        expected_group_size = int(config.sample.num_image_per_prompt)
+                        if correction_group_indices.shape != (
+                            current_micro_batch_size,
+                            expected_group_size,
+                        ):
+                            raise RuntimeError(
+                                "correction_group_indices must have shape "
+                                f"[{current_micro_batch_size}, {expected_group_size}], got "
+                                f"{list(correction_group_indices.shape)}"
+                            )
+
+                        corr_z = global_corr_latents[correction_group_indices].float()
+                        corr_importance_weight = global_corr_importance_weights[
+                            correction_group_indices
+                        ]
+                        corr_prompt_normalizer = global_corr_prompt_normalizers[
+                            correction_group_indices
+                        ]
+
+                        corr_t_expanded = t.float().view(
+                            -1,
+                            1,
+                            *([1] * (x0.ndim - 1)),
+                        )
+                        fixed_xt = xt.detach().float().unsqueeze(1)
+                        conditional_velocity = (fixed_xt - corr_z) / corr_t_expanded
+
+                        fixed_old_prediction = old_prediction.detach().float().unsqueeze(1)
+                        velocity_discrepancy = conditional_velocity - fixed_old_prediction
+                        inner_feature_dims = tuple(range(2, velocity_discrepancy.ndim))
                         trajectory_alpha = 1.0 / (
                             torch.abs(velocity_discrepancy).mean(
-                                dim=tuple(range(1, x0.ndim)), keepdim=True
+                                dim=inner_feature_dims,
+                                keepdim=True,
                             )
                             + algorithm_epsilon
                         )
-                        # Alpha theoretically has unit expectation; enforce its
-                        # empirical mean over the current training batch.
-                        trajectory_alpha = trajectory_alpha / trajectory_alpha.mean()
+                        # Normalize independently over the K correction samples
+                        # for each fixed outer x_t: mean_j alpha_{i,j} = 1.
+                        trajectory_alpha = trajectory_alpha / trajectory_alpha.mean(
+                            dim=1,
+                            keepdim=True,
+                        ).clamp_min(algorithm_epsilon)
+
                         correction_coefficient = (
-                            float(config.beta) * (importance_weight - 1.0) / prompt_normalizer
+                            float(config.beta)
+                            * (corr_importance_weight - 1.0)
+                            / corr_prompt_normalizer
                         )
                         correction_coefficient_expanded = correction_coefficient.view(
-                            -1, *([1] * (x0.ndim - 1))
+                            current_micro_batch_size,
+                            expected_group_size,
+                            *([1] * (x0.ndim - 1)),
                         )
-                        target_velocity = old_prediction.detach().float() + correction_coefficient_expanded * (
-                            trajectory_alpha * velocity_discrepancy
+                        correction_terms = (
+                            correction_coefficient_expanded
+                            * trajectory_alpha
+                            * velocity_discrepancy
                         )
+
+                        mean_velocity_correction = correction_terms.mean(dim=1)
+                        target_velocity = old_prediction.detach().float() + mean_velocity_correction
+
+                        if config.debug and not torch.isfinite(target_velocity).all():
+                            raise FloatingPointError("Non-finite double-sampling target velocity")
 
                     target_velocity_loss = ((forward_prediction - target_velocity) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    target_importance = (
-                        importance_weight
-                        / prompt_normalizer
-                    )
+                    target_importance = importance_weight / prompt_normalizer
                     
-                    ori_policy_loss = t.float() *  target_velocity_loss
+                    ori_policy_loss = t.float() * target_importance * target_velocity_loss
                     
 
 
@@ -1634,8 +1629,6 @@ def main(_):
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
-                    # loss_terms["single_branch_coeff_abs_mean"] = single_branch_coeff.abs().mean().detach()
-                    # loss_terms["clean_weight_factor"] = weight_factor.mean().detach()
                     loss_terms["importance_weight"] = importance_weight.mean().detach()
                     loss_terms["importance_weight_max"] = importance_weight.max().detach()
                     loss_terms["importance_weight_min"] = importance_weight.min().detach()
@@ -1651,7 +1644,20 @@ def main(_):
                     loss_terms["correction_coefficient_abs_mean"] = correction_coefficient.abs().mean().detach()
                     loss_terms["correction_coefficient_max"] = correction_coefficient.max().detach()
                     loss_terms["correction_coefficient_min"] = correction_coefficient.min().detach()
-
+                    loss_terms["mean_velocity_correction_norm"] = (
+                        mean_velocity_correction.square()
+                        .mean(dim=tuple(range(1, mean_velocity_correction.ndim)))
+                        .sqrt()
+                        .mean()
+                        .detach()
+                    )
+                    loss_terms["mean_velocity_correction_norm_max"] = (
+                        mean_velocity_correction.square()
+                        .mean(dim=tuple(range(1, mean_velocity_correction.ndim)))
+                        .sqrt()
+                        .max()
+                        .detach()
+                    )
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )

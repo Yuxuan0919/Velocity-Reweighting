@@ -54,6 +54,17 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 
+def add_file_log_handler(log_dir):
+    """Write rank-0 Python logging records beside the TensorBoard event files."""
+    log_path = os.path.abspath(os.path.join(log_dir, "train.log"))
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(file_handler)
+    return log_path
+
+
 def setup_distributed(rank, lock_rank, world_size):
     os.environ["MASTER_ADDR"] = os.getenv("MASTER_ADDR", "localhost")
     os.environ["MASTER_PORT"] = os.getenv("MASTER_PORT", "12355")
@@ -260,14 +271,6 @@ def gather_tensor_to_all(tensor, world_size):
     return torch.cat(gathered_tensors, dim=0).cpu()
 
 
-def gather_tensor_to_all_device(tensor, world_size):
-    r"""All-gather a detached tensor while keeping the result on the current device."""
-    tensor = tensor.detach().contiguous()
-    gathered_tensors = [torch.empty_like(tensor) for _ in range(world_size)]
-    dist.all_gather(gathered_tensors, tensor)
-    return torch.cat(gathered_tensors, dim=0)
-
-
 def compute_text_embeddings(prompt, text_encoders, tokenizers, max_sequence_length, device):
     with torch.no_grad():
         prompt_embeds, pooled_prompt_embeds = encode_prompt(text_encoders, tokenizers, prompt, max_sequence_length)
@@ -312,84 +315,253 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 
 
 
+# Original group-mean advantage -> reinforced-flow weight mapping retained for comparison:
+# def compute_reinforced_flow_weights(
+#     prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
+# ):
+#     r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
+#     prompts = np.asarray(prompts)
+#     rollout_batch_ids = np.asarray(rollout_batch_ids)
+#     nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
+#     if nft_advantages.ndim > 1:
+#         # NFT repeats each clean-sample advantage over training timesteps.
+#         nft_advantages = nft_advantages[:, 0]
+#     if advantage_clip <= 0:
+#         raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
+#     # if not 0.0 <= coverage_beta <= 1.0:
+#     #     raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
+#     if epsilon <= 0:
+#         raise ValueError(f"epsilon must be positive, got {epsilon}")
+#     if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
+#         raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
+#
+#     advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
+#     if advantage_mode == "positive_only":
+#         advantages_clip = np.clip(advantages_clip, 0.0, advantage_clip)
+#     elif advantage_mode == "negative_only":
+#         advantages_clip = np.clip(advantages_clip, -advantage_clip, 0.0)
+#     elif advantage_mode == "one_only":
+#         advantages_clip = np.where(advantages_clip > 0.0, 1.0, 0.0)
+#     elif advantage_mode == "binary":
+#         advantages_clip = np.sign(advantages_clip)
+#
+#     # This is exactly 2 * r - 1 in the original NFT code:
+#     # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
+#     normalized_advantages = advantages_clip / advantage_clip
+#     importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
+#     prompt_normalizers = np.empty_like(importance_weights)
+#
+#     prompt_groups = defaultdict(list)
+#     for sample_idx, (rollout_batch_id, prompt) in enumerate(zip(rollout_batch_ids, prompts, strict=True)):
+#         prompt_groups[(int(rollout_batch_id), str(prompt))].append(sample_idx)
+#
+#     for sample_indices in prompt_groups.values():
+#         sample_indices = np.asarray(sample_indices, dtype=np.int64)
+#         prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
+#         prompt_normalizers[sample_indices] = prompt_z_bar
+#
+#     return normalized_advantages, importance_weights, prompt_normalizers
 
-def compute_reinforced_flow_weights(
-    prompts,
-    rollout_batch_ids,
-    nft_advantages,
-    advantage_clip,
-    coverage_beta,
-    epsilon,
-    advantage_mode="all",
-    group_size=None,
-):
-    r"""Map NFT advantages to \hat A/W/\bar Z and build same-prompt correction groups."""
-    prompts = np.asarray(prompts)
-    rollout_batch_ids = np.asarray(rollout_batch_ids)
-    nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
-    if nft_advantages.ndim > 1:
-        # NFT repeats each clean-sample advantage over training timesteps.
-        nft_advantages = nft_advantages[:, 0]
-    if advantage_clip <= 0:
-        raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
-    if not 0.0 <= coverage_beta <= 1.0:
-        raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
-    if epsilon <= 0:
-        raise ValueError(f"epsilon must be positive, got {epsilon}")
-    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
-        raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
 
-    advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
-    if advantage_mode == "positive_only":
-        advantages_clip = np.clip(advantages_clip, 0.0, advantage_clip)
-    elif advantage_mode == "negative_only":
-        advantages_clip = np.clip(advantages_clip, -advantage_clip, 0.0)
-    elif advantage_mode == "one_only":
-        advantages_clip = np.where(advantages_clip > 0.0, 1.0, 0.0)
-    elif advantage_mode == "binary":
-        advantages_clip = np.sign(advantages_clip)
+def _nearest_attainable_quantile_boundary(group_rewards, desired_negative_fraction):
+    """Return the nearest attainable between-level boundary and negative fraction."""
+    unique_rewards, counts = np.unique(group_rewards, return_counts=True)
+    if len(unique_rewards) == 1:
+        # No reward-supported partition exists. Using the only reward as the
+        # baseline makes every centered reward zero and therefore every W = 1.
+        return float(unique_rewards[0]), None
 
-    # This is exactly 2 * r - 1 in the original NFT code:
-    # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
-    normalized_advantages = advantages_clip / advantage_clip
-    importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
-    prompt_normalizers = np.empty_like(importance_weights)
-    if group_size is None or int(group_size) <= 0:
-        raise ValueError(f"group_size must be a positive integer, got {group_size}")
-    group_size = int(group_size)
-    correction_group_indices = np.full(
-        (len(importance_weights), group_size),
-        fill_value=-1,
-        dtype=np.int64,
+    attainable_fractions = np.cumsum(counts, dtype=np.float64)[:-1] / len(group_rewards)
+    distances = np.abs(attainable_fractions - desired_negative_fraction)
+    nearest_indices = np.flatnonzero(
+        np.isclose(distances, distances.min(), rtol=0.0, atol=1e-12)
     )
 
+    if desired_negative_fraction > 0.5:
+        # Low-quality stage: an exact tie favors weakening more samples.
+        selected_index = nearest_indices[np.argmax(attainable_fractions[nearest_indices])]
+    else:
+        # High-quality stage (and q=0.5): an exact tie favors more positive samples.
+        selected_index = nearest_indices[np.argmin(attainable_fractions[nearest_indices])]
+
+    lower_reward = unique_rewards[selected_index]
+    upper_reward = unique_rewards[selected_index + 1]
+    boundary = lower_reward + (upper_reward - lower_reward) / 2.0
+    return float(boundary), float(attainable_fractions[selected_index])
+
+
+def compute_quality_adaptive_quantile_weights(
+    prompts,
+    rollout_batch_ids,
+    raw_rewards,
+    reward_normalization_scale,
+    advantage_clip,
+    max_mass_shift,
+    coverage_beta,
+    epsilon,
+    quantile_min=0.2,
+    quantile_max=0.8,
+    advantage_mode="all",
+):
+    r"""Compute quality-adaptive attainable-quantile advantages and mass weights."""
+    prompts = np.asarray(prompts)
+    rollout_batch_ids = np.asarray(rollout_batch_ids)
+    raw_rewards = np.asarray(raw_rewards, dtype=np.float64)
+    if raw_rewards.ndim > 1:
+        raw_rewards = raw_rewards[:, 0]
+
+    if reward_normalization_scale <= 0:
+        raise ValueError(
+            f"reward_normalization_scale must be positive, got {reward_normalization_scale}"
+        )
+    if advantage_clip <= 0:
+        raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
+    if not 0 < max_mass_shift <= 1:
+        raise ValueError(f"max_mass_shift must be in (0, 1], got {max_mass_shift}")
+    if not 0.0 <= quantile_min <= quantile_max <= 1.0:
+        raise ValueError(
+            "quantile bounds must satisfy "
+            f"0 <= quantile_min <= quantile_max <= 1, got [{quantile_min}, {quantile_max}]"
+        )
+    if epsilon <= 0:
+        raise ValueError(f"epsilon must be positive, got {epsilon}")
+    if not (len(prompts) == len(rollout_batch_ids) == len(raw_rewards)):
+        raise ValueError("prompts, rollout_batch_ids, and raw_rewards must have the same length")
+    if len(raw_rewards) == 0:
+        raise ValueError("quality-adaptive quantile requires at least one reward")
+    if not np.all(np.isfinite(raw_rewards)):
+        raise ValueError("raw_rewards contains non-finite values")
+
+    # Each configured reward is already scaled to [0, 1] by its scorer. The
+    # multi-reward path stores their weighted sum in `avg`, so dividing by the
+    # sum of positive weights makes both the single- and multi-reward paths
+    # comparable without destroying cross-epoch quality information.
+    # normalized_rewards = np.clip(raw_rewards / reward_normalization_scale, 0.0, 1.0)
+    normalized_rewards = raw_rewards
+    policy_quality = float(np.mean(normalized_rewards))
+    # Original unbounded adaptive quantile retained for comparison:
+    # quantile_level = float(np.clip(1.0 - policy_quality, 0.0, 1.0))
+    quantile_level = float(np.clip(1.0 - policy_quality, quantile_min, quantile_max))
+    global_reward_std = float(np.std(normalized_rewards)) + 1e-4
+
+    baselines = np.empty_like(normalized_rewards)
     prompt_groups = defaultdict(list)
     for sample_idx, (rollout_batch_id, prompt) in enumerate(zip(rollout_batch_ids, prompts, strict=True)):
+        # A repeated prompt in another sampling batch is a different rollout group.
         prompt_groups[(int(rollout_batch_id), str(prompt))].append(sample_idx)
 
+    # Original empirical-quantile baseline retained for comparison:
+    # for sample_indices in prompt_groups.values():
+    #     sample_indices = np.asarray(sample_indices, dtype=np.int64)
+    #     baselines[sample_indices] = np.quantile(normalized_rewards[sample_indices], quantile_level)
+
+    attainable_fractions = []
+    degenerate_group_count = 0
     for sample_indices in prompt_groups.values():
         sample_indices = np.asarray(sample_indices, dtype=np.int64)
-        if len(sample_indices) != group_size:
-            raise ValueError(
-                "Each (rollout_batch_id, prompt) correction group must contain "
-                f"exactly K={group_size} samples, but found {len(sample_indices)}. "
-                "If duplicate prompt strings represent distinct groups, propagate a unique prompt_group_id."
-            )
-        if len(np.unique(sample_indices)) != group_size:
-            raise ValueError("Correction group indices must be unique")
+        boundary, attainable_fraction = _nearest_attainable_quantile_boundary(
+            normalized_rewards[sample_indices], quantile_level
+        )
+        baselines[sample_indices] = boundary
+        if attainable_fraction is None:
+            degenerate_group_count += 1
+        else:
+            attainable_fractions.append(attainable_fraction)
+
+    centered_rewards = normalized_rewards - baselines
+    standardized_advantages = centered_rewards / global_reward_std
+    # Previous direct mass-shift clipping retained for comparison:
+    # mass_shifts = np.clip(standardized_advantages, -max_mass_shift, max_mass_shift)
+    # Match the original NFT scale: clip standardized advantages at +/-A and
+    # divide by A before applying the independently controlled maximum shift.
+    mass_shifts = max_mass_shift * np.clip(
+        standardized_advantages / advantage_clip,
+        -1.0,
+        1.0,
+    )
+    if advantage_mode == "positive_only":
+        mass_shifts = np.clip(mass_shifts, 0.0, max_mass_shift)
+    elif advantage_mode == "negative_only":
+        mass_shifts = np.clip(mass_shifts, -max_mass_shift, 0.0)
+    elif advantage_mode == "one_only":
+        mass_shifts = np.where(mass_shifts > 0.0, max_mass_shift, 0.0)
+    elif advantage_mode == "binary":
+        mass_shifts = np.sign(mass_shifts) * max_mass_shift
+    elif advantage_mode != "all":
+        raise ValueError(f"Unsupported advantage_mode: {advantage_mode}")
+
+    # Original unbalanced weight construction retained for comparison:
+    # importance_weights = np.maximum(epsilon, 1.0 + mass_shifts)
+    unbalanced_mass_shifts = mass_shifts.copy()
+    balanced_mass_shifts = np.zeros_like(unbalanced_mass_shifts)
+    for sample_indices in prompt_groups.values():
+        sample_indices = np.asarray(sample_indices, dtype=np.int64)
+        group_mass_shifts = unbalanced_mass_shifts[sample_indices]
+        positive_shifts = np.clip(group_mass_shifts, 0.0, None)
+        negative_magnitudes = np.clip(-group_mass_shifts, 0.0, None)
+        positive_total = float(np.sum(positive_shifts))
+        negative_total = float(np.sum(negative_magnitudes))
+
+        if positive_total <= epsilon or negative_total <= epsilon:
+            # A one-sided or degenerate group cannot be centered without
+            # inventing an unsupported correction direction, so keep it neutral.
+            continue
+
+        common_mass = min(positive_total, negative_total)
+        balanced_mass_shifts[sample_indices] = (
+            positive_shifts * (common_mass / positive_total)
+            - negative_magnitudes * (common_mass / negative_total)
+        )
+
+    mass_shifts = balanced_mass_shifts
+    importance_weights = np.maximum(epsilon, 1.0 + mass_shifts)
+    prompt_normalizers = np.empty_like(importance_weights)
+    for sample_indices in prompt_groups.values():
+        sample_indices = np.asarray(sample_indices, dtype=np.int64)
         prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
         prompt_normalizers[sample_indices] = prompt_z_bar
-        correction_group_indices[sample_indices] = sample_indices[None, :]
 
-    if np.any(correction_group_indices < 0):
-        raise RuntimeError("Some rollout samples were not assigned to a correction group")
-    sample_ids = np.arange(len(importance_weights), dtype=np.int64)[:, None]
-    if not np.all(np.any(correction_group_indices == sample_ids, axis=1)):
-        raise RuntimeError("Every outer sample must be included in its own correction group")
+    attainable_fractions = np.asarray(attainable_fractions, dtype=np.float64)
+    if len(attainable_fractions) > 0:
+        attainable_errors = np.abs(attainable_fractions - quantile_level)
+        attainable_quantile_mean = float(np.mean(attainable_fractions))
+        attainable_quantile_error_mean = float(np.mean(attainable_errors))
+        attainable_quantile_error_max = float(np.max(attainable_errors))
+    else:
+        attainable_quantile_mean = 0.0
+        attainable_quantile_error_mean = 0.0
+        attainable_quantile_error_max = 0.0
 
-    # Original single-sample return kept for reference:
-    # return normalized_advantages, importance_weights, prompt_normalizers
-    return normalized_advantages, importance_weights, prompt_normalizers, correction_group_indices
+    group_mass_shift_residuals = []
+    for sample_indices in prompt_groups.values():
+        sample_indices = np.asarray(sample_indices, dtype=np.int64)
+        group_mass_shift_residuals.append(abs(float(np.sum(mass_shifts[sample_indices]))))
+    unbalanced_abs_mass = float(np.sum(np.abs(unbalanced_mass_shifts)))
+    balanced_abs_mass = float(np.sum(np.abs(mass_shifts)))
+
+    metrics = {
+        "policy_quality": policy_quality,
+        "quantile_level": quantile_level,
+        "quantile_min": quantile_min,
+        "quantile_max": quantile_max,
+        "advantage_clip": advantage_clip,
+        "max_mass_shift": max_mass_shift,
+        "attainable_quantile_mean": attainable_quantile_mean,
+        "attainable_quantile_error_mean": attainable_quantile_error_mean,
+        "attainable_quantile_error_max": attainable_quantile_error_max,
+        "degenerate_group_ratio": degenerate_group_count / len(prompt_groups),
+        "global_reward_std": global_reward_std,
+        "baseline_mean": float(np.mean(baselines)),
+        "zero_centered_reward_ratio": float(np.mean(centered_rewards == 0.0)),
+        "unbalanced_mass_shift_mean": float(np.mean(unbalanced_mass_shifts)),
+        "balanced_mass_shift_mean": float(np.mean(mass_shifts)),
+        "mass_shift_retention_ratio": balanced_abs_mass / (unbalanced_abs_mass + epsilon),
+        "group_mass_shift_residual_mean": float(np.mean(group_mass_shift_residuals)),
+        "group_mass_shift_residual_max": float(np.max(group_mass_shift_residuals)),
+        "positive_mass_ratio": float(np.mean(mass_shifts > 0.0)),
+        "negative_mass_ratio": float(np.mean(mass_shifts < 0.0)),
+    }
+    return standardized_advantages, importance_weights, prompt_normalizers, metrics
 
 
 def log_scalars(writer, scalars, step):
@@ -404,6 +576,98 @@ def log_scalars(writer, scalars, step):
             value = value.item()
         if isinstance(value, (int, float)):
             writer.add_scalar(key, value, step)
+
+
+def log_first_prompt_reward_distributions(
+    writer,
+    prompts,
+    rollout_batch_ids,
+    raw_rewards,
+    reward_normalization_scale,
+    quantile_level,
+    epoch,
+    step,
+    num_prompts=2,
+):
+    """Log all rewards from the first prompt groups in the current rollout."""
+    prompts = np.asarray(prompts)
+    rollout_batch_ids = np.asarray(rollout_batch_ids)
+    raw_rewards = np.asarray(raw_rewards, dtype=np.float64)
+    if raw_rewards.ndim > 1:
+        # `avg` is repeated over training timesteps; every column is identical.
+        raw_rewards = raw_rewards[:, 0]
+
+    selected_groups = []
+    selected_group_set = set()
+    for rollout_batch_id, prompt in zip(rollout_batch_ids, prompts, strict=True):
+        group_key = (int(rollout_batch_id), str(prompt))
+        if group_key not in selected_group_set:
+            selected_group_set.add(group_key)
+            selected_groups.append(group_key)
+            if len(selected_groups) == num_prompts:
+                break
+
+    for prompt_index, (rollout_batch_id, prompt) in enumerate(selected_groups):
+        group_mask = (rollout_batch_ids == rollout_batch_id) & (prompts.astype(str) == prompt)
+        group_raw_rewards = raw_rewards[group_mask]
+        # group_normalized_rewards = np.clip(group_raw_rewards / reward_normalization_scale, 0.0, 1.0)
+        group_normalized_rewards = group_raw_rewards
+        baseline_reward, attainable_quantile = _nearest_attainable_quantile_boundary(
+            group_normalized_rewards, quantile_level
+        )
+        is_degenerate = attainable_quantile is None
+        raw_reward_values = group_raw_rewards.tolist()
+        normalized_reward_values = group_normalized_rewards.tolist()
+        tag = f"prompt_reward_distribution/prompt_{prompt_index}"
+
+        logger.info(
+            "Epoch %d prompt_%d (rollout batch %d, %d samples) target quantile: %.6f; "
+            "attainable quantile: %s; baseline reward: %.6f; rewards: %s | prompt: %s",
+            epoch,
+            prompt_index,
+            rollout_batch_id,
+            len(group_raw_rewards),
+            quantile_level,
+            "degenerate" if is_degenerate else f"{attainable_quantile:.6f}",
+            baseline_reward,
+            json.dumps(raw_reward_values),
+            prompt[:500],
+        )
+        if writer is None:
+            continue
+
+        writer.add_histogram(f"{tag}/raw", group_raw_rewards, global_step=step)
+        writer.add_histogram(f"{tag}/normalized", group_normalized_rewards, global_step=step)
+        writer.add_scalar(f"{tag}/raw_mean", float(np.mean(group_raw_rewards)), step)
+        writer.add_scalar(f"{tag}/raw_std", float(np.std(group_raw_rewards)), step)
+        writer.add_scalar(f"{tag}/raw_min", float(np.min(group_raw_rewards)), step)
+        writer.add_scalar(f"{tag}/raw_max", float(np.max(group_raw_rewards)), step)
+        writer.add_scalar(f"{tag}/target_quantile", quantile_level, step)
+        writer.add_scalar(f"{tag}/baseline_reward", baseline_reward, step)
+        writer.add_scalar(f"{tag}/is_degenerate", float(is_degenerate), step)
+        if attainable_quantile is not None:
+            writer.add_scalar(f"{tag}/attainable_quantile", attainable_quantile, step)
+        writer.add_text(
+            f"{tag}/all_values",
+            "```json\n"
+            + json.dumps(
+                {
+                    "epoch": epoch,
+                    "rollout_batch_id": rollout_batch_id,
+                    "prompt": prompt,
+                    "target_quantile": quantile_level,
+                    "attainable_quantile": attainable_quantile,
+                    "baseline_reward": baseline_reward,
+                    "is_degenerate": is_degenerate,
+                    "raw_rewards": raw_reward_values,
+                    "normalized_rewards": normalized_reward_values,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n```",
+            step,
+        )
 
 
 def get_nested_config_value(config, path, default):
@@ -434,8 +698,17 @@ def get_image_log_settings(config):
     return max(1, int(num_prompts)), max(1, int(num_images_per_prompt))
 
 
+def reward_values_to_numpy(reward_values):
+    """Move CUDA reward tensors to host memory before NumPy logging."""
+    if isinstance(reward_values, torch.Tensor):
+        return reward_values.detach().cpu().numpy()
+    if isinstance(reward_values, (list, tuple)):
+        return np.asarray([reward_values_to_numpy(value) for value in reward_values])
+    return np.asarray(reward_values)
+
+
 def format_reward_value(value):
-    value = np.asarray(value)
+    value = reward_values_to_numpy(value)
     if value.size == 0:
         return None
     scalar = float(value.reshape(-1)[0])
@@ -504,7 +777,8 @@ def append_prompt_image_log_batch(log_batches, prompt_counts, images, prompts, r
         return
 
     selected_rewards = {
-        reward_key: np.asarray(reward_values)[selected_indices] for reward_key, reward_values in rewards.items()
+        reward_key: reward_values_to_numpy(reward_values)[selected_indices]
+        for reward_key, reward_values in rewards.items()
     }
     log_batches.append((images.detach().cpu()[selected_indices], selected_prompts, selected_rewards))
 
@@ -684,7 +958,8 @@ def eval_fn(
             ]
             rewards_to_log = {
                 reward_key: np.concatenate(
-                    [np.asarray(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches], axis=0
+                    [reward_values_to_numpy(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches],
+                    axis=0,
                 )
                 for reward_key in eval_image_log_batches[0][2]
             }
@@ -799,9 +1074,12 @@ def main(_):
     if is_main_process(rank):
         log_dir = os.path.join(config.logdir, config.run_name)
         os.makedirs(log_dir, exist_ok=True)
+        log_path = add_file_log_handler(log_dir)
         writer = SummaryWriter(log_dir=log_dir)
         writer.add_text("config", f"```text\n{config}\n```", 0)
+        logger.info("Writing command-line logs to %s", log_path)
     logger.info(f"\n{config}")
+
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
 
     # --- Mixed Precision Setup ---
@@ -1239,80 +1517,98 @@ def main(_):
         rollout_batch_ids_all = gather_tensor_to_all(collated_samples["rollout_batch_ids"], world_size).numpy()
         algorithm_epsilon = 1e-5
 
-        if config.per_prompt_stat_tracking:
-            # Stat tracker update expects numpy arrays for rewards
-            # advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
-            # stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
-            advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
-
-            if is_main_process(rank):
-                group_size, trained_prompt_num = stat_tracker.get_stats()
-                zero_std_ratio, reward_std_mean = calculate_zero_std_ratio(prompts_all_decoded, gathered_rewards_dict)
-                log_scalars(
-                    writer,
-                    {
-                        "stats/group_size": group_size,
-                        "stats/trained_prompt_num": trained_prompt_num,
-                        "stats/zero_std_ratio": zero_std_ratio,
-                        "stats/reward_std_mean": reward_std_mean,
-                        "stats/mean_reward_100": stat_tracker.get_mean_of_top_rewards(100),
-                        "stats/mean_reward_75": stat_tracker.get_mean_of_top_rewards(75),
-                        "stats/mean_reward_50": stat_tracker.get_mean_of_top_rewards(50),
-                        "stats/mean_reward_25": stat_tracker.get_mean_of_top_rewards(25),
-                        "stats/mean_reward_10": stat_tracker.get_mean_of_top_rewards(10),
-                    },
-                    global_step,
-                )
-            stat_tracker.clear()
-        else:
-            # avg_rewards_all = gathered_rewards_dict["avg"]
-            # advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
-            # pass
-            avg_rewards_all = gathered_rewards_dict["avg"]
-            advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
-
-        # Original single-sample weight return kept for reference:
+        # Original group-mean/stat-tracker advantage computation retained for comparison:
+        # if config.per_prompt_stat_tracking:
+        #     # Stat tracker update expects numpy arrays for rewards
+        #     # advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
+        #     # stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
+        #     advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
+        #
+        #     if is_main_process(rank):
+        #         group_size, trained_prompt_num = stat_tracker.get_stats()
+        #         zero_std_ratio, reward_std_mean = calculate_zero_std_ratio(prompts_all_decoded, gathered_rewards_dict)
+        #         log_scalars(
+        #             writer,
+        #             {
+        #                 "stats/group_size": group_size,
+        #                 "stats/trained_prompt_num": trained_prompt_num,
+        #                 "stats/zero_std_ratio": zero_std_ratio,
+        #                 "stats/reward_std_mean": reward_std_mean,
+        #                 "stats/mean_reward_100": stat_tracker.get_mean_of_top_rewards(100),
+        #                 "stats/mean_reward_75": stat_tracker.get_mean_of_top_rewards(75),
+        #                 "stats/mean_reward_50": stat_tracker.get_mean_of_top_rewards(50),
+        #                 "stats/mean_reward_25": stat_tracker.get_mean_of_top_rewards(25),
+        #                 "stats/mean_reward_10": stat_tracker.get_mean_of_top_rewards(10),
+        #             },
+        #             global_step,
+        #         )
+        #     stat_tracker.clear()
+        # else:
+        #     # avg_rewards_all = gathered_rewards_dict["avg"]
+        #     # advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
+        #     # pass
+        #     avg_rewards_all = gathered_rewards_dict["avg"]
+        #     advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
+        #
         # normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
-        normalized_advantages, importance_weights, prompt_normalizers, correction_group_indices = (
-            compute_reinforced_flow_weights(
+        #     prompts_all_decoded,
+        #     rollout_batch_ids_all,
+        #     advantages,
+        #     advantage_clip=float(config.train.adv_clip_max),
+        #     coverage_beta=float(config.beta),
+        #     epsilon=algorithm_epsilon,
+        #     advantage_mode=getattr(config.train, "adv_mode", "all"),
+        # )
+
+        reward_normalization_scale = sum(float(weight) for weight in config.reward_fn.values())
+        # Original pre-QAAQ reward-distribution logging retained for comparison:
+        # if is_main_process(rank):
+        #     log_first_prompt_reward_distributions(
+        #         writer,
+        #         prompts_all_decoded,
+        #         rollout_batch_ids_all,
+        #         gathered_rewards_dict["avg"],
+        #         reward_normalization_scale,
+        #         epoch,
+        #         global_step,
+        #     )
+        advantage_clip = float(config.train.adv_clip_max)
+        max_mass_shift = float(getattr(config.train, "quality_adaptive_max_mass_shift", 1.0))
+        quantile_min = float(getattr(config.train, "quality_adaptive_quantile_min", 0.2))
+        quantile_max = float(getattr(config.train, "quality_adaptive_quantile_max", 0.8))
+        advantages, importance_weights, prompt_normalizers, quality_adaptive_metrics = (
+            compute_quality_adaptive_quantile_weights(
                 prompts_all_decoded,
                 rollout_batch_ids_all,
-                advantages,
-                advantage_clip=float(config.train.adv_clip_max),
+                gathered_rewards_dict["avg"],
+                reward_normalization_scale=reward_normalization_scale,
+                advantage_clip=advantage_clip,
+                max_mass_shift=max_mass_shift,
                 coverage_beta=float(config.beta),
                 epsilon=algorithm_epsilon,
+                quantile_min=quantile_min,
+                quantile_max=quantile_max,
                 advantage_mode=getattr(config.train, "adv_mode", "all"),
-                group_size=int(config.sample.num_image_per_prompt),
             )
         )
+        if is_main_process(rank):
+            log_first_prompt_reward_distributions(
+                writer,
+                prompts_all_decoded,
+                rollout_batch_ids_all,
+                gathered_rewards_dict["avg"],
+                reward_normalization_scale,
+                quality_adaptive_metrics["quantile_level"],
+                epoch,
+                global_step,
+            )
+        # Preserve the original [sample, training timestep] advantage interface.
+        advantages = np.repeat(advantages[:, None], num_train_timesteps, axis=1)
         total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
         # Distribute advantages back to processes
         samples_per_gpu = collated_samples["timesteps"].shape[0]
         if advantages.ndim == 1:
             advantages = advantages[:, None]
-
-        # The K same-prompt correction samples may be distributed over multiple
-        # ranks and training micro-batches.  Keep one rank-major global bank on
-        # every rank; its order matches prompt_ids_all and the global W/Z arrays.
-        with torch.no_grad():
-            global_corr_latents = gather_tensor_to_all_device(
-                collated_samples["latents_clean"], world_size
-            )
-            global_corr_importance_weights = torch.as_tensor(
-                importance_weights, device=device, dtype=torch.float32
-            )
-            global_corr_prompt_normalizers = torch.as_tensor(
-                prompt_normalizers, device=device, dtype=torch.float32
-            )
-
-        if not (
-            global_corr_latents.shape[0]
-            == global_corr_importance_weights.shape[0]
-            == global_corr_prompt_normalizers.shape[0]
-            == correction_group_indices.shape[0]
-            == total_rollout_size
-        ):
-            raise RuntimeError("Global correction bank tensors must use the same rank-major sample order")
 
         if advantages.shape[0] == world_size * samples_per_gpu:
             collated_samples["advantages"] = torch.from_numpy(
@@ -1324,24 +1620,47 @@ def main(_):
             collated_samples["prompt_normalizers"] = torch.from_numpy(
                 prompt_normalizers.reshape(world_size, samples_per_gpu)[rank]
             ).to(device=device, dtype=torch.float32)
-            collated_samples["correction_group_indices"] = torch.from_numpy(
-                correction_group_indices.reshape(
-                    world_size,
-                    samples_per_gpu,
-                    int(config.sample.num_image_per_prompt),
-                )[rank]
-            ).to(device=device, dtype=torch.long)
         else:
             assert False
 
         if is_main_process(rank):
             logger.info(f"Advantages mean: {collated_samples['advantages'].abs().mean().item()}")
             logger.info(
-                "Importance weights mean: %.6f; prompt normalizers mean: %.6f; D: %d; K: %d",
+                "Quality: %.6f; quantile: %.6f; reward std: %.6f; positive/negative mass ratio: %.6f/%.6f",
+                quality_adaptive_metrics["policy_quality"],
+                quality_adaptive_metrics["quantile_level"],
+                quality_adaptive_metrics["global_reward_std"],
+                quality_adaptive_metrics["positive_mass_ratio"],
+                quality_adaptive_metrics["negative_mass_ratio"],
+            )
+            logger.info(
+                "Attainable quantile mean/error: %.6f/%.6f; degenerate groups: %.6f; zero centered rewards: %.6f",
+                quality_adaptive_metrics["attainable_quantile_mean"],
+                quality_adaptive_metrics["attainable_quantile_error_mean"],
+                quality_adaptive_metrics["degenerate_group_ratio"],
+                quality_adaptive_metrics["zero_centered_reward_ratio"],
+            )
+            logger.info(
+                "Mass-shift mean before/after balancing: %.6f/%.6f; retention: %.6f; "
+                "max group residual: %.6e",
+                quality_adaptive_metrics["unbalanced_mass_shift_mean"],
+                quality_adaptive_metrics["balanced_mass_shift_mean"],
+                quality_adaptive_metrics["mass_shift_retention_ratio"],
+                quality_adaptive_metrics["group_mass_shift_residual_max"],
+            )
+            logger.info(
+                "Importance weights mean: %.6f; prompt normalizers mean: %.6f; "
+                "advantage clip: %.6f; max mass shift: %.6f; D: %d",
                 collated_samples["importance_weights"].mean().item(),
                 collated_samples["prompt_normalizers"].mean().item(),
+                advantage_clip,
+                max_mass_shift,
                 total_rollout_size,
-                int(config.sample.num_image_per_prompt),
+            )
+            log_scalars(
+                writer,
+                {f"quality_adaptive/{key}": value for key, value in quality_adaptive_metrics.items()},
+                global_step,
             )
 
         del collated_samples["rewards"]
@@ -1526,89 +1845,50 @@ def main(_):
                     # )
                     # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
+
                     # Algorithm 1: reward-induced target velocity and its
                     # importance-weighted, timestep-adapted regression loss.
                     importance_weight = train_sample_batch["importance_weights"].float()
                     prompt_normalizer = train_sample_batch["prompt_normalizers"].float()
-
-                    # Double-sampling approximation: for every fixed outer x_t,
-                    # average corrections from all K same-prompt clean rollouts.
                     with torch.no_grad():
-                        correction_group_indices = train_sample_batch["correction_group_indices"].long()
-                        expected_group_size = int(config.sample.num_image_per_prompt)
-                        if correction_group_indices.shape != (
-                            current_micro_batch_size,
-                            expected_group_size,
-                        ):
-                            raise RuntimeError(
-                                "correction_group_indices must have shape "
-                                f"[{current_micro_batch_size}, {expected_group_size}], got "
-                                f"{list(correction_group_indices.shape)}"
-                            )
-
-                        corr_z = global_corr_latents[correction_group_indices].float()
-                        corr_importance_weight = global_corr_importance_weights[
-                            correction_group_indices
-                        ]
-                        corr_prompt_normalizer = global_corr_prompt_normalizers[
-                            correction_group_indices
-                        ]
-
-                        corr_t_expanded = t.float().view(
-                            -1,
-                            1,
-                            *([1] * (x0.ndim - 1)),
-                        )
-                        fixed_xt = xt.detach().float().unsqueeze(1)
-                        conditional_velocity = (fixed_xt - corr_z) / corr_t_expanded
-
-                        fixed_old_prediction = old_prediction.detach().float().unsqueeze(1)
-                        velocity_discrepancy = conditional_velocity - fixed_old_prediction
-                        inner_feature_dims = tuple(range(2, velocity_discrepancy.ndim))
+                        conditional_velocity = noise.float() - x0.float()
+                        velocity_discrepancy = conditional_velocity - old_prediction.detach().float()
                         trajectory_alpha = 1.0 / (
-                            torch.abs(velocity_discrepancy).mean(
-                                dim=inner_feature_dims,
-                                keepdim=True,
+                            # torch.abs(velocity_discrepancy).mean(
+                            torch.abs(conditional_velocity - forward_prediction.float()).mean(
+                                dim=tuple(range(1, x0.ndim)), keepdim=True
                             )
                             + algorithm_epsilon
                         )
-                        # Normalize independently over the K correction samples
-                        # for each fixed outer x_t: mean_j alpha_{i,j} = 1.
-                        trajectory_alpha = trajectory_alpha / trajectory_alpha.mean(
-                            dim=1,
-                            keepdim=True,
-                        ).clamp_min(algorithm_epsilon)
-
+                        # Alpha theoretically has unit expectation; enforce its
+                        # empirical mean over the current training batch.
+                        trajectory_alpha = trajectory_alpha / trajectory_alpha.mean()
+                        # correction_coefficient = (
+                        #     float(config.beta) * (importance_weight - 1.0) / prompt_normalizer
+                        # )
                         correction_coefficient = (
-                            float(config.beta)
-                            * (corr_importance_weight - 1.0)
-                            / corr_prompt_normalizer
+                            float(config.beta) * (importance_weight - 1.0) 
                         )
+                        
                         correction_coefficient_expanded = correction_coefficient.view(
-                            current_micro_batch_size,
-                            expected_group_size,
-                            *([1] * (x0.ndim - 1)),
+                            -1, *([1] * (x0.ndim - 1))
                         )
-                        correction_terms = (
-                            correction_coefficient_expanded
-                            * trajectory_alpha
-                            * velocity_discrepancy
+                        target_velocity = old_prediction.detach().float() + correction_coefficient_expanded * (
+                            trajectory_alpha * velocity_discrepancy
                         )
-
-                        mean_velocity_correction = correction_terms.mean(dim=1)
-                        target_velocity = old_prediction.detach().float() + mean_velocity_correction
-
-                        if config.debug and not torch.isfinite(target_velocity).all():
-                            raise FloatingPointError("Non-finite double-sampling target velocity")
 
                     target_velocity_loss = ((forward_prediction - target_velocity) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    target_importance = importance_weight / prompt_normalizer
+                    target_importance = (
+                        importance_weight
+                        / prompt_normalizer
+                    )
                     
-                    ori_policy_loss = t.float() * target_importance * target_velocity_loss
-                    
+                    # ori_policy_loss = t.float() * target_importance * target_velocity_loss
+                    # ori_policy_loss = t.float() / float(config.beta) * target_velocity_loss
+                    ori_policy_loss = t.float() * target_velocity_loss
 
 
                     policy_loss = float(config.train.adv_clip_max) * ori_policy_loss.mean()
@@ -1616,6 +1896,8 @@ def main(_):
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
+                    # loss_terms["single_branch_coeff_abs_mean"] = single_branch_coeff.abs().mean().detach()
+                    # loss_terms["clean_weight_factor"] = weight_factor.mean().detach()
                     loss_terms["importance_weight"] = importance_weight.mean().detach()
                     loss_terms["importance_weight_max"] = importance_weight.max().detach()
                     loss_terms["importance_weight_min"] = importance_weight.min().detach()
@@ -1631,20 +1913,7 @@ def main(_):
                     loss_terms["correction_coefficient_abs_mean"] = correction_coefficient.abs().mean().detach()
                     loss_terms["correction_coefficient_max"] = correction_coefficient.max().detach()
                     loss_terms["correction_coefficient_min"] = correction_coefficient.min().detach()
-                    loss_terms["mean_velocity_correction_norm"] = (
-                        mean_velocity_correction.square()
-                        .mean(dim=tuple(range(1, mean_velocity_correction.ndim)))
-                        .sqrt()
-                        .mean()
-                        .detach()
-                    )
-                    loss_terms["mean_velocity_correction_norm_max"] = (
-                        mean_velocity_correction.square()
-                        .mean(dim=tuple(range(1, mean_velocity_correction.ndim)))
-                        .sqrt()
-                        .max()
-                        .detach()
-                    )
+
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )

@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm/project/chineseculture/public/yuxuan/miniconda3}"
 CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
-PYTHON_BIN="${PYTHON_BIN:-${CONDA_ROOT}/envs/${CONDA_ENV}/bin/python}"
-
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
-REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
 
 LOGDIR="${REPO_DIR}/logs"
-PLATFORM_NNODES="${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-}}"
-PLATFORM_NODE_RANK="${SENSECORE_PYTORCH_NODE_RANK:-${RANK:-${SLURM_NODEID:-}}}"
-NNODES="${NNODES:-${PLATFORM_NNODES:-2}}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-${SENSECORE_ACCELERATE_DEVICE_COUNT:-8}}"
-NODE_RANK="${NODE_RANK:-${PLATFORM_NODE_RANK}}"
+NNODES="${NNODES:-2}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
+NODE_RANK="${NODE_RANK:-${SLURM_NODEID:-0}}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-6}"
 
 case "${NPROC_PER_NODE}" in
@@ -39,13 +34,9 @@ case "${WORLD_SIZE}" in
     ;;
 esac
 
-if [[ -z "${NODE_RANK}" ]] && ((NNODES == 1)); then
-  NODE_RANK=0
-fi
 case "${NODE_RANK}" in
   ''|*[!0-9]*)
-    echo "Unable to determine NODE_RANK for multi-node training." >&2
-    echo "Expected NODE_RANK, SENSECORE_PYTORCH_NODE_RANK, RANK, or SLURM_NODEID." >&2
+    echo "NODE_RANK must be an integer from 0 to NNODES-1" >&2
     exit 2
     ;;
 esac
@@ -78,34 +69,12 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_multi_reward_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0-STAGE1}"
-RUN_NAME="${RUN_NAME:-sd35_multi_reward_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0-STAGE1}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/sd35_ocr_4090_${WORLD_SIZE}gpu_nft_baseline-KL1e-4-beta1.0}"
+RUN_NAME="${RUN_NAME:-sd35_ocr_4090_${WORLD_SIZE}gpu_nft_baseline-KL1e-4-beta1.0}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  echo "Python environment not found: ${PYTHON_BIN}" >&2
-  echo "Set CONDA_ROOT/CONDA_ENV (or PYTHON_BIN) to the configured DiffusionNFT environment." >&2
-  exit 1
-fi
-
-for required_path in \
-  "${SD3_MODEL}/model_index.json" \
-  "${REWARD_CKPTS}/open_clip_pytorch_model.bin" \
-  "${REWARD_CKPTS}/HPS_v2.1_compressed.pt" \
-  "${REWARD_CKPTS}/pickscore/processor/config.json" \
-  "${REWARD_CKPTS}/pickscore/processor/tokenizer.json" \
-  "${REWARD_CKPTS}/pickscore/model/config.json" \
-  "${REWARD_CKPTS}/pickscore/model/model.safetensors" \
-  "${REWARD_CKPTS}/clipscore/clip-vit-large-patch14/config.json" \
-  "${REWARD_CKPTS}/clipscore/clip-vit-large-patch14/preprocessor_config.json" \
-  "${REWARD_CKPTS}/clipscore/clip-vit-large-patch14/model.safetensors"; do
-  if [[ ! -s "${required_path}" ]]; then
-    echo "Required model or reward checkpoint is missing: ${required_path}" >&2
-    exit 1
-  fi
-done
-
+source "${CONDA_ROOT}/bin/activate" "${CONDA_ENV}"
 cd "${REPO_DIR}"
 
 export PYTHONPATH="${REPO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -126,19 +95,6 @@ export HF_HOME="${REPO_DIR}/.cache/huggingface"
 export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
 export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
 export DIFFUSERS_CACHE="${HF_HOME}/diffusers"
-export HPS_ROOT="${REPO_DIR}/.cache/hpsv2"
-export XDG_CACHE_HOME="${REPO_DIR}/.cache"
-export REWARD_CKPTS_DIR="${REWARD_CKPTS}"
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-export HF_DATASETS_OFFLINE=1
-
-"${PYTHON_BIN}" -c "import hpsv2.src.open_clip; import flow_grpo.rewards"
-
-if [[ "${CHECK_ONLY:-0}" == "1" ]]; then
-  echo "Multi-reward preflight passed (PickScore + HPSv2 + CLIPScore)."
-  exit 0
-fi
 
 if ((NNODES == 1)); then
   TORCHRUN_DISTRIBUTED_ARGS=(--standalone --nnodes=1)
@@ -151,20 +107,20 @@ else
   )
 fi
 
-echo "Distributed platform env: SENSECORE_PYTORCH_NODE_RANK=${SENSECORE_PYTORCH_NODE_RANK:-unset}, RANK=${RANK:-unset}, SENSECORE_PYTORCH_NNODES=${SENSECORE_PYTORCH_NNODES:-unset}, platform WORLD_SIZE=${PLATFORM_NNODES:-unset}"
 echo "Launching node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
 
-"${PYTHON_BIN}" -m torch.distributed.run "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours.py \
-  --config=config/nft.py:sd3_multi_reward \
+torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_origin.py \
+  --config=config/nft.py:sd3_ocr \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
   --config.save_dir="${SAVE_DIR}" \
   --config.run_name="${RUN_NAME}" \
+  --config.sample.num_steps=10 \
   --config.sample.train_batch_size="${PER_DEVICE_BATCH}" \
   --config.sample.test_batch_size="${PER_DEVICE_BATCH}" \
   --config.sample.num_batches_per_epoch="${GRADIENT_ACCUMULATION_STEPS}" \
   --config.train.batch_size="${PER_DEVICE_BATCH}" \
   --config.train.gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}" \
-  --config.beta=1.0 \
-  --config.train.beta=0.0001 \
-  --config.sample.num_steps=25
+  --config.decay_type=2 \
+  --config.beta=1 \
+  --config.train.beta=0.0001
