@@ -48,17 +48,10 @@ tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/base.py", "Training configuration.")
-# Experiment B originally exposed a separate M flag; M now directly uses
-# config.num_epochs so the schedule always matches the configured run length.
-# flags.DEFINE_integer(
-#     "dynamic_asymmetric_max_iteration",
-#     1000,
-#     "Experiment B total iterations M. One iteration corresponds to one config epoch.",
-# )
-flags.DEFINE_integer(
-    "dynamic_asymmetric_transition_iteration",
-    100,
-    "Experiment B transition iteration T between negative- and positive-focused updates.",
+flags.DEFINE_float(
+    "asymmetric_mass_shift_scale",
+    1.0,
+    "Fixed scale c for asymmetric mass shifts: Z_+=cZ and Z_-=Z/c.",
 )
 
 logger = logging.getLogger(__name__)
@@ -316,84 +309,61 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 
 
 
-# Experiment A signature retained for comparison:
-# def compute_reinforced_flow_weights(
-#     prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
-# ):
 def compute_reinforced_flow_weights(
     prompts,
     rollout_batch_ids,
     nft_advantages,
-    rewards,
     advantage_clip,
     coverage_beta,
     epsilon,
-    current_iteration,
-    max_iteration,
-    transition_iteration,
+    asymmetric_scale,
     advantage_mode="all",
 ):
-    # Experiment A docstring retained for comparison:
-    # r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
-    r"""Experiment B: epoch-scheduled asymmetric positive/negative advantage scales."""
+    r"""Compute fixed-asymmetric mass shifts, weights, and prompt-wise \bar Z.
+
+    ``nft_advantages`` uses the same prompt centering and current-rollout
+    global standard deviation as ``train_nft_sd3_ours.py``.  Dividing its
+    positive values by c and multiplying its negative values by c implements
+    Z_+ = cZ and Z_- = Z/c.  Clipped values are divided by
+    ``advantage_clip`` to retain the original mass-shift range of [-1, 1].
+    """
     prompts = np.asarray(prompts)
     rollout_batch_ids = np.asarray(rollout_batch_ids)
     nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
     if nft_advantages.ndim > 1:
         # NFT repeats each clean-sample advantage over training timesteps.
         nft_advantages = nft_advantages[:, 0]
-    rewards = np.asarray(rewards, dtype=np.float64)
-    if rewards.ndim > 1:
-        # Rewards are repeated over training timesteps before all-gather.
-        rewards = rewards[:, 0]
     if advantage_clip <= 0:
         raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
     # if not 0.0 <= coverage_beta <= 1.0:
     #     raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
     if epsilon <= 0:
         raise ValueError(f"epsilon must be positive, got {epsilon}")
-    if max_iteration <= 0:
-        raise ValueError(f"max_iteration must be positive, got {max_iteration}")
-    if not 0 < transition_iteration < max_iteration:
-        raise ValueError(
-            "transition_iteration must satisfy 0 < T < M, "
-            f"got T={transition_iteration}, M={max_iteration}"
-        )
-    if not 0 <= current_iteration <= max_iteration:
-        raise ValueError(
-            "current_iteration must be within [0, M], "
-            f"got m={current_iteration}, M={max_iteration}"
-        )
-    # Experiment A validation retained for comparison:
-    # if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
-    #     raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
-    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages) == len(rewards)):
-        raise ValueError("prompts, rollout_batch_ids, nft_advantages, and rewards must have the same length")
+    if not np.isfinite(asymmetric_scale) or asymmetric_scale <= 0:
+        raise ValueError(f"asymmetric_scale must be finite and positive, got {asymmetric_scale}")
+    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
+        raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
 
-    # Experiment A advantage-to-weight mapping retained for comparison:
-    # advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
-    # if advantage_mode == "positive_only":
-    #     advantages_clip = np.clip(advantages_clip, 0.0, advantage_clip)
-    # elif advantage_mode == "negative_only":
-    #     advantages_clip = np.clip(advantages_clip, -advantage_clip, 0.0)
-    # elif advantage_mode == "one_only":
-    #     advantages_clip = np.where(advantages_clip > 0.0, 1.0, 0.0)
-    # elif advantage_mode == "binary":
-    #     advantages_clip = np.sign(advantages_clip)
-    #
-    # # This is exactly 2 * r - 1 in the original NFT code:
-    # # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
-    # normalized_advantages = advantages_clip / advantage_clip
-    # importance_weights = 1.0 + normalized_advantages
+    # nft_advantages = (R_i - prompt_mean) / Z with the original script's
+    # current-rollout global standard deviation Z.  Apply Z_+ = cZ and
+    # Z_- = Z/c before retaining the baseline clipping/mode behavior.
+    asymmetric_advantages = np.where(
+        nft_advantages > 0.0,
+        nft_advantages / asymmetric_scale,
+        nft_advantages * asymmetric_scale,
+    )
+    advantages_clip = np.clip(asymmetric_advantages, -advantage_clip, advantage_clip)
+    if advantage_mode == "positive_only":
+        advantages_clip = np.clip(advantages_clip, 0.0, advantage_clip)
+    elif advantage_mode == "negative_only":
+        advantages_clip = np.clip(advantages_clip, -advantage_clip, 0.0)
+    elif advantage_mode == "one_only":
+        advantages_clip = np.where(advantages_clip > 0.0, 1.0, 0.0)
+    elif advantage_mode == "binary":
+        advantages_clip = np.sign(advantages_clip)
 
-    if current_iteration <= transition_iteration:
-        dynamic_scale = 1.0 - current_iteration / transition_iteration
-    else:
-        dynamic_scale = -(current_iteration - transition_iteration) / (
-            max_iteration - transition_iteration
-        )
-    asymmetric_advantages = np.empty_like(rewards)
-    importance_weights = np.empty_like(rewards)
+    normalized_advantages = advantages_clip / advantage_clip
+    importance_weights = 1.0 + normalized_advantages
     prompt_normalizers = np.empty_like(importance_weights)
 
     prompt_groups = defaultdict(list)
@@ -402,33 +372,10 @@ def compute_reinforced_flow_weights(
 
     for sample_indices in prompt_groups.values():
         sample_indices = np.asarray(sample_indices, dtype=np.int64)
-        group_rewards = rewards[sample_indices]
-        reward_offsets = group_rewards - np.mean(group_rewards)
-        reward_scale = np.sqrt(np.mean(np.square(reward_offsets)) + epsilon)
-        positive_scale = reward_scale * np.exp(dynamic_scale)
-        negative_scale = reward_scale * np.exp(-dynamic_scale)
-
-        group_advantages = np.empty_like(group_rewards)
-        positive_mask = reward_offsets > 0.0
-        group_advantages[positive_mask] = np.clip(
-            reward_offsets[positive_mask] / positive_scale,
-            0.0,
-            advantage_clip,
-        )
-        group_advantages[~positive_mask] = np.clip(
-            reward_offsets[~positive_mask] / negative_scale,
-            -advantage_clip,
-            0.0,
-        )
-        # Keep the same [-1, 1] normalized-advantage scale as Experiment A.
-        # Consequently m = T (g = 0) exactly recovers the symmetric baseline.
-        group_advantages = group_advantages / advantage_clip
-        asymmetric_advantages[sample_indices] = group_advantages
-        importance_weights[sample_indices] = 1.0 + group_advantages
         prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
         prompt_normalizers[sample_indices] = prompt_z_bar
 
-    return asymmetric_advantages, importance_weights, prompt_normalizers
+    return normalized_advantages, importance_weights, prompt_normalizers
 
 
 def log_scalars(writer, scalars, step):
@@ -1322,29 +1269,14 @@ def main(_):
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
 
-        # Experiment A call retained for comparison:
-        # normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
-        #     prompts_all_decoded,
-        #     rollout_batch_ids_all,
-        #     advantages,
-        #     advantage_clip=float(config.train.adv_clip_max),
-        #     coverage_beta=float(config.beta),
-        #     epsilon=algorithm_epsilon,
-        #     advantage_mode=getattr(config.train, "adv_mode", "all"),
-        # )
         normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
             prompts_all_decoded,
             rollout_batch_ids_all,
             advantages,
-            rewards=gathered_rewards_dict["avg"],
             advantage_clip=float(config.train.adv_clip_max),
             coverage_beta=float(config.beta),
             epsilon=algorithm_epsilon,
-            current_iteration=epoch,
-            # Experiment B's original separate M flag retained for comparison:
-            # max_iteration=int(FLAGS.dynamic_asymmetric_max_iteration),
-            max_iteration=int(config.num_epochs),
-            transition_iteration=int(FLAGS.dynamic_asymmetric_transition_iteration),
+            asymmetric_scale=float(FLAGS.asymmetric_mass_shift_scale),
             advantage_mode=getattr(config.train, "adv_mode", "all"),
         )
         total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
@@ -1368,6 +1300,13 @@ def main(_):
 
         if is_main_process(rank):
             logger.info(f"Advantages mean: {collated_samples['advantages'].abs().mean().item()}")
+            logger.info(
+                "Asymmetric mass-shift scale c: %.6f; mass shifts mean/min/max: %.6f/%.6f/%.6f",
+                float(FLAGS.asymmetric_mass_shift_scale),
+                normalized_advantages.mean(),
+                normalized_advantages.min(),
+                normalized_advantages.max(),
+            )
             logger.info(
                 "Importance weights mean: %.6f; prompt normalizers mean: %.6f; D: %d",
                 collated_samples["importance_weights"].mean().item(),
@@ -1566,7 +1505,8 @@ def main(_):
                         conditional_velocity = noise.float() - x0.float()
                         velocity_discrepancy = conditional_velocity - old_prediction.detach().float()
                         trajectory_alpha = 1.0 / (
-                            torch.abs(velocity_discrepancy).mean(
+                            # torch.abs(velocity_discrepancy).mean(
+                            torch.abs(conditional_velocity - forward_prediction.float()).mean(
                                 dim=tuple(range(1, x0.ndim)), keepdim=True
                             )
                             + algorithm_epsilon

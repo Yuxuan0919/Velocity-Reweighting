@@ -352,7 +352,7 @@ def compute_reinforced_flow_weights(
     # This is exactly 2 * r - 1 in the original NFT code:
     # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
     normalized_advantages = advantages_clip / advantage_clip
-    importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
+    importance_weights = 1.0 + normalized_advantages
     prompt_normalizers = np.empty_like(importance_weights)
 
     prompt_groups = defaultdict(list)

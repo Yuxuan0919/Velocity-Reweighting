@@ -406,7 +406,7 @@ def compute_reinforced_flow_weights(
     # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
     normalized_advantages = advantages_clip / advantage_clip
     # Experiment A weight mapping retained for comparison:
-    # importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
+    # importance_weights = 1.0 + normalized_advantages
     importance_weights = np.empty_like(nft_advantages)
     prompt_normalizers = np.empty_like(importance_weights)
 

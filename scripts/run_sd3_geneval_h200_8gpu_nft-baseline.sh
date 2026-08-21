@@ -42,5 +42,5 @@ torchrun --standalone --nnodes=1 --nproc_per_node="${NPROC_PER_NODE}" scripts/tr
   --config.logdir="${LOGDIR}" \
   --config.save_dir="${SAVE_DIR}" \
   --config.run_name="${RUN_NAME}" \
-  --config.beta=1 \
+  --config.beta=1.0 \
   --config.train.beta=0.0001 \

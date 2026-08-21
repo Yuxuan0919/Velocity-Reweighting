@@ -348,7 +348,7 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 #     # This is exactly 2 * r - 1 in the original NFT code:
 #     # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
 #     normalized_advantages = advantages_clip / advantage_clip
-#     importance_weights = np.maximum(epsilon, 1.0 + normalized_advantages)
+#     importance_weights = 1.0 + normalized_advantages
 #     prompt_normalizers = np.empty_like(importance_weights)
 #
 #     prompt_groups = defaultdict(list)
@@ -491,7 +491,7 @@ def compute_quality_adaptive_quantile_weights(
         raise ValueError(f"Unsupported advantage_mode: {advantage_mode}")
 
     # Original unbalanced weight construction retained for comparison:
-    # importance_weights = np.maximum(epsilon, 1.0 + mass_shifts)
+    # importance_weights = 1.0 + mass_shifts
     unbalanced_mass_shifts = mass_shifts.copy()
     balanced_mass_shifts = np.zeros_like(unbalanced_mass_shifts)
     for sample_indices in prompt_groups.values():
@@ -514,7 +514,7 @@ def compute_quality_adaptive_quantile_weights(
         )
 
     mass_shifts = balanced_mass_shifts
-    importance_weights = np.maximum(epsilon, 1.0 + mass_shifts)
+    importance_weights = 1.0 + mass_shifts
     prompt_normalizers = np.empty_like(importance_weights)
     for sample_indices in prompt_groups.values():
         sample_indices = np.asarray(sample_indices, dtype=np.int64)

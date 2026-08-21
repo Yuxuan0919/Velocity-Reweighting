@@ -318,3 +318,10 @@ HPSv2
 reward_ckpts/
 
 pretrained_models/
+
+# Local mass-shift-clip scaling ablation variants
+scripts/train_nft_sd3_ours-Aequality.py
+scripts/train_nft_sd3_ours-Aomit.py
+scripts/run_sd3_4090_16gpu_nft-ours-Aequality.sh
+scripts/run_sd3_4090_16gpu_nft-ours-Aomit.sh
+scripts/base_exps/batch2/run_sd3_geneval_h200_8gpu_nft-ours-asymmetric-c1.4142.sh

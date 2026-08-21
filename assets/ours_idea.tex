@@ -1,73 +1,123 @@
 
-\documentclass[10pt]{article} % For LaTeX2e
-%\usepackage{tmlr}
-% If accepted, instead use the following line for the camera-ready submission:
-%\usepackage[accepted]{tmlr}
-% To de-anonymize and remove mentions to TMLR (for example for posting to preprint servers), instead use the following:
-\usepackage[preprint]{tmlr}
-% Optional math commands from https://github.com/goodfeli/dlbook_notation
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2027_conference,times}
 
-
-
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
 \input{math_commands.tex}
 
+\usepackage[dvipsnames]{xcolor}
 \usepackage{hyperref}
+\hypersetup{
+ colorlinks=true,
+ citecolor=RoyalBlue,
+ linkcolor=BrickRed,
+ urlcolor=CornflowerBlue
+}
 \usepackage{url}
+\usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{colortbl,xcolor}
+\usepackage{makecell}
+\definecolor{indomgray}{gray}{0.9}
+\newcommand{\cellgray}{\cellcolor{indomgray}}
+\newcolumntype{Y}{>{\centering\arraybackslash}X}
 
-% \usepackage{ulem}
 
 \title{Reinforced Flow Matching}
 
-\lhead{} 
-\thispagestyle{fancy}
-
-\lhead{Reinforced Flow Matching}
-\pagestyle{fancy}
-
-
-
-
-
 % Authors must not appear in the submitted version. They should be hidden
-% as long as the tmlr package is used without the [accepted] or [preprint] options.
+% as long as the \iclrfinalcopy macro remains commented out below.
 % Non-anonymous submissions will be rejected without review.
-\author{\name Jingdong Wang
-}
-% \author{\name Kyunghyun Cho \email kyunghyun.cho@nyu.edu \\
-%       \addr Department of Computer Science\\
-%       University of New York
-%       \AND
-%       \name Raia Hadsell \email raia@google.com \\
-%       \addr DeepMind
-%       \AND
-%       \name Hugo Larochelle \email hugolarochelle@google.com\\
-%       \addr Mila, Universit\'e de Montr\'eal \\
-%       Google Research\\
-%       CIFAR Fellow}
 
-% The \author macro works with any number of authors. Use \AND 
-% to separate the names and addresses of multiple authors.
+\author{Antiquus S.~Hippocampus, Natalia Cerebro \& Amelie P. Amygdale \thanks{ Use footnote for providing further information
+about author (webpage, alternative address)---\emph{not} for acknowledging
+funding agencies.  Funding acknowledgements go at the end of the paper.} \\
+Department of Computer Science\\
+Cranberry-Lemon University\\
+Pittsburgh, PA 15213, USA \\
+\texttt{\{hippo,brain,jen\}@cs.cranberry-lemon.edu} \\
+\And
+Ji Q. Ren \& Yevgeny LeNet \\
+Department of Computational Neuroscience \\
+University of the Witwatersrand \\
+Joburg, South Africa \\
+\texttt{\{robot,net\}@wits.ac.za} \\
+\AND
+Coauthor \\
+Affiliation \\
+Address \\
+\texttt{email}
+}
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to \LaTeX{} to determine where to break
+% the lines. Using \AND forces a linebreak at that point. So, if \LaTeX{}
+% puts 3 of 4 authors names on the first line, and the last on the second
+% line, try using \AND instead of \And before the third author name.
 
 \newcommand{\fix}{\marginpar{FIX}}
 \newcommand{\new}{\marginpar{NEW}}
 
-\def\month{MM}  % Insert correct month for camera-ready version
-\def\year{YYYY} % Insert correct year for camera-ready version
-\def\openreview{\url{https://openreview.net/forum?id=XXXX}} % Insert correct link to OpenReview for camera-ready version
-
-
+%\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
 \begin{document}
 
 
 \maketitle
 
+\begin{abstract}
+Large language model with reinforcement learning
+usually learns a reward-tilted conditional distribution,
+in a parametric form.
+In diffusion model,
+the distribution for the clean data 
+is non-parametric, and
+represented by samples,
+and the diffusion model learns a denoising process
+to approximate the distribution.
+Inspired by this,
+we decompose the problem into two steps.
+reweight the samples according to rewards,
+and update the flow matching with weighted samples
+in an incremental way.
+The reweighting scheme is a non-parametric way for the reward-tilted distribution,
+formulated
+from KL-constrained reward maximization. 
+The incremental update consists of the target velocity 
+estimation from the original velocity
+and velocity correction that depends on  mass shift 
+and timestep-dependent contribution weight,
+followed by an MSE loss for velocity update.
+We also note that
+several existing methods
+can also be casted into 
+sampling reweighting and 
+velocity correction.
 
-\section{New Method}
-{\color{gray} cleaned from ChatGPT} 
-\subsection{Formulation}
+
+\end{abstract}
+
+
+\section{Introduction}
+\label{sec:intro}
+
+\section{Related work}
+\label{sec:related_work}
+
+
+\section{Method}
+
+
+\subsection{Reward-Tilted Sample Reweighting}
 \noindent\textbf{KL-constrained reward maximization.}
 We first consider a KL-constrained reward maximization objective, which
 updates the generative distribution toward high-reward regions while
@@ -90,20 +140,245 @@ The optimal solution can be obtained by exponential tilting:
 \pi^{\mathrm{n}}(\mathbf{z})
 =
 \frac{1}{Z}
-\pi_{\mathrm{old}}(\mathbf{z})
+\pi^o(\mathbf{z})
 \exp
 \left(
 \frac{r(\mathbf{z})}{\gamma}
-\right),
+\right),\label{eqn:exponentialtilting}
 \end{align}
 where $Z$ is the normalization constant. Therefore, the KL-constrained reward optimization
 can be interpreted as reweighting the original distribution according to the
 exponential reward preference.
 
+\noindent\textbf{Sample reweighting.}
+We transform the 
+reward-tilted distribution
+from the parametric form
+to the non-parametric form.
+We denote $\mathbf{z}$,
+a sample drawn from
+the old distribution.
+Its reward-induced unnormalized weight is
+$\exp
+\left(
+\frac{r(\mathbf z)}{\gamma}
+\right)$.
+The normalization constant is 
+\begin{align}
+Z = \mathbb{E}_{\mathbf{z} \sim \pi^o}\left[\exp
+\left(
+\frac{r(\mathbf z)}{\gamma}
+\right)\right].
+\end{align}
+Thus,
+the normalized weight becomes
+\begin{align}
+w(\mathbf z) =
+\frac{1}{Z}
+\exp
+\left(
+\frac{r(\mathbf z)}{\gamma}
+\right)
+=
+\frac{
+\exp(r(\mathbf z)/\gamma)
+}
+{
+\frac{1}{D}
+\sum_j
+\exp(r(\mathbf z_j)/\gamma)
+}.    
+\end{align}
+
+In summary,
+the reward-tilted distribution 
+is represented
+by reweighted rollout samples:
+$\{(\mathbf{z}, w(\mathbf{z})\}$
 
 
+
+
+
+\emph{Partial rollout coverage.}
+In practice, rollout samples may only cover a subset of the original 
+distribution. 
+We model the old distribution as a mixture of an unobserved
+background region and an observed rollout region:
+\begin{align}
+\pi^{\mathrm{o}}(\mathbf z)
+=
+(1-\beta)
+\pi_{\mathrm{bg}}(\mathbf z)
++
+\beta
+\pi_{\mathcal D}(\mathbf z),
+\end{align}
+where $\beta$ denotes the probability mass covered by rollout samples,
+$\pi_{\mathcal D}$ is the empirical rollout distribution, and
+$\pi_{\mathrm{bg}}$ represents the remaining undrawn population.
+
+Sample reweighting can be decomposed according to the two
+sub-populations.
+For the background region, 
+there is no reward available
+and
+we assume that unnormalized weight is $1$.
+Thus, the normalization constant is
+\begin{align}
+    Z
+    = (1-\beta)
++
+\frac{\beta}{D}
+\sum_i
+\exp(r(\mathbf z_i)/\gamma),
+\end{align}
+where $\{\mathbf z_i\}$
+are the $D$ rollout samples.
+% The normalized re-weight is 
+% \begin{align}
+%   w_{\mathrm{bg}}(\mathbf z)
+%   =
+%   \frac{1}
+% {
+% (1-\beta)
+% +
+% \frac{\beta}{D}
+% \sum_i
+% \exp(r(\mathbf z_i)/\gamma)
+% }.
+% \end{align}
+
+For the observed rollout region, each clean sample $\mathbf z$ receives an
+additional reward-dependent correction:
+\begin{align}
+w(\mathbf z)
+&=
+\frac{
+\beta
+\exp(r(\mathbf z)/\gamma)
+}
+{
+(1-\beta)
++
+\frac{\beta}{D}
+\sum_j
+\exp(r(\mathbf z_j)/\gamma)
+}.
+\end{align}
+
+
+\subsection{Incremental Velocity Prediction}
 \noindent\textbf{Optimal velocity field.} 
-The optimal velocity field is obtained by minimizing the CFM objective with
+We first give the optimal velocity field in standard flow matching. 
+It is the posterior expectation of the conditional velocity:
+\begin{align}
+\mathbf{v}(\mathbf{x}_t,t)
+=
+\mathbb{E}_{\mathbf{z} | \mathbf{x}_t}
+\left[
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\mid
+\mathbf{x}_t
+\right].
+\end{align}
+The distribution is
+\begin{align}
+p(\mathbf{z}|\mathbf{x}_t)
+=
+\frac{
+\pi(\mathbf{z})
+p_t(\mathbf{x}_t|\mathbf{z})
+}
+{
+\int
+\pi(\mathbf{z}')
+p_t(\mathbf{x}_t|\mathbf{z}')
+d\mathbf{z}'
+} 
+= 
+\frac{
+\pi(\mathbf{z})
+p_t(\mathbf{x}_t|\mathbf{z})
+}
+{
+p_t(\mathbf{x}_t)
+},
+\end{align}
+where
+$
+p_t(\mathbf{x}_t)$
+denotes the marginal distribution.
+The optimal velocity field becomes
+\begin{align}
+\mathbf{v}(\mathbf{x}_t,t)
+&= 
+\mathbb{E}_{\mathbf{z}\sim\pi}
+\left[
+\frac{p_t(\mathbf{x}_t|\mathbf{z})}
+{
+p_t(\mathbf{x}_t)
+}
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right]
+\\
+&=
+\mathbb{E}_{\mathbf{z}\sim\pi}
+[
+\alpha_t(\mathbf{x}_t,\mathbf{z})
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+].
+\end{align}
+Here, $\alpha_t(\mathbf{x}_t,\mathbf{z})
+=
+\frac{
+p_t(\mathbf{x}_t|\mathbf{z})
+}
+{
+p_t(\mathbf{x}_t)
+}$ (conditional-to-marginal ratio) 
+serves as a posterior correction
+factor that transforms the prior distribution $\pi(\mathbf{z})$ into the
+conditional distribution $p(\mathbf{z}|\mathbf{x}_t)$.
+
+
+\noindent\textbf{Velocity field
+from unweighting to reweighting.} 
+The optimal velocity field 
+for reweighted samples
+is given as the following,
+\begin{align}
+\mathbf{v}^{n}(\mathbf{x}_t,t)
+&=
+\mathbb{E}_{\mathbf{z}\sim\pi^n}
+\left[
+\alpha_t^n(\mathbf{x}_t,\mathbf{z})
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right]\\
+&=
+\mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
+\left[
+\frac{\pi^n(\mathbf{z})}
+{\pi^o(\mathbf{z})}
+\alpha_t^n(\mathbf{x}_t,\mathbf{z})
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right]\\
+&\approx
+\mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
+\left[
+\frac{\pi^n(\mathbf{z})}
+{\pi^{\mathrm{o}}(\mathbf{z})}
+\alpha_t^{\textrm{o}}(\mathbf{x}_t,\mathbf{z})
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right].
+\end{align}
+
+\newpage
+\clearpage
+
+
+
+with
 respect to $\mathbf{v}_{\theta}$. Importantly, the optimal solution is not a
 simple expectation over $\pi^n(\mathbf{z})$, since the velocity field is
 defined on the marginal distribution of $\mathbf{x}_t$. Instead, it is given
@@ -267,6 +542,8 @@ sample-wise correction with adaptive weight is
 \right)
 }_{\text{velocity discrepancy}}.
 \end{align}
+
+
 
 
 \textbf{Importance weight under partial rollout coverage.} 
@@ -587,7 +864,7 @@ the unnormalized reciprocal-discrepancy score
 \begin{align}
 \tilde{\alpha}_{t,i}
 =
-\frac{1}{d_{t,i}+\epsilon}.
+\frac{1}{d_{t,i}+\epsilon_{\mathrm{alg}}}.
 \end{align}
 We then normalize these scores within the current training group:
 \begin{align}
@@ -686,24 +963,46 @@ We need to compute unnormalized importance weight, $\bar{w}(\mathbf{z}) = \exp(r
 for reward-guided mass shift.
 
 \emph{GRPO-style:} 
-We can do:
+At each training iteration, let $R_{j,k}$ be the reward of rollout $k$
+for prompt $c_j$, where $j=1,\ldots,C$, $k=1,\ldots,K$, and
+$D=CK$. We center rewards by the mean of their prompt group,
 \begin{align}
-   \bar{w}(\mathbf{z}) - 1 =  \mathtt{clip}[\frac{r-c}{Z}, s, l]
+\bar R_{c_j}
+=
+\frac{1}{K}\sum_{k=1}^{K}R_{j,k},
 \end{align}
-where $c$ could be mean or others
-(assume the reward for the background sample is $c$),
-$Z$ could be variances or multiplier of variance.
-
-or can normalize positive
-and negative with different scales:
-if $r-c> 0 $,
+and use the population standard deviation over all rollout rewards in the
+current iteration as the common reward scale:
 \begin{align}
-    \mathtt{clip}[\frac{r-c}{Z_+}, 0, 1]
+\bar R
+&=
+\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k},\\
+\sigma_R
+&=
+\sqrt{
+\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}
+(R_{j,k}-\bar R)^2
+}
++\epsilon_R.
 \end{align}
-if $r-c<=0$ 
+Given the mass-shift clip $\Delta_{\mathrm{clip}}>0$, the signed mass shift
+and unnormalized importance weight are
 \begin{align}
-    \mathtt{clip}[\frac{r-c}{Z_-}, -, 0]
+\Delta_{j,k}
+&=
+\frac{1}{\Delta_{\mathrm{clip}}}
+\operatorname{clip}
+\left(
+\frac{R_{j,k}-\bar R_{c_j}}{\sigma_R},
+-\Delta_{\mathrm{clip}},
+\Delta_{\mathrm{clip}}
+\right),\\
+W_{j,k}&=1+\Delta_{j,k}.
 \end{align}
+Thus, rewards are centered within each prompt group but share a global scale
+computed from the current rollout iteration. For asymmetric mass shifts, we
+use $\sigma_+=c\sigma_R$ and $\sigma_-=\sigma_R/c$, as detailed in the
+ablation study.
 
 
 
@@ -748,8 +1047,8 @@ it becomes uniform, all are $1$.
 \begin{algorithmic}[1]
 \Require Initial model $\theta_0$, reward function $R$, prompt distribution
 $p(c)$, Total prompts each training iteration $C$, rollout size for each prompt $K$, batch size $B$, total size $D = KC$, 
-rollout coverage coefficient $\beta$, advantage clip $A$, reference regularization
-$\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
+rollout coverage coefficient $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference regularization
+$\lambda_{\mathrm{ref}}$, EMA rate $\eta$, reward-scale constant $\epsilon_R$, and numerical constant $\epsilon_{\mathrm{alg}}$.
 
 \State $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}
 \leftarrow\theta_0$.
@@ -757,43 +1056,57 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
 \For{each training iteration}
             
     \For{each prompt $c_j\sim p(c)$ (Total C prompts each iteration.)}
-        \State Set $\bar{Z}_{c_j} = 1.$
-        
         \State Sample $K$ clean rollout samples
-        $\{\mathbf{x}_0^k\}_{k=1}^{K}$
+        $\{\mathbf{x}_{0}^{j,k}\}_{k=1}^{K}$
         with $\theta$ conditioned on $c_j$.
 
         \State Compute rewards
-        $R_k\leftarrow R(\mathbf{x}_0^k,c_j)$
+        $R_{j,k}\leftarrow R(\mathbf{x}_{0}^{j,k},c_j)$
         for $k=1,\ldots,K$.
+    \EndFor
 
+    \State Compute the prompt-wise reward means
+    $\displaystyle
+    \bar R_{c_j}\leftarrow K^{-1}\sum_{k=1}^{K}R_{j,k}$
+    for $j=1,\ldots,C$.
+
+    \State Compute the current-iteration global reward mean
+    $\displaystyle
+    \bar R\leftarrow D^{-1}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k}$.
+
+    \State Compute the current-iteration global reward scale
+    $\displaystyle
+    \sigma_R\leftarrow
+    \sqrt{
+    D^{-1}\sum_{j=1}^{C}\sum_{k=1}^{K}
+    (R_{j,k}-\bar R)^2
+    }
+    +\epsilon_R$.
+
+    \For{each prompt $c_j$, $j=1,\ldots,C$}
         \For{$k=1,\ldots,K$}
-            \State $\widehat{A}_k
+            \State $\displaystyle
+            \Delta_{j,k}
             \leftarrow
+            \frac{1}{\Delta_{\mathrm{clip}}}
             \operatorname{clip}
             \left(
-            \frac{R_k-K^{-1}\sum_{k=1}^{K}R_k}{\sqrt{
-        \frac{1}{K}\sum_{k=1}^{K}
-        (R_k-\overline{R}_c)^2+\epsilon
-        }},
-            -A,A
-            \right)/A$.
-        
-            \State $W(\mathbf{x}_0^k,c_j)
-            \leftarrow
-            \max\left\{\epsilon,\,1+\widehat{A}_k\right\}$.
-
-            \State $\displaystyle
-            \bar{Z}_{c_j}
-            = \bar{Z}_{c_j} + 
-            \frac{\beta}{K}
-            \sum_{k=1}^{K}
-            \left(
-            W(\mathbf{x}_0^k,c_j)-1
+            \frac{R_{j,k}-\bar R_{c_j}}{\sigma_R},
+            -\Delta_{\mathrm{clip}},
+            \Delta_{\mathrm{clip}}
             \right)$.
-        
+
+            \State $W(\mathbf{x}_{0}^{j,k},c_j)
+            \leftarrow 1+\Delta_{j,k}$.
         \EndFor
 
+        \State $\displaystyle
+        \bar{Z}_{c_j}
+        \leftarrow
+        1+
+        \frac{\beta}{K}
+        \sum_{k=1}^{K}
+        \Delta_{j,k}$.
 
 
         % \For{$k=1,\ldots,K$}
@@ -804,7 +1117,7 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         %         \State Add
         %         $\left\{
         %         c,\mathbf{x}_0^k,t_{k},
-        %         W(\mathbf{x}_0^k,c),Z(c)
+        %         W(\mathbf{x}_0^k,c),\bar Z_c
         %         \right\}$
         %         to $\mathcal{D}$.
         %     \EndFor
@@ -814,7 +1127,7 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
     \For{each minibatch
     $\{
     (c_i,\mathbf{x}_i^0,t_i,
-    W(\mathbf{x}_i^0,c_i),Z(c_i))
+    W(\mathbf{x}_i^0,c_i),\bar Z_{c_i})
     \}_{i=1}^{B}\sim\mathcal{D}$}
 
         \State Sample
@@ -849,12 +1162,12 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         \leftarrow
         \frac{1}{
         \mathtt{sg}\!\left[
-        \operatorname{mean}_{\mathrm{feat}}
+        \operatorname{mean}
         \left|
-        \mathbf v_i-\mathbf v_i^{\mathrm{old}}
+        \mathbf v_i-\mathbf v_i^{\mathrm{\theta}}
         \right|
         \right]
-        +\epsilon}$
+        +\epsilon_{\mathrm{alg}}}$
         for $i=1,\ldots,B$.
 
         \State $\displaystyle
@@ -894,7 +1207,7 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
         % \mathbf{v}_i
         % -
         % \mathbf{v}_i^{\mathrm{old}}
-        % }{sg[mean |\mathbf{v}_i - \mathbf{v}_i^{\mathrm{old}}|] + \epsilon}$.
+        % }{sg[mean |\mathbf{v}_i - \mathbf{v}_i^{\mathrm{old}}|] + \epsilon_{\mathrm{alg}}}$.
 
 
         % \State $\displaystyle
@@ -981,7 +1294,7 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
 
         \State $\mathcal{L}
         \leftarrow
-        \frac{1}{N_{acc}}(A \mathcal{L}_{\mathrm{target}}
+        \frac{1}{N_{acc}}(\Delta_{\mathrm{clip}} \mathcal{L}_{\mathrm{target}}
         +
         \lambda_{\mathrm{ref}}
         \mathcal{L}_{\mathrm{ref}})$.
@@ -1000,6 +1313,1744 @@ $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, and numerical constant $\epsilon$.
 \end{algorithmic}
 \end{algorithm}
 
+
+
+
+\newpage            
+
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Experimental setup}
+\label{sec: exp-setting}
+We follow the experimental setup used by DiffusionNFT~\citep{zheng2026diffusionnft}. Unless otherwise specified, all experiments start from SD3.5-Medium~\citep{esser2024scaling} at $512 \times 512$ resolution.
+
+\paragraph{Reward models.}
+We evaluate both rule-based and model-based reward optimization. The rule-based tasks are GenEval for compositional text-to-image alignment~\citep{ghosh2023geneval} and OCR visual text rendering, using the same prompt splits and partial-credit reward design as the DiffusionNFT and FlowGRPO. The model-based rewards include PickScore~\citep{kirstain2023pickapic}, CLIPScore~\citep{hessel2021clipscore}, HPSv2.1~\citep{wu2023human}, Aesthetic score~\citep{schuhmann2022laion}, ImageReward~\citep{xu2023imagereward}, and UnifiedReward~\citep{wang2025unifiedreward}. Following DiffusionNFT, Pick-a-Pic prompts are used for preference-oriented training~\citep{kirstain2023pickapic}, while DrawBench prompts are reserved for out-of-domain evaluation~\citep{saharia2022photorealistic}.
+
+\paragraph{Training protocol.}
+We fine-tune the base model with LoRA~\citep{hu2022lora} using rank $r=32$, scaling factor $\alpha=64$, and learning rate $3 \times 10^{-4}$. Each training epoch contains 48 prompt groups, and each group samples $G=24$ images from the current rollout policy. Before constructing the mass shifts, rewards are centered by the mean of their prompt group and scaled by the population standard deviation over all rollout rewards in the current training iteration. For single-reward comparisons and ablations, rollouts use 10 sampling steps to match the efficient setting in DiffusionNFT. For multi-reward training and final evaluation, we use 40 sampling steps to reduce sampler-induced quality differences.
+
+\paragraph{Baselines and evaluation.}
+
+\subsection{Main results}
+\begin{table*}[t]
+\centering
+\caption{\textbf{Evaluation Results across tasks and reward settings.}
+\colorbox{indomgray}{Gray-colored} cells indicate in-domain reward performance for each task.
+$\dagger$ indicates evaluated results on official checkpoints.
+$\ddagger$ indicates evaluated under $1024 \times 1024$ resolution. \textbf{Bold} indicates the best result within each task block. For models in Baselines category, we evaluate GenEval and OCR on its corresponding dataset, while other rewards are evaluated on DrawBench \citep{saharia2022photorealistic}. References for models: FlowGRPO \citep{liu2025flowgrpo}, AWM \citep{xue2026advantage}, DiffusionNFT \citep{zheng2026diffusionnft}, Rethinking \citep{choi2026rethinking}.}
+\label{tab:eval_results}
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{0.95}
+\footnotesize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{ll ccccccc}
+\toprule
+Eval. Dataset & Model & GenEval & OCR & PickScore & ClipScore & HPSv2.1 & Aesthetic & ImgRwd \\
+\midrule
+\multirow{5}{*}{Baselines} 
+& SD-XL$^\ddagger$     & 0.55 & 0.14 & 22.42 & 0.287 & 0.280 & 5.60 & 0.76 \\
+& SD3.5-L$^\ddagger$   & 0.71 & 0.68 & 22.91 & 0.289 & 0.288 & 5.50 & 0.96 \\
+& FLUX.1-Dev          & 0.66 & 0.59 & 22.84 & 0.295 & 0.274 & 5.71 & 0.96 \\
+& SD3.5-M             & 0.24 & 0.12 & 20.51 & 0.237 & 0.204 & 5.13 & -0.58 \\
+& \quad + CFG          & 0.63 & 0.59 & 22.34 & 0.285 & 0.279 & 5.36 & 0.85 \\
+\midrule
+\multirow{5}{*}{GenEval} 
+& FlowGRPO$^\dagger$   & \cellgray 0.95 & - & 22.51 & 0.293 & 0.274 & 5.32 & 1.06 \\
+& AWM                 & \cellgray 0.89 & - & 22.00 & 0.302 & 0.242 & 4.94 & 0.84 \\
+& DiffusionNFT        & \cellgray 0.95 & - & 22.88 & 0.303 & 0.289 & 5.25 & 1.21 \\
+& Rethinking (ELBO-ODE) & \cellgray 0.96 & - & 22.85 & 0.305 & 0.289 & 5.33 & 1.26 \\
+& (Ours)              & \cellgray - & - & - & - & - & - & - \\
+\midrule
+\multirow{5}{*}{OCR} 
+& FlowGRPO$^\dagger$   & - & \cellgray 0.92 & 22.41 & 0.290 & 0.280 & 5.32 & 0.95 \\
+& AWM                 & - & \cellgray 0.80 & 20.70 & 0.301 & 0.206 & 4.53 & -0.13 \\
+& DiffusionNFT        & - & \cellgray 0.93 & \cellgray 22.09 & \cellgray 0.307 & \cellgray 0.277 & 5.17 & 0.97 \\
+& Rethinking (ELBO-ODE) & - & \cellgray 0.94 & \cellgray 22.93 & \cellgray 0.315 & \cellgray 0.302 & 5.33 & 1.34 \\
+& (Ours) & - & \cellgray - & \cellgray - & \cellgray - & \cellgray - & - & - \\
+\midrule
+\multirow{4}{*}{Drawbench} 
+& FlowGRPO$^\dagger$   & - & - & \cellgray 23.50 & 0.280 & 0.316 & 5.90 & 1.29 \\
+& DiffusionNFT        & - & - & \cellgray 23.61 & \cellgray 0.288 & \cellgray 0.344 & 6.04 & 1.46 \\
+& Rethinking (ELBO-ODE) & - & - & \cellgray 23.68 & \cellgray 0.296 & \cellgray 0.325 & 6.06 & 1.45 \\
+& (Ours) & - & - & \cellgray - & \cellgray - & \cellgray - & - & - \\
+\bottomrule
+\end{tabular}
+}
+\end{table*} 
+
+
+
+
+\paragraph{Single Reward Baseline for Ours and DiffusionNFT}
+
+
+\begin{table*}[t]
+\centering
+\caption{\textbf{Evaluation results of FlowGRPO, DiffusionNFT, and Ours trained on single rewards.}
+All methods are initialized from the CFG-free SD3.5-M base model.
+\colorbox{indomgray}{Gray-colored} cells indicate in-domain reward performance.
+Following the original evaluation protocol, CFG is enabled when evaluating non-OCR rewards for OCR-trained models.}
+\label{tab:single_reward_eval}
+\setlength{\tabcolsep}{5.5pt}
+\renewcommand{\arraystretch}{0.95}
+\footnotesize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lc cccccc cc}
+\toprule
+\multirow{2}{*}{Model}
+& \multirow{2}{*}{\#Iter}
+& \multicolumn{2}{c}{Rule-Based}
+& \multicolumn{6}{c}{Model-Based} \\
+\cmidrule(lr){3-4}
+\cmidrule(lr){5-10}
+& & GenEval & OCR
+& PickScore & ClipScore & HPSv2.1 & Aesthetic & ImgRwd & UniRwd \\
+\midrule
+
+SD3.5-M (w/o CFG)
+& -- 
+& 0.24 & 0.12
+& 20.51 & 0.237 & 0.204 & 5.13 & -0.58 & 2.02 \\
+
+\quad + CFG
+& --
+& 0.63 & 0.59
+& 22.34 & 0.285 & 0.279 & 5.36 & 0.85 & 3.03 \\
+
+\midrule
+
+\multirow{3}{*}{\quad + FlowGRPO}
+& 4k
+& \cellgray 0.97 & 0.30
+& 21.78 & 0.277 & 0.248 & 5.15 & 0.74 & 2.87 \\
+
+& 1k
+& 0.66 & \cellgray 0.96
+& 21.94 & 0.280 & 0.257 & 5.18 & 0.31 & 2.86 \\
+
+& 4k
+& 0.54 & 0.60
+& \cellgray 23.62 & 0.257 & 0.295 & 6.42 & 1.17 & 3.17 \\
+
+\midrule
+
+\multirow{3}{*}{\quad + DiffusionNFT}
+& 1k
+& \cellgray 0.98 & 0.36
+& 21.92 & 0.271 & 0.251 & 5.33 & 0.68 & 2.91 \\
+
+& 150
+& 0.54 & \cellgray 0.97
+& 21.63 & 0.281 & 0.246 & 5.19 & 0.37 & 2.81 \\
+
+& 2k
+& 0.53 & 0.64
+& \cellgray 24.03 & 0.270 & 0.315 & 6.17 & 1.29 & 3.40 \\
+
+\midrule
+
+\multirow{3}{*}{\quad + Ours}
+& -
+& \cellgray - & -
+& - & - & - & - & - & - \\
+
+& -
+& - & \cellgray -
+& - & - & - & - & - & - \\
+
+& -
+& - & -
+& \cellgray - & - & - & - & - & - \\
+
+\bottomrule
+\end{tabular}
+}
+\end{table*}
+
+
+
+
+\subsection{Ablation study}
+
+
+
+We conduct ablations to understand the contribution and robustness of our key design choices. Specifically, we study the add-delete target, adaptive loss weighting, rollout-policy update, and target-editing strength under GenEval single-reward training. 
+Unless stated otherwise, every variant uses the same SD3.5-Medium, prompts, LoRA configuration, prompt-centered and current-iteration globally scaled rewards, rollout
+budget, and evaluation sampler described in Section~\ref{sec: exp-setting}. 
+
+
+
+
+\subsubsection{Ablation for $\beta$}
+
+We ablate the $\beta$, which controls the magnitude
+of the reweighting. We keep all other training
+settings fixed, and compare $\beta\in\{0.1,1,10\}$ on single reward GenEval setting. 
+
+% \begin{table}[H]
+% \centering
+% \caption{Ablation of the reinforcement coefficient $\beta$ on GenEval.}
+% \label{tab:ablation_beta}
+% \scriptsize
+% \setlength{\tabcolsep}{3pt}
+% \begin{tabularx}{0.5\columnwidth}{@{}X*{6}{c}@{}}
+% \toprule
+% Reinforcement coefficient
+% & \multicolumn{6}{c}{GenEval $\uparrow$ at training iteration} \\
+% \cmidrule(l){2-7}
+% & 0 & 100 & 200 & 300 & 400 & 500 \\
+% \midrule
+% $\beta=0.1$ & -- & -- & -- & -- & -- & -- \\
+% $\beta=1$   & -- & -- & -- & -- & -- & -- \\
+% $\beta=10$  & -- & -- & -- & -- & -- & -- \\
+% \bottomrule
+% \end{tabularx}
+% \end{table}
+
+
+\begin{figure}[H]
+    \centering
+    \fbox{
+        \parbox[c][4cm][c]{0.9\linewidth}{
+            \centering
+            \textit{Experimental results to be updated.}
+        }
+    }
+    \caption{Ablation results for $\beta$.}
+    \label{fig:ablation-beta}
+\end{figure}
+
+
+
+
+
+
+
+\subsubsection{Ablation for Choice of Rollout Policy.}
+The EMA model in DiffusionNFT serves two distinct roles: it generates
+rollout samples for reward evaluation and provides the base velocity used to
+construct the Reinforced training target. we
+ablate the choice of rollout policy ($\pi_{\theta}$ or $\pi_{old}$).
+
+
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{imgs/ablation-rollout-policy.png}
+    \caption{Ablation for choice of rollout policy, green for $\pi_{old}$ and yellow for $\pi_{\theta}$.}
+    \label{fig:placeholder}
+\end{figure}
+
+
+
+
+
+
+
+
+\subsubsection{Ablation for $\alpha_t^{\mathrm{o}}(\mathbf x_t,\mathbf z)$}
+
+
+\begin{equation}
+\tilde{\alpha}_i
+=
+\frac{1}{
+\operatorname{sg}\!\left(
+\operatorname{mean}_{\mathrm{feat}}
+\left[
+\left|
+\mathbf{v}_i-\mathbf{v}^{\theta}_i
+\right|
+\right]
+\right)
+},
+\qquad
+\alpha_i
+=
+\frac{
+\tilde{\alpha}_i
+}{
+\frac{1}{B}
+\sum_{j=1}^{B}
+\tilde{\alpha}_j
+}.
+\end{equation}
+
+\begin{equation}
+\tilde{\alpha}'_i
+=
+\frac{1}{
+\operatorname{sg}\!\left(
+\operatorname{mean}_{\mathrm{feat}}
+\left[
+\left|
+\mathbf{v}_i-\mathbf{v}^{old}_i
+\right|
+\right]
+\right)
+},
+\qquad
+\alpha'_i
+=
+\frac{
+\tilde{\alpha}'_i
+}{
+\frac{1}{B}
+\sum_{j=1}^{B}
+\tilde{\alpha}'_j
+}.
+\end{equation}
+
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{imgs/ablation-alpha.png}
+    \caption{Ablation for $\alpha_t^{\mathrm{o}}(\mathbf x_t,\mathbf z)$; purple: $\alpha_i$ and black: $\alpha'_i$.}
+    \label{fig:ablation-alpha}
+\end{figure}
+
+
+
+\subsubsection{Ablation on Forward Timestep Sampling}
+
+We investigate the effect of different forward-timestep sampling strategies during training.
+Across all settings, the sampled values are transformed using the same timestep-shift function:
+\begin{equation}
+\operatorname{shift}(x)
+=
+\frac{3x}{1+2x}.
+\label{eq:timestep_shift}
+\end{equation}
+
+We compare the following three sampling schemes.
+
+\medskip
+\noindent\textbf{1. DiffusionNFT Original.}
+Following the original DiffusionNFT implementation, we construct 10 uniformly spaced candidate points in $[0.001,1]$, apply the shift transformation, and uniformly sample 9 distinct timesteps without replacement:
+\begin{align*}
+x_j &= \operatorname{LinearSpace}(0.001,1,10)_j,
+\qquad
+T_j = \operatorname{shift}(x_j),
+\quad j=0,\ldots,9,\\
+\{t_0,\ldots,t_8\}
+&\sim
+\operatorname{SampleWithoutReplacement}
+\left(
+\{T_0,\ldots,T_9\},\,9
+\right).
+\end{align*}
+This setting corresponds to the \textbf{green curve}.
+
+\medskip
+\noindent\textbf{2. Logit-Normal Sampling.}
+Instead of sampling from a fixed discrete candidate set, we independently draw each timestep from a logit-normal distribution and then apply the same shift transformation:
+\begin{align*}
+z_i &\overset{\mathrm{iid}}{\sim} \mathcal N(0,1),
+\qquad
+x_i = \operatorname{sigmoid}(z_i),
+\qquad
+t_i = \operatorname{shift}(x_i),
+\quad i=0,\ldots,8.
+\end{align*}
+This setting corresponds to the \textbf{gray curve}.
+
+\medskip
+\noindent\textbf{3. Uniform Sampling over $N$ Candidates.}
+To examine whether the resolution of the discrete timestep candidate set affects training, we generalize the DiffusionNFT-style candidate construction to $N$ uniformly spaced points:
+\begin{align*}
+x_j &= \operatorname{LinearSpace}(0.001,1,N)_j,
+\qquad
+T_j = \operatorname{shift}(x_j),
+\quad j=0,\ldots,N-1,\\
+t_i &\overset{\mathrm{iid}}{\sim}
+\operatorname{Uniform}
+\left(
+\{T_0,\ldots,T_{N-1}\}
+\right),
+\quad i=0,\ldots,8.
+\end{align*}
+The 9 timesteps are sampled independently
+with replacement. We evaluate two resolutions:
+\begin{itemize}
+    \item $N=40$: \textbf{blue curve};
+    \item $N=1000$: \textbf{red curve}.
+\end{itemize}
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{imgs/ablation-timesteps.png}
+    \caption{Ablation on forward timestep sampling}
+    \label{fig:ablation-timesteps}
+\end{figure}
+
+\subsubsection{Mass-Shift Clip Ablation}
+
+The original training objective is
+
+$$
+\mathcal{L}
+=
+\left(
+\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{target}}
++
+\lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}}
+\right),
+$$
+
+where $\Delta_{\mathrm{clip}}=5$ and $\lambda_{\mathrm{ref}}=10^{-4}$. Since training uses AdamW, scaling the entire loss by a positive constant approximately preserves the parameter update. Therefore, dividing the objective by $\Delta_{\mathrm{clip}}$ gives the approximately equivalent formulation
+
+$$
+\mathcal{L}
+=\mathcal{L}_{\mathrm{target}}
++
+\frac{\lambda_{\mathrm{ref}}}{\Delta_{\mathrm{clip}}}\mathcal{L}_{\mathrm{ref}},
+$$
+
+
+We further evaluate a direct removal of $\Delta_{\mathrm{clip}}$ without rescaling $\lambda_{\mathrm{ref}}$:
+
+$$
+\mathcal{L}
+=
+\mathcal{L}_{\mathrm{target}}
++
+\lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}}.
+$$
+
+We compare these formulations under the single-reward GenEval setting to examine whether the explicit mass-shift-clip scaling is necessary and how the resulting change in target--reference balance affects training.
+
+
+\begin{figure}[H]
+    \centering
+    \fbox{
+        \parbox[c][4cm][c]{0.9\linewidth}{
+            \centering
+            \textit{Experimental results to be updated.}
+        }
+    }
+    \caption{Ablation results for the mass-shift clip.}
+    \label{fig:ablation-mass-shift-clip}
+\end{figure}
+
+
+
+\subsubsection{Only Positive and Negative}
+\mbox{}\\
+Let $\Delta_i$ denote the signed mass shift of sample $i$.
+The corresponding one-sided importance weights are defined as follows.
+
+\noindent{1. Positive Only}
+\begin{align}
+W_i
+=
+\begin{cases}
+1+\Delta_i,
+& \Delta_i>0,\\
+1,
+& \Delta_i\le0.
+\end{cases}
+\end{align}
+
+\medskip
+\noindent{2. Negative Only}
+\begin{align}
+W_i
+=
+\begin{cases}
+1,
+& \Delta_i\ge0,\\
+1+\Delta_i,
+& \Delta_i<0.
+\end{cases}
+\end{align}
+
+
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{imgs/ablation-pos&neg-only.png}
+    \caption{Abaltion for optimizing with only positive or negative samples. Purple for positive and green for negative. (Training mean reward curves)}
+    \label{fig:ablation-pos&neg-only}
+\end{figure}
+
+
+
+\subsubsection{Asymmetric Scaling for Positive and Negative Mass Shifts}
+
+For the $D=CK$ rollout samples in the current training iteration, let the
+global reward mean and population standard deviation be
+
+\begin{align}
+\bar R
+&=
+\frac{1}{D}
+\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k},\\
+\sigma_R
+&=
+\sqrt{
+\frac{1}{D}
+\sum_{j=1}^{C}\sum_{k=1}^{K}
+(R_{j,k}-\bar R)^2
+}
++\epsilon_R.
+\end{align}
+The same $\sigma_R$ is shared by every prompt group in the iteration, while
+each reward is centered by its prompt-group mean
+$\bar R_{c_j}=K^{-1}\sum_{k=1}^{K}R_{j,k}$.
+
+To isolate the effect of asymmetric scaling between positive and negative mass shifts, we apply a fixed scaling factor $c>0$ to the normalization scale:
+
+\begin{align}
+\sigma_+ = c\sigma_R, \quad
+\sigma_- = \frac{\sigma_R}{c}.
+\end{align}
+
+For a sample $i$ conditioned on prompt $c_i$, the resulting signed mass shift
+is
+
+\begin{equation}
+\Delta_i^{(c)}=
+\begin{cases}
+\displaystyle
+\frac{1}{\Delta_{\mathrm{clip}}}
+\operatorname{clip}
+\left(
+\frac{R_i-\bar R_{c_i}}{c\sigma_R},
+0,
+\Delta_{\mathrm{clip}}
+\right),
+& R_i-\bar R_{c_i}>0,\\[10pt]
+\displaystyle
+\frac{1}{\Delta_{\mathrm{clip}}}
+\operatorname{clip}
+\left(
+\frac{R_i-\bar R_{c_i}}{\sigma_R/c},
+-\Delta_{\mathrm{clip}},
+0
+\right),
+& R_i-\bar R_{c_i}\le 0.
+\end{cases}
+\end{equation}
+
+We consider the following candidate values for the scaling factor:
+
+\begin{equation}
+c \in
+\left{
+\frac{1}{2},
+\frac{1}{\sqrt{2}},
+1,
+\sqrt{2},
+2
+\right}.
+\end{equation}
+
+Here, $c=1$ exactly recovers the symmetric mass-shift construction under the
+same prompt centering and global reward scale. Values $c>1$ emphasize negative
+mass shifts, whereas values $c<1$ emphasize positive mass shifts.
+
+
+
+
+\begin{figure}[H]
+    \centering
+    \fbox{
+        \parbox[c][4cm][c]{0.9\linewidth}{
+            \centering
+            \textit{Experimental results to be updated.}
+        }
+    }
+    \caption{Ablation results for asymmetric scaling of positive and negative mass shifts with different values of $c$.}
+    \label{fig:asymmetric_mass_shift_ablation}
+\end{figure}
+
+
+
+\subsubsection{Per prompt reward distribution observation}
+
+
+
+
+
+
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+\subsection*{AI use statement}
+
+(This section is \textbf{required} and does not count toward the page limit.)
+
+In this work, we used generative AI tools for [tasks with required disclosure].
+We have not used generative AI tools for [other tasks with required disclosure],
+and [the rest of the required disclosure tasks] are not applicable to this work.
+Additionally, we used generative AI tools for [tasks with recommended
+disclosure]. We have reviewed all AI-assisted work. [Elaborate. For example, “we
+checked LLM-generated research ideas for potential plagiarism through a manual
+literature survey”, “LLM-generated code was verified and tested for correctness
+by 2 authors”, etc.]. We take responsibility for the final content of this work,
+including text, claims or artifacts produced with the aid of generative AI.
+
+See the ICLR 2027 AI Policy for Authors for more details. This statement should
+not be more than 1 page.
+
+\subsection*{Ethics statement}
+
+(This section is \textbf{recommended} and does not count toward the page limit.)
+
+If authors feel that their paper submission raises questions regarding the Code
+of Ethics, they are encouraged to include a paragraph of Ethics Statement (at
+the end of the main text before references) to address potential concerns where
+appropriate. Topics include, but are not limited to, studies that involve human
+subjects, practices to data set releases, potentially harmful insights,
+methodologies and applications, potential conflicts of interest and sponsorship,
+discrimination/bias/fairness concerns, privacy and security issues, legal
+compliance, and research integrity issues (e.g., IRB, documentation, research
+ethics). This statement should not be more than 1 page.
+
+\subsection*{Reproducibility statement}
+
+(This section is \textbf{recommended} and does not count toward the page limit.)
+
+It is important that the work published in ICLR is reproducible. Authors are
+strongly encouraged to include a paragraph-long Reproducibility Statement at the
+end of the main text (before references) to discuss the efforts that have been
+made to ensure reproducibility. This paragraph should not itself describe
+details needed for reproducing the results, but rather reference the parts of
+the main paper, appendix, and supplemental materials that will help with
+reproducibility. For example, for novel models or algorithms, a link to an
+anonymous downloadable source code can be submitted as supplementary materials;
+for theoretical results, clear explanations of any assumptions and a complete
+proof of the claims can be included in the appendix; for any datasets used in
+the experiments, a complete description of the data processing steps can be
+provided in the supplementary materials. Each of the above are examples of
+things that can be referenced in the reproducibility statement.
+
+\subsubsection*{Author Contributions}
+If you'd like to, you may include  a section for author contributions as is done
+in many journals. This is optional and at the discretion of the authors.
+
+\subsubsection*{Acknowledgments}
+Use unnumbered third level headings for the acknowledgments. All
+acknowledgments, including those to funding agencies, go at the end of the paper.
+
+
+\bibliography{iclr2027_conference}
+\bibliographystyle{iclr2027_conference}
+
+\appendix
+\section{Appendix}
+You may include other additional sections here.
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\subsection{A Unified View of Diffusion RL Objectives}
+\label{sec:velocity_target_objectives}
+
+We revisit existing RL objectives for flow matching models from a unified
+velocity target perspective. Although these methods are motivated by different
+RL principles, we show that they can all be interpreted as specifying: (i) an
+effective velocity target for each generated sample, and (ii) a reward- or
+advantage-dependent weight that determines how strongly the current model should
+match or avoid this target.
+
+We focus on one generated sample $i \in {1, \cdots, G}$ at timestep $t$.
+% and omit timestep
+% averaging and implementation details that are not essential to this view. 
+Let
+\[
+\mathbf{v}_i^\theta
+=
+\mathbf{v}_\theta(\mathbf{x}_{i}^t,t,c_i),
+\qquad
+\mathbf{v}_i^{\mathrm{old}}
+=
+\mathbf{v}_{\theta_{\mathrm{old}}}(\mathbf{x}_{i}^t,t,c_i),
+\]
+denote the current and old velocity, respectively. Let
+$\mathbf{v}_i$ denote the sample $i$ velocity, i.e., 
+\begin{equation}
+\mathbf{x}_{i}^t
+=
+(1-t)\mathbf{x}_i^t
++
+t\boldsymbol{\epsilon}_i,
+\qquad
+\mathbf{v}_i
+=
+\boldsymbol{\epsilon}_i-\mathbf{x}_i^0 .
+\end{equation}
+
+Under this notation, a broad class of diffusion/flow RL objectives can be
+viewed through the following  form:
+\begin{equation}
+\label{eq:unified_form}
+\ell_i(\theta)
+\approx
+\kappa_i(A_i,t)
+\left\|
+\mathbf{v}_i^\theta
+-
+\mathbf{\tau}_i
+\left(
+A_i,
+\mathbf{v}_i,
+\mathbf{v}_i^{\mathrm{old}},
+t
+\right)
+\right\|^2
++
+\mathcal{R}_i(\theta),
+\end{equation}
+where $\mathbf{\tau}_i(\cdot)$ is the pseudo target function, it receives advantage $A_i$, currrent, old velocity $\mathbf{v}_i^{\theta}, \mathbf{v}_i^{old}$, and timestep $t$ as inputs.
+
+
+$\kappa_i(A_i,t)$ is the weight, receives advantage $A_i$ and timestep $t$ as inputs. Intuitively, it
+determines how strongly the current model should match or
+avoid this target.
+
+% and $\mathbf{v}_i^{\mathrm{ref}}$ denotes the velocity
+% prediction of a frozen reference model.
+
+The second term $\mathcal{R}_i(\theta)$  is the 
+regularization term, commonly used to prevent the fine-tuned model
+from drifting too far from the reference velocity field. The term
+denotes additional proximal constraints, such as the
+GRPO-style clipping of the likelihood ratio in Flow-GRPO. DiffusionNFT and
+AWM use MSE regularization with reference model prediction.
+
+
+
+\subsubsection{Flow-GRPO}
+\label{sec:flow_grpo}
+
+Flow-GRPO starts from an policy-gradient objective over stochastic
+denoising transitions. For one transition from timestep $t$ to $s$, the
+sample-level objective (the following derivation corresponds to the first term in Eq.~\ref{eq:unified_form}) can be written as
+\begin{equation}
+\ell_i^{\mathrm{FG}}(\theta)
+=
+-
+A_i
+\rho_i(\theta),
+\qquad
+\rho_i(\theta)
+=
+\frac{
+p_{\theta}(\mathbf{x}_i^s\mid \mathbf{x}_i^t,c_i)
+}{
+p_{\theta_{\mathrm{old}}}(\mathbf{x}_i^s\mid \mathbf{x}_i^t,c_i)
+},
+\end{equation}
+where $A_i$ is the trajectory-level advantage. Assume that the reverse
+transition is modeled as a Gaussian policy with shared covariance:
+\begin{equation}
+p_{\theta}(\mathbf{x}^{s}_{i}\mid \mathbf{x}^{t}_{i},c_i)
+=
+\mathcal{N}
+\left(
+\mathbf{x}^{s}_{i};
+a_t\mathbf{x}^{t}_{i}+b_t\mathbf{v}_i^\theta,
+\eta_t^2 I
+\right)
+\end{equation}
+For a fixed sampled transition $(\mathbf{x}_i^t,\mathbf{x}_i^s)$, this Gaussian
+mean induces a pseudo target:
+\begin{equation}
+\label{eq:flow_grpo_pseudo_target_short}
+\mathbf{\tau}_i^{\mathrm{FG}}
+=
+\frac{\mathbf{x}^{s}_{i}-a_t\mathbf{x}^{t}_{i}}{b_t}
+\end{equation}
+Since
+\begin{equation}
+\mathbf{x}^{s}_{i}
+=
+a_t\mathbf{x}^{t}_{i}
++
+b_t\mathbf{v}_i^{\mathrm{old}}
++
+\eta_t\boldsymbol{\epsilon}_i,
+\end{equation}
+the pseudo target can also be written as
+\begin{equation}
+\label{eq:flow_grpo_target_short}
+\mathbf{\tau}_i^{\mathrm{FG}}
+=
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{\eta_t}{b_t}
+\boldsymbol{\epsilon}_i .
+\end{equation}
+Thus, the Flow-GRPO target is a stochastic noise add velocity target induced by the sampled old-policy
+transition.
+
+Substituting Eq.~\ref{eq:flow_grpo_pseudo_target_short} into the Gaussian
+likelihood gives
+\begin{equation}
+\rho_i(\theta)
+=
+C_i
+\exp
+\left[
+-
+\frac{b_t^2}{2\eta_t^2}
+\left\|
+\mathbf{v}_i^\theta
+-
+\mathbf{\tau}_i^{\mathrm{FG}}
+\right\|^2
+\right],
+\end{equation}
+where
+\begin{equation}
+C_i
+=
+\exp
+\left[
+\frac{b_t^2}{2\eta_t^2}
+\left\|
+\mathbf{v}_i^{\mathrm{old}}
+-
+\mathbf{\tau}_i^{\mathrm{FG}}
+\right\|^2
+\right]
+\end{equation}
+is independent of $\theta$. Therefore, the Flow-GRPO objective can be
+viewed as an advantage-weighted function of the squared distance between
+$\mathbf{v}_i^\theta$ and the transition-induced target
+$\mathbf{\tau}_i^{\mathrm{FG}}$.
+
+To connect it with the unified target-matching form, consider the gradient of
+the sample objective with respect to the velocity prediction:
+\begin{equation}
+\nabla_{\mathbf{v}_i^\theta}
+\ell_i^{\mathrm{FG}}(\theta)
+=
+2
+\left(
+A_i
+\frac{b_t^2}{2\eta_t^2}
+\rho_i(\theta)
+\right)
+\left(
+\mathbf{v}_i^\theta
+-
+\mathbf{\tau}_i^{\mathrm{FG}}
+\right).
+\end{equation}
+This has the same local gradient direction as a weighted squared-error objective
+\begin{equation}
+\kappa_i
+\left\|
+\mathbf{v}_i^\theta
+-
+\mathbf{\tau}_i^{\mathrm{FG}}
+\right\|^2.
+\end{equation}
+
+
+In this sense, Flow-GRPO fits the unified form in
+Eq.~\ref{eq:unified_form} with
+\begin{equation}
+\mathbf{\tau}_i
+=
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{\eta_t}{b_t}
+\boldsymbol{\epsilon}_i ,
+\qquad
+\kappa_i
+=
+A_i
+\frac{b_t^2}{2\eta_t^2} \rho_i(\theta).
+\end{equation}
+The sign of $A_i$ determines whether the model is pulled toward or pushed away
+from the pseudo target. A positive advantage makes gradient descent move
+$\mathbf{v}_i^\theta$ toward the sampled transition-level target, whereas a
+negative advantage reverses this direction. The main distinction from clean
+flow-matching objectives is that this target contains transition noise through
+$\frac{\eta_t}{b_t}\boldsymbol{\epsilon}_i$, rather than being defined by the
+clean residual $\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}$.
+
+
+
+\subsubsection{DiffusionNFT}
+\label{sec:diffusionnft}
+
+DiffusionNFT constructs positive and negative velocity branches around the old
+velocity prediction:
+\begin{equation}
+\mathbf{v}_{i}^{+}
+=
+\mathbf{v}_i^{\mathrm{old}}
++
+\beta
+\left(
+\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{old}}
+\right),
+\qquad
+\mathbf{v}_{i}^{-}
+=
+\mathbf{v}_i^{\mathrm{old}}
+-
+\beta
+\left(
+\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{equation}
+Given an optimality reward $r_i\in[0,1]$, its sample-level loss is
+\begin{equation}
+\label{eq:nft_velocity_target_origin}
+\ell_i^{\mathrm{NFT}}(\theta)
+=
+r_i
+\left\|
+\mathbf{v}_{i}^{+}
+-
+\mathbf{v}_i
+\right\|^2
++
+(1-r_i)
+\left\|
+\mathbf{v}_{i}^{-}
+-
+\mathbf{v}_i
+\right\|^2 .
+\end{equation}
+
+This loss is equivalent, up to constants independent of $\theta$, to
+\begin{equation}
+\label{eq:nft_velocity_target_short}
+\ell_i^{\mathrm{NFT}}(\theta)
+=
+\beta^2
+\left\|
+\mathbf{v}_i^\theta
+-
+\mathbf{\tau}_i^{\mathrm{NFT}}
+\right\|^2,
+\end{equation}
+where
+\begin{equation}
+\label{eq:nft_pseudo_target_short}
+\mathbf{\tau}_i^{\mathrm{NFT}}
+=
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{2r_i-1}{\beta}
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right).
+\end{equation}
+
+DiffusionNFT therefore fits Eq.~\ref{eq:unified_form}, with
+\begin{equation}
+\mathbf{\tau}_i
+=
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{2r_i-1}{\beta}
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right),
+\qquad
+\kappa_i
+=
+\beta^2 .
+\end{equation}
+Unlike Flow-GRPO, its reward directly determines where the effective target is placed along
+the clean residual direction
+\[
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}.
+\]
+When $r_i>0.5$, the target moves from the old velocity toward the clean
+flow-matching target; when $r_i<0.5$, it is placed on the opposite side of the
+old velocity. Thus, DiffusionNFT can be viewed as reward-conditioned velocity
+target displacement.
+
+The same interpretation can be expressed in the corresponding
+$\mathbf{x}_0$-prediction space. Under the parameterization
+\begin{equation}
+\mathbf{x}_{0,i}^{\theta}
+=
+\mathbf{x}_{t,i}
+-
+t\mathbf{v}_i^\theta,
+\qquad
+\mathbf{x}_{0,i}^{\mathrm{old}}
+=
+\mathbf{x}_{t,i}
+-
+t\mathbf{v}_i^{\mathrm{old}},
+\qquad
+\mathbf{x}_{0,i}
+=
+\mathbf{x}_{t,i}
+-
+t\mathbf{v}_i,
+\end{equation}
+define the induced pseudo-target
+\begin{equation}
+x_{0,i}^{\mathrm{NFT}}
+=
+\mathbf{x}_{t,i}
+-
+t\mathbf{\tau}_i^{\mathrm{NFT}}.
+\end{equation}
+Substituting Eq.~\ref{eq:nft_pseudo_target_short} gives
+\begin{align}
+x_{0,i}^{\mathrm{NFT}}
+&=
+\mathbf{x}_{0,i}^{\mathrm{old}}
+-
+\frac{t(2r_i-1)}{\beta}
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right)
+\\
+&=
+\mathbf{x}_{0,i}^{\mathrm{old}}
++
+\frac{2r_i-1}{\beta}
+\left(
+\mathbf{x}_{0,i}-\mathbf{x}_{0,i}^{\mathrm{old}}
+\right).
+\end{align}
+Moreover,
+\begin{equation}
+\mathbf{v}_i^\theta-\mathbf{\tau}_i^{\mathrm{NFT}}
+=
+-\frac{1}{t}
+\left(
+\mathbf{x}_{0,i}^\theta
+-
+x_{0,i}^{\mathrm{NFT}}
+\right),
+\end{equation}
+and in the implementation, $\ell_i^{\mathrm{NFT}}(\theta) = \frac{1}{\beta} \ell_i^{\mathrm{NFT}}(\theta)$,
+
+hence the velocity-prediction losses in Eq.~\ref{eq:nft_velocity_target_origin} and
+Eq.~\ref{eq:nft_velocity_target_short} are equivalently
+
+
+\begin{equation}
+\ell_i^{\mathrm{NFT}}(\theta)
+=
+\frac{1}{\beta t^2}(r_i
+\left\|
+\mathbf{x}_{i}^{+}
+-
+\mathbf{x}_i
+\right\|^2
++
+(1-r_i)
+\left\|
+\mathbf{x}_{i}^{-}
+-
+\mathbf{x}_i
+\right\|^2) .
+\end{equation}
+
+
+\begin{equation}
+\ell_i^{\mathrm{NFT}}(\theta)
+=
+\frac{\beta}{t^2}
+\left\|
+\mathbf{x}_{0,i}^{\theta}
+-
+x_{0,i}^{\mathrm{NFT}}
+\right\|^2.
+\end{equation}
+
+\begin{equation}
+x_{0,i}^{\mathrm{NFT}}
+=
+\mathbf{x}_{0,i}^{\mathrm{old}}
++
+\frac{2r_i-1}{\beta}
+\left(
+\mathbf{x}_{0,i}-\mathbf{x}_{0,i}^{\mathrm{old}}
+\right).
+\end{equation}
+
+
+
+
+\paragraph{Adaptive loss weighting in the implementation.}
+The practical implementation of DiffusionNFT applies adaptive loss weighting
+separately to the positive and negative branches. For a tensor
+$\mathbf{u}\in\mathbb{R}^{D}$, define
+\begin{equation}
+\|\mathbf{u}\|^2
+=
+\frac{1}{D}\sum_{j=1}^{D}u_j^2,
+\qquad
+m(\mathbf{u})
+=
+\frac{1}{D}\sum_{j=1}^{D}|u_j|.
+\end{equation}
+The two branch predictions in $\mathbf{x}_0$-space are
+\begin{align}
+\mathbf{x}_{0,i}^{+}
+&=
+\mathbf{x}_{0,i}^{\mathrm{old}}
++
+\beta
+\left(
+\mathbf{x}_{0,i}^{\theta}
+-
+\mathbf{x}_{0,i}^{\mathrm{old}}
+\right),
+\\
+\mathbf{x}_{0,i}^{-}
+&=
+\mathbf{x}_{0,i}^{\mathrm{old}}
+-
+\beta
+\left(
+\mathbf{x}_{0,i}^{\theta}
+-
+\mathbf{x}_{0,i}^{\mathrm{old}}
+\right).
+\end{align}
+The corresponding detached adaptive normalization factors are
+\begin{align}
+w_i^{+}(t)
+&=
+\operatorname{sg}
+\left[
+\max
+\left(
+m\left(
+\mathbf{x}_{0,i}^{+}
+-
+\mathbf{x}_{0,i}
+\right),
+\epsilon
+\right)
+\right],
+\\
+w_i^{-}(t)
+&=
+\operatorname{sg}
+\left[
+\max
+\left(
+m\left(
+\mathbf{x}_{0,i}^{-}
+-
+\mathbf{x}_{0,i}
+\right),
+\epsilon
+\right)
+\right].
+\label{eq:origin-weight-factor}
+\end{align}
+Up to an additional global advantage scaling factor, the implementation uses
+the sample-level objective
+\begin{align}
+\label{eq:nft_adaptive_separate}
+\ell_{i,\mathrm{sep}}^{\mathrm{NFT\text{-}AW}}
+=
+\frac{1}{\beta}
+\Bigg[
+&
+\frac{r_i}{w_i^{+}(t)}
+\left\|
+\mathbf{x}_{0,i}^{+}
+-
+\mathbf{x}_{0,i}
+\right\|^2
++
+\frac{1-r_i}{w_i^{-}(t)}
+\left\|
+\mathbf{x}_{0,i}^{-}
+-
+\mathbf{x}_{0,i}
+\right\|^2
+\Bigg].
+\end{align}
+The common factor $1/\beta$ follows the implementation and affects only the
+overall loss scale.
+
+
+
+\paragraph{Exact single-branch form.}Since
+$w_i^{+}(t)$ and $w_i^{-}(t)$ are detached, completing the square in
+Eq.~\ref{eq:nft_adaptive_separate} gives the following equality of gradients:
+\begin{align}
+\label{eq:nft_adaptive_single_gradient}
+\nabla_\theta
+\ell_{i,\mathrm{sep}}^{\mathrm{NFT\text{-}AW}}
+=
+\nabla_\theta
+\Bigg\{
+&\beta
+\left(
+\frac{r_i}{w_i^{+}(t)}
++
+\frac{1-r_i}{w_i^{-}(t)}
+\right)
+\Bigg\|
+\mathbf{x}_{0,i}^{\theta}
+\nonumber\\
+&\quad-
+\left[
+\mathbf{x}_{0,i}^{\mathrm{old}}
++
+\frac{
+\displaystyle
+\frac{r_i}{w_i^{+}(t)}
+-
+\frac{1-r_i}{w_i^{-}(t)}
+}{
+\displaystyle
+\beta
+\left(
+\frac{r_i}{w_i^{+}(t)}
++
+\frac{1-r_i}{w_i^{-}(t)}
+\right)
+}
+\left(
+\mathbf{x}_{0,i}
+-
+\mathbf{x}_{0,i}^{\mathrm{old}}
+\right) \right]
+\Bigg\|^2
+\Bigg\}.
+\end{align}
+The omitted difference between the two losses is independent of $\theta$ and
+therefore has no effect on training. This expression shows the two effects of
+the original adaptive factors directly. Their weighted inverse sum controls
+the overall gradient scale, while their weighted inverse difference changes
+the pseudo-target. 
+
+
+\paragraph{Direct post-merge adaptive weighting.}
+A much simpler choice is to apply the same normalization directly to the
+single-branch residual:
+\begin{equation}
+\label{eq:nft_postmerge_adaptive}
+\ell_{i,\mathrm{post}}^{\mathrm{NFT\text{-}AW}}
+=
+\beta
+\frac{
+\left\|
+\mathbf{x}_{0,i}^{\theta}
+-
+x_{0,i}^{\mathrm{NFT}}
+\right\|^2
+}{
+\operatorname{sg}
+\left[
+\max
+\left(
+m\left(
+\mathbf{x}_{0,i}^{\theta}
+-
+x_{0,i}^{\mathrm{NFT}}
+\right),
+\epsilon
+\right)
+\right]
+}.
+\end{equation}
+The leading $\beta$ matches the current single-branch implementation. This
+objective is not strictly equivalent to Eq.~\ref{eq:nft_adaptive_separate},
+because it uses one residual and cannot reproduce the target change caused by
+unequal $w_i^{+}(t)$ and $w_i^{-}(t)$. Its denominator is the
+error of the prediction that is actually optimized. 
+
+
+
+
+
+
+\paragraph{Branch-free adaptive weighting.}
+The adaptive weight should measure the prediction difficulty of sample \(i\) at
+timestep \(t\). In the original NFT implementation, this difficulty is
+estimated from the two branch predictions in
+Eq.~\ref{eq:origin-weight-factor}. Since both branch predictions are
+independent of the reward, their reconstruction errors relative to the clean
+target provide stable estimates of sample and timestep difficulty. The reward
+only determines how the two branch errors are combined.
+
+This property is weakened by direct post-merge adaptive weighting. Let
+\begin{equation}
+A_i=2r_i-1,
+\end{equation}
+and define the single NFT pseudo-target as
+\begin{equation}
+\mathbf{x}_{0,i}^{\mathrm{NFT}}
+=
+\mathbf{x}_{0,i}^{\mathrm{old}}
+-
+\frac{A_i}{\beta}
+\left(
+\mathbf{x}_{0,i}^{\mathrm{old}}
+-
+\mathbf{x}_{0,i}
+\right).
+\end{equation}
+Its fitting residual is
+\begin{equation}
+\mathbf{x}_{0,i}^{\theta}
+-
+\mathbf{x}_{0,i}^{\mathrm{NFT}}
+=
+\mathbf{x}_{0,i}^{\theta}
+-
+\mathbf{x}_{0,i}^{\mathrm{old}}
++
+\frac{A_i}{\beta}
+\left(
+\mathbf{x}_{0,i}^{\mathrm{old}}
+-
+\mathbf{x}_{0,i}
+\right).
+\label{eq:nft_single_target_residual}
+\end{equation}
+Using this residual directly as the adaptive scale makes the estimated
+difficulty strongly reward-dependent. When \(A_i\approx0\), or equivalently
+\(r_i\approx1/2\), the pseudo-target approaches the old prediction and the
+residual becomes dominated by
+\(\mathbf{x}_{0,i}^{\theta}-\mathbf{x}_{0,i}^{\mathrm{old}}\). It may therefore
+be small simply because the current policy remains close to the old policy,
+even when the old reconstruction error
+\(\mathbf{x}_{0,i}^{\mathrm{old}}-\mathbf{x}_{0,i}\) is large. In this case,
+the adaptive factor no longer measures the actual difficulty of the sample and
+timestep.
+
+The factor \(1/\beta\) in
+Eq.~\ref{eq:nft_single_target_residual} also introduces an artificial scale
+dependence. We first remove it by multiplying the residual by \(\beta\):
+\begin{equation}
+\beta
+\left(
+\mathbf{x}_{0,i}^{\theta}
+-
+\mathbf{x}_{0,i}^{\mathrm{NFT}}
+\right)
+=
+\beta
+\left(
+\mathbf{x}_{0,i}^{\theta}
+-
+\mathbf{x}_{0,i}^{\mathrm{old}}
+\right)
++
+A_i
+\left(
+\mathbf{x}_{0,i}^{\mathrm{old}}
+-
+\mathbf{x}_{0,i}
+\right).
+\end{equation}
+However, rescaling alone is insufficient: when \(A_i\approx0\), the old
+reconstruction error still disappears from this residual. We therefore add an
+old-error anchor whose contribution increases as the advantage approaches
+zero. For each tensor element \(j\), define
+\begin{align}
+q_{i,j}(r_i,t)
+&=
+\beta^2
+\left(
+x_{0,i,j}^{\theta}
+-
+x_{0,i,j}^{\mathrm{NFT}}
+\right)^2
++
+\left(1-A_i^2\right)
+\left(
+x_{0,i,j}^{\mathrm{old}}
+-
+x_{0,i,j}
+\right)^2
+\nonumber\\
+&=
+\Big[
+\beta
+\left(
+x_{0,i,j}^{\theta}
+-
+x_{0,i,j}^{\mathrm{old}}
+\right)
++
+A_i
+\left(
+x_{0,i,j}^{\mathrm{old}}
+-
+x_{0,i,j}
+\right)
+\Big]^2
+\nonumber\\
+&\quad+
+\left(1-A_i^2\right)
+\left(
+x_{0,i,j}^{\mathrm{old}}
+-
+x_{0,i,j}
+\right)^2.
+\label{eq:nft_branchfree_second_moment}
+\end{align}
+The first term measures the fitting error of the actual pseudo-target after
+removing the artificial \(1/\beta\) scaling. The second term restores the old
+reconstruction error when the reward provides little directional information.
+Its coefficient satisfies
+\begin{equation}
+1-A_i^2
+=
+4r_i(1-r_i),
+\end{equation}
+which is largest at \(r_i=1/2\) and vanishes at the decisive endpoints
+\(r_i=0\) and \(r_i=1\). Thus, when \(\lvert A_i\rvert\approx1\), the scale
+relies mainly on the pseudo-target fitting residual. When \(A_i\approx0\), the
+anchor preserves the underlying sample and timestep difficulty.
+
+The resulting detached scale is
+\begin{equation}
+w_i(t)
+=
+\operatorname{sg}
+\left[
+\max
+\left(
+\frac{1}{D}
+\sum_{j=1}^{D}
+\sqrt{q_{i,j}(r_i,t)},
+\epsilon
+\right)
+\right],
+\label{eq:nft_branchfree_weight}
+\end{equation}
+and the objective becomes
+\begin{equation}
+\label{eq:nft_branchfree_adaptive}
+\ell_i^{\mathrm{NFT\text{-}AW}}
+=
+\beta
+\frac{
+\left\|
+\mathbf{x}_{0,i}^{\theta}
+-
+\mathbf{x}_{0,i}^{\mathrm{NFT}}
+\right\|^2
+}{
+w_i(t)
+}.
+\end{equation}
+
+This construction retains a single pseudo-target and a single adaptive weight
+while preserving a stable estimate of sample and timestep difficulty. At the
+beginning of a policy update, when
+\(\mathbf{x}_{0,i}^{\theta}=\mathbf{x}_{0,i}^{\mathrm{old}}\), we have
+\begin{equation}
+q_{i,j}
+=
+\left(
+x_{0,i,j}^{\mathrm{old}}
+-
+x_{0,i,j}
+\right)^2
+\end{equation}
+for every reward. At the neutral reward \(r_i=1/2\),
+\begin{equation}
+q_{i,j}
+=
+\left(
+x_{0,i,j}^{\mathrm{old}}
+-
+x_{0,i,j}
+\right)^2
++
+\beta^2
+\left(
+x_{0,i,j}^{\theta}
+-
+x_{0,i,j}^{\mathrm{old}}
+\right)^2,
+\end{equation}
+so the scale does not collapse merely because the current policy remains close
+to the old policy.
+
+Finally, the proposed quantity has a direct connection to the original two
+branch errors:
+\begin{equation}
+q_{i,j}(r_i,t)
+=
+r_i
+\left(
+x_{0,i,j}^{+}
+-
+x_{0,i,j}
+\right)^2
++
+(1-r_i)
+\left(
+x_{0,i,j}^{-}
+-
+x_{0,i,j}
+\right)^2.
+\label{eq:nft_branchfree_branch_identity}
+\end{equation}
+
+Therefore, the proposed branch-free factor preserves the reward-weighted
+second moment of the original two branch errors, while requiring only one
+pseudo-target and one adaptive scale during optimization.
+
+
+\paragraph{Simplified clean-target adaptive weighting.}
+If the adaptive factor is y intended to measure the current difficulty of
+sample \(i\) at timestep \(t\), an even simpler alternative is
+\begin{equation}
+\label{eq:nft_clean_target_adaptive}
+\ell_{i,\mathrm{clean}}^{\mathrm{NFT\text{-}AW}}
+=
+\beta
+\frac{
+\left\|
+\mathbf{x}_{0,i}^{\theta}
+-
+\mathbf{x}_{0,i}^{\mathrm{NFT}}
+\right\|^2
+}{
+\operatorname{sg}
+\left[
+\max
+\left(
+m\left(
+\mathbf{x}_{0,i}^{\theta}
+-
+\mathbf{x}_{0,i}
+\right),
+\epsilon
+\right)
+\right]
+}.
+\end{equation}
+Here the numerator still optimizes the reward-dependent NFT pseudo-target,
+whereas the denominator measures the current clean-target reconstruction error
+directly. Consequently, the adaptive scale depends on the sample, timestep,
+and current model state, but is not distorted by the reward-dependent
+displacement of the pseudo-target. In particular, it remains informative when
+\(r_i\approx1/2\).
+
+
+
+
+
+\subsubsection{Advantage Weighted Matching}
+\label{sec:awm}
+
+AWM  consider an on-policy update on a single sample drawn from
+$\pi_{\theta}$. Let $\widehat{\pi}_{\theta}$ denote the ELBO-based surrogate of the sequence likelihood,
+\begin{equation}
+\nabla_{\theta}
+\frac{\hat{\pi}_{\theta}(x_i^t \mid c)}
+{\operatorname{sg}\left(\hat{\pi}_{\theta}(x_i^t \mid c)\right)}
+\cdot A_i
+=
+\nabla_{\theta}\log \hat{\pi}_{\theta}(x_i^t \mid c)\cdot A_i
+\approx
+-\nabla_{\theta}
+w_i  A_i
+\left\|
+\mathbf{v}^{\theta}_i-\mathbf{v}_i
+\right\|^2,
+\end{equation}
+where $w_i=w(t)$ is a timestep-dependent weight. The local gradient-equivalent objective becomes
+\begin{equation}
+\label{eq:awm_velocity_target_short}
+\ell_i^{\mathrm{AWM}}(\theta)
+=
+w_i A_i
+\left\|
+\mathbf{v}_i^\theta-\mathbf{v}_i
+\right\|^2.
+\end{equation}
+
+
+Thus, AWM also fits Eq.~\ref{eq:unified_form}, with
+\begin{equation}
+\mathbf{\tau}_i
+=
+\mathbf{v}_i,
+\qquad
+\kappa_i
+=
+w_i A_i.
+\end{equation}
+AWM uses the flow matching velocity as its target. Reward does not move
+the target itself; instead, the signed advantage changes the direction and
+strength of the target. 
+Positive-advantage samples pull the current
+velocity toward the clean target, whereas negative-advantage samples push it
+away by reversing the gradient of the squared-error term.
+
+
+
+\textbf{Adding an old-velocity KL to AWM:}
+\begin{equation}
+\ell_i^{\mathrm{AWM+KL}}(\theta)
+=
+w_iA_i
+\left\|
+\mathbf{v}_i^\theta-\mathbf{v}_i
+\right\|^2
++
+\beta
+\left\|
+\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{old}}
+\right\|^2 .
+\end{equation}
+
+Ignoring constants independent of $\theta$, objective can
+be written as
+
+\begin{equation}
+\ell_i^{\mathrm{AWM+KL}}(\theta)
+=
+(w_iA_i+\beta)
+\left\|
+\mathbf{v}_i^\theta
+\right\|^2
+-
+2
+\left(\mathbf{v}_i^\theta\right)^\top
+\left(
+w_iA_i\mathbf{v}_i+\beta\mathbf{v}_i^{\mathrm{old}}
+\right)
++
+\mathrm{const.}
+\end{equation}
+
+When $w_iA_i+\beta>0$, completing the square gives
+\begin{equation}
+\ell_i^{\mathrm{AWM+KL}}(\theta)
+=
+(w_iA_i+\beta)
+\left\|
+\mathbf{v}_i^\theta
+-
+\widetilde{\mathbf{v}}_i^{\mathrm{AWM+KL}}
+\right\|^2
++
+\mathrm{const.},
+\end{equation}
+where
+\begin{equation}
+\widetilde{\mathbf{v}}_i^{\mathrm{AWM+KL}}
+=
+\frac{
+w_iA_i\mathbf{v}_i+\beta\mathbf{v}_i^{\mathrm{old}}
+}{
+w_iA_i+\beta
+} = \mathbf{v}_i^{\mathrm{old}} + \frac{w_iA_i}{w_iA_i+\beta} (\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}) .
+\end{equation}
+
+
+
+\paragraph{Summary}
+Table~\ref{tab:velocity_target_comparison} summarizes the three objectives under
+the unified view. 
+% Flow-GRPO uses a stochastic transition-induced
+% target, DiffusionNFT constructs a reward-shifted target around the old velocity,
+% and AWM uses the clean flow-matching target with a signed advantage weight. 
+This
+suggests that RL for flow-matching models can be reframed as a
+problem of reward-conditioned velocity target design: given a generated sample,
+we need to decide where its velocity target should be placed, how strongly this
+target should be weighted, and how far the update should be allowed to deviate
+from the old model.
+
+\begin{table}[H]
+\centering
+\caption{Unified velocity-target view of Flow-GRPO, DiffusionNFT, and AWM.}
+\label{tab:velocity_target_comparison}
+\renewcommand{\arraystretch}{1.45}
+\setlength{\tabcolsep}{5pt}
+\small
+\begin{tabularx}{\textwidth}{
+@{}
+>{\bfseries\centering\arraybackslash}m{0.15\textwidth}
+>{\centering\arraybackslash}m{0.30\textwidth}
+>{\centering\arraybackslash}m{0.22\textwidth}
+Y
+@{}}
+\toprule
+Method
+&
+pseudo target $\mathbf{\tau}_i$
+&
+Weight $\kappa_i$
+&
+Interpretation
+\\
+\midrule
+
+Flow-GRPO
+&
+\[
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{\eta_t}{b_t}
+\boldsymbol{\epsilon}_i
+\]
+&
+\[
+A_i \frac{b_t^2}{2\eta_t^2} \rho_i(\theta)
+\]
+&
+Matches or avoids a stochastic target induced by an old-policy transition.
+\\
+
+\midrule
+
+DiffusionNFT
+&
+\[
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{2r_i-1}{\beta}
+\left(
+\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}
+\right)
+\]
+&
+\[
+\beta^2
+\]
+&
+Moves the target along the clean residual direction according to the optimality score.
+\\
+
+\midrule
+
+AWM
+&
+\[
+\mathbf{v}_i
+\]
+&
+\[
+w_i A_i
+\]
+&
+Uses the clean flow-matching target and lets the signed advantage weight the matching gradient.
+\\
+
+\bottomrule
+\end{tabularx}
+\end{table}
 
 
 \end{document}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm/project/chineseculture/public/yuxuan/miniconda3}"
 CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
@@ -13,6 +13,8 @@ NNODES="${NNODES:-2}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 NODE_RANK="${NODE_RANK:-${SLURM_NODEID:-0}}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-6}"
+ASYMMETRIC_MASS_SHIFT_SCALE=2.0
+ASYMMETRIC_SCALE_TAG=c2p0
 
 case "${NPROC_PER_NODE}" in
   6)
@@ -71,8 +73,8 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0}"
-RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-asymmetric-${ASYMMETRIC_SCALE_TAG}-KL1e-4-beta1.0}"
+RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-asymmetric-${ASYMMETRIC_SCALE_TAG}-KL1e-4-beta1.0}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
@@ -110,9 +112,10 @@ else
   )
 fi
 
-echo "Launching node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
+echo "Launching asymmetric mass-shift c=${ASYMMETRIC_MASS_SHIFT_SCALE} on node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
 
-torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours.py \
+torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours_asymmetric_scaling.py \
+  --asymmetric_mass_shift_scale="${ASYMMETRIC_MASS_SHIFT_SCALE}" \
   --config=config/nft.py:sd3_geneval \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
