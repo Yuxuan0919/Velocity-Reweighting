@@ -167,4 +167,4 @@ echo "Launching node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD
   --config.train.gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}" \
   --config.beta=1.0 \
   --config.train.beta=0.0001 \
-  --config.sample.num_steps=25
+  --config.sample.num_steps=10

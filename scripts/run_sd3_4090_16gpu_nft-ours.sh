@@ -9,9 +9,11 @@ SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
 
 LOGDIR="${REPO_DIR}/logs"
-NNODES="${NNODES:-2}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
-NODE_RANK="${NODE_RANK:-${SLURM_NODEID:-0}}"
+PLATFORM_NNODES="${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-}}"
+PLATFORM_NODE_RANK="${SENSECORE_PYTORCH_NODE_RANK:-${RANK:-${SLURM_NODEID:-}}}"
+NNODES="${NNODES:-${PLATFORM_NNODES:-2}}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-${SENSECORE_ACCELERATE_DEVICE_COUNT:-8}}"
+NODE_RANK="${NODE_RANK:-${PLATFORM_NODE_RANK}}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-6}"
 
 case "${NPROC_PER_NODE}" in
@@ -36,9 +38,13 @@ case "${WORLD_SIZE}" in
     ;;
 esac
 
+if [[ -z "${NODE_RANK}" ]] && ((NNODES == 1)); then
+  NODE_RANK=0
+fi
 case "${NODE_RANK}" in
   ''|*[!0-9]*)
-    echo "NODE_RANK must be an integer from 0 to NNODES-1" >&2
+    echo "Unable to determine NODE_RANK for multi-node training." >&2
+    echo "Expected NODE_RANK, SENSECORE_PYTORCH_NODE_RANK, RANK, or SLURM_NODEID." >&2
     exit 2
     ;;
 esac
@@ -110,6 +116,7 @@ else
   )
 fi
 
+echo "Distributed platform env: SENSECORE_PYTORCH_NODE_RANK=${SENSECORE_PYTORCH_NODE_RANK:-unset}, RANK=${RANK:-unset}, SENSECORE_PYTORCH_NNODES=${SENSECORE_PYTORCH_NNODES:-unset}, platform WORLD_SIZE=${PLATFORM_NNODES:-unset}"
 echo "Launching node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
 
 torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours.py \

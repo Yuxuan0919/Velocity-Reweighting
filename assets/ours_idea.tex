@@ -1855,6 +1855,16 @@ Here, $c=1$ exactly recovers the symmetric mass-shift construction under the
 same prompt centering and global reward scale. Values $c>1$ emphasize negative
 mass shifts, whereas values $c<1$ emphasize positive mass shifts.
 
+\paragraph{Motivation and hypothesis.}
+Positive and negative mass shifts need not be equally reliable: a positive
+sample provides a concrete direction toward a successful mode, whereas pushing
+away from a negative sample is less specific because the sample may fail in
+many different ways. Excessive negative scaling may therefore introduce noisy
+updates or suppress useful modes. We consequently expect moderate positive
+emphasis to be more robust, with $c=1/\sqrt{2}$ the most promising candidate;
+$c=1/2$ may amplify and clip positive shifts too aggressively, while $c>1$ may
+be preferable only when failures are systematic and need stronger removal.
+
 
 
 

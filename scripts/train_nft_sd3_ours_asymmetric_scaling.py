@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from collections import defaultdict
+import hashlib
 import os
 import re
 import datetime
@@ -42,6 +43,7 @@ from torch.utils.data import Dataset, DataLoader, Sampler
 from flow_grpo.ema import EMAModuleWrapper
 from ml_collections import config_flags
 from torch.cuda.amp import GradScaler, autocast as torch_autocast
+from PIL import Image
 
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
@@ -52,6 +54,11 @@ flags.DEFINE_float(
     "asymmetric_mass_shift_scale",
     1.0,
     "Fixed scale c for asymmetric mass shifts: Z_+=cZ and Z_-=Z/c.",
+)
+flags.DEFINE_bool(
+    "save_rollout_samples",
+    True,
+    "Save every sampled training image and its raw rewards, grouped by epoch and prompt.",
 )
 
 logger = logging.getLogger(__name__)
@@ -427,6 +434,221 @@ def reward_values_to_numpy(reward_values):
     if isinstance(reward_values, (list, tuple)):
         return np.asarray([reward_values_to_numpy(value) for value in reward_values])
     return np.asarray(reward_values)
+
+
+def _json_compatible(value):
+    """Convert tensor/NumPy reward values into lossless JSON-compatible values."""
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().numpy()
+    if isinstance(value, np.ndarray):
+        return value.item() if value.ndim == 0 else value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return value
+
+
+def _reward_at_index(rewards, sample_index, batch_size):
+    sample_rewards = {}
+    for reward_name, reward_values in rewards.items():
+        values = reward_values_to_numpy(reward_values)
+        if values.ndim == 0:
+            if batch_size != 1:
+                raise ValueError(
+                    f"Reward '{reward_name}' is scalar for a sampling batch of size {batch_size}"
+                )
+            sample_value = values
+        else:
+            if len(values) != batch_size:
+                raise ValueError(
+                    f"Reward '{reward_name}' has {len(values)} values for a sampling batch of size {batch_size}"
+                )
+            sample_value = values[sample_index]
+        sample_rewards[str(reward_name)] = _json_compatible(sample_value)
+    return sample_rewards
+
+
+def _truncate_utf8(value, max_bytes):
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip()
+
+
+def _prompt_directory_name(prompt):
+    """Keep the prompt readable while making it safe as one directory component."""
+    original = str(prompt)
+    safe = original.replace("/", "／").replace("\\", "＼")
+    safe = " ".join(safe.split()).strip()
+    safe = "".join(character for character in safe if ord(character) >= 32)
+    digest = hashlib.sha1(original.encode("utf-8")).hexdigest()[:10]
+
+    if not safe or safe in {".", "..", "_SUCCESS"}:
+        return f"prompt_{digest}"
+    if safe != original or len(safe.encode("utf-8")) > 200:
+        safe = f"{_truncate_utf8(safe, 185)}__{digest}"
+    return safe
+
+
+def _save_uint8_png(image, image_path):
+    image_array = image.permute(1, 2, 0).contiguous().numpy()
+    if image_array.shape[-1] == 1:
+        image_array = image_array[..., 0]
+    Image.fromarray(image_array).save(image_path, format="PNG", compress_level=1)
+
+
+def save_rollout_samples(
+    save_dir,
+    epoch,
+    global_step,
+    rank,
+    world_size,
+    image_batches,
+    prompts_by_batch,
+    rewards_by_batch,
+    expected_images_per_prompt,
+):
+    """Save one complete distributed rollout as epoch/prompt/NNN.png + rewards.json."""
+    local_records = []
+    local_sample_index = 0
+    for rollout_batch_id, (images, prompts, rewards) in enumerate(
+        zip(image_batches, prompts_by_batch, rewards_by_batch, strict=True)
+    ):
+        if len(images) != len(prompts):
+            raise ValueError(
+                f"Sampling batch {rollout_batch_id} has {len(images)} images but {len(prompts)} prompts"
+            )
+        for batch_sample_index, prompt in enumerate(prompts):
+            local_records.append(
+                {
+                    "rank": rank,
+                    "local_sample_index": local_sample_index,
+                    "rollout_batch_id": rollout_batch_id,
+                    "prompt": str(prompt),
+                    "reward": _reward_at_index(rewards, batch_sample_index, len(prompts)),
+                }
+            )
+            local_sample_index += 1
+
+    records_by_rank = [None for _ in range(world_size)]
+    dist.all_gather_object(records_by_rank, local_records)
+
+    epoch_root = os.path.join(
+        save_dir, "checkpoints", "training_samples", f"epoch_{epoch:06d}"
+    )
+    payload = [{"assignments": {}, "prompt_groups": []}]
+    if is_main_process(rank):
+        os.makedirs(epoch_root, exist_ok=True)
+        completion_marker = os.path.join(epoch_root, "_SUCCESS")
+        if os.path.exists(completion_marker):
+            os.remove(completion_marker)
+
+        all_records = [record for rank_records in records_by_rank for record in rank_records]
+        grouped_records = defaultdict(list)
+        prompt_to_group_keys = defaultdict(list)
+        for record in all_records:
+            group_key = (record["rollout_batch_id"], record["prompt"])
+            grouped_records[group_key].append(record)
+            if group_key not in prompt_to_group_keys[record["prompt"]]:
+                prompt_to_group_keys[record["prompt"]].append(group_key)
+
+        used_directory_names = set()
+        prompt_groups = []
+        assignments = {}
+        for group_key in sorted(grouped_records, key=lambda key: (key[0], key[1])):
+            rollout_batch_id, prompt = group_key
+            directory_name = _prompt_directory_name(prompt)
+            if len(prompt_to_group_keys[prompt]) > 1:
+                directory_name = (
+                    f"{_truncate_utf8(directory_name, 200)}"
+                    f"__rollout_batch_{rollout_batch_id:04d}"
+                )
+            if directory_name in used_directory_names:
+                digest = hashlib.sha1(
+                    f"{rollout_batch_id}\0{prompt}".encode("utf-8")
+                ).hexdigest()[:10]
+                directory_name = f"{_truncate_utf8(directory_name, 205)}__{digest}"
+            used_directory_names.add(directory_name)
+
+            prompt_dir = os.path.join(epoch_root, directory_name)
+            os.makedirs(prompt_dir, exist_ok=True)
+            group_records = sorted(
+                grouped_records[group_key],
+                key=lambda record: (record["rank"], record["local_sample_index"]),
+            )
+            if len(group_records) != expected_images_per_prompt:
+                logger.warning(
+                    "Epoch %d prompt %r has %d images; expected %d",
+                    epoch,
+                    prompt,
+                    len(group_records),
+                    expected_images_per_prompt,
+                )
+
+            json_samples = []
+            for image_index, record in enumerate(group_records, start=1):
+                image_name = f"{image_index:03d}.png"
+                assignment_key = f"{record['rank']}:{record['local_sample_index']}"
+                assignments[assignment_key] = os.path.join(prompt_dir, image_name)
+                json_samples.append(
+                    {
+                        "image": image_name,
+                        "reward": record["reward"],
+                    }
+                )
+            prompt_groups.append(
+                {
+                    "directory": prompt_dir,
+                    "json": {
+                        "prompt": prompt,
+                        "rollout_batch_id": rollout_batch_id,
+                        "num_images": len(json_samples),
+                        "samples": json_samples,
+                    },
+                }
+            )
+        payload[0] = {"assignments": assignments, "prompt_groups": prompt_groups}
+
+    dist.broadcast_object_list(
+        payload,
+        src=0,
+        device=torch.device("cuda", torch.cuda.current_device()),
+    )
+    assignments = payload[0]["assignments"]
+
+    local_sample_index = 0
+    for images in image_batches:
+        for image in images:
+            image_path = assignments[f"{rank}:{local_sample_index}"]
+            os.makedirs(os.path.dirname(image_path), exist_ok=True)
+            _save_uint8_png(image, image_path)
+            local_sample_index += 1
+
+    dist.barrier()
+    if is_main_process(rank):
+        for prompt_group in payload[0]["prompt_groups"]:
+            json_path = os.path.join(prompt_group["directory"], "rewards.json")
+            json_tmp_path = f"{json_path}.tmp"
+            with open(json_tmp_path, "w", encoding="utf-8") as json_file:
+                json.dump(prompt_group["json"], json_file, ensure_ascii=False, indent=2)
+            os.replace(json_tmp_path, json_path)
+
+        completion_marker = os.path.join(epoch_root, "_SUCCESS")
+        marker_tmp = f"{completion_marker}.tmp"
+        with open(marker_tmp, "w", encoding="utf-8") as marker_file:
+            marker_file.write(
+                f"epoch={epoch}\nglobal_step={global_step}\nnum_samples={sum(len(x) for x in records_by_rank)}\n"
+            )
+        os.replace(marker_tmp, completion_marker)
+        logger.info(
+            "Saved %d rollout samples grouped by prompt to %s",
+            sum(len(x) for x in records_by_rank),
+            epoch_root,
+        )
+    dist.barrier()
 
 
 def format_reward_value(value):
@@ -1073,6 +1295,9 @@ def main(_):
         # SAMPLING
         pipeline.transformer.eval()
         samples_data_list = []
+        rollout_image_batches = []
+        rollout_prompts_by_batch = []
+        rollout_rewards_by_batch = []
 
         for i in tqdm(
             range(config.sample.num_batches_per_epoch),
@@ -1161,6 +1386,12 @@ def main(_):
             rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=True)
             time.sleep(0)
 
+            if FLAGS.save_rollout_samples:
+                rollout_image_batches.append(
+                    images.detach().float().clamp(0, 1).mul(255).round().to(torch.uint8).cpu()
+                )
+                rollout_prompts_by_batch.append(list(prompts))
+
             samples_data_list.append(
                 {
                     "prompt_ids": prompt_ids,
@@ -1178,8 +1409,26 @@ def main(_):
             samples_data_list, desc="Waiting for rewards", disable=not is_main_process(rank), position=0
         ):
             rewards, reward_metadata = sample_item["rewards_future"].result()
+            if FLAGS.save_rollout_samples:
+                rollout_rewards_by_batch.append(rewards)
             sample_item["rewards"] = {k: torch.as_tensor(v, device=device).float() for k, v in rewards.items()}
             del sample_item["rewards_future"]
+
+        if FLAGS.save_rollout_samples:
+            save_rollout_samples(
+                config.save_dir,
+                epoch,
+                global_step,
+                rank,
+                world_size,
+                rollout_image_batches,
+                rollout_prompts_by_batch,
+                rollout_rewards_by_batch,
+                int(config.sample.num_image_per_prompt),
+            )
+            del rollout_image_batches
+            del rollout_prompts_by_batch
+            del rollout_rewards_by_batch
 
         # Collate samples
         collated_samples = {
@@ -1515,7 +1764,7 @@ def main(_):
                         # empirical mean over the current training batch.
                         trajectory_alpha = trajectory_alpha / trajectory_alpha.mean()
                         correction_coefficient = (
-                            float(config.beta) * (importance_weight - 1.0) / prompt_normalizer
+                            float(config.beta) * (importance_weight / prompt_normalizer - 1)
                         )
                         correction_coefficient_expanded = correction_coefficient.view(
                             -1, *([1] * (x0.ndim - 1))
@@ -1534,7 +1783,6 @@ def main(_):
                     )
                     
                     # ori_policy_loss = t.float() * target_importance * target_velocity_loss
-                    # ori_policy_loss = t.float() / float(config.beta) * target_velocity_loss
                     ori_policy_loss = t.float() * target_velocity_loss
 
 
