@@ -305,6 +305,7 @@ tags
 
 wandb/
 logs/
+logs_old/
 outputs/
 notebooks/
 
