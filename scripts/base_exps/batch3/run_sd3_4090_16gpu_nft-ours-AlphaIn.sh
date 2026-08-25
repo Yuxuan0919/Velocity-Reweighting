@@ -77,8 +77,8 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0-fulltime}"
-RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0-fulltime}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0-fulltime-AlphaIn}"
+RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-KL1e-4-beta1.0-fulltime-AlphaIn}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
@@ -119,7 +119,7 @@ fi
 echo "Distributed platform env: SENSECORE_PYTORCH_NODE_RANK=${SENSECORE_PYTORCH_NODE_RANK:-unset}, RANK=${RANK:-unset}, SENSECORE_PYTORCH_NNODES=${SENSECORE_PYTORCH_NNODES:-unset}, platform WORLD_SIZE=${PLATFORM_NNODES:-unset}"
 echo "Launching node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
 
-torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours.py \
+torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/train_nft_sd3_ours-pro.py \
   --config=config/nft.py:sd3_geneval \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
