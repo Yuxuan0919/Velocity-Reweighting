@@ -82,6 +82,10 @@ def get_config():
     train.num_inner_epochs = 1
     # clip advantages to the range [-adv_clip_max, adv_clip_max].
     train.adv_clip_max = 5
+    # Temperature used by the reward-based importance weight. Set to -1 to use
+    # the current global reward std (+1e-4), matching NFT advantage scaling.
+    # omega_i = exp(r_i / gamma) / mean_group(exp(r / gamma)).
+    train.importance_weight_gamma = 0.01
     # Quality-adaptive quantile bounds. Declaring these fields here also makes
     # them available to ml_collections command-line overrides.
     train.quality_adaptive_quantile_min = 0.2

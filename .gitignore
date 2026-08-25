@@ -325,6 +325,6 @@ scripts/train_nft_sd3_ours-Aequality.py
 scripts/train_nft_sd3_ours-Aomit.py
 scripts/run_sd3_4090_16gpu_nft-ours-Aequality.sh
 scripts/run_sd3_4090_16gpu_nft-ours-Aomit.sh
-scripts/weight_exps
+scripts/weight_exps_old
 scripts/train_nft_sd3_ours_symmetric_scaling.py
 scripts/train_nft_sd3_ours_asymmetric_scaling.py
