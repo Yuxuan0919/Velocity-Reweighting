@@ -125,4 +125,5 @@ torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" 
   --config.train.gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}" \
   --config.beta=1.0 \
   --config.train.beta=0.0001 \
-  --config.train.timestep_fraction=1.0
+  --config.train.timestep_fraction=1.0 \
+  --config.train.trajectory_alpha_prediction=forward_prediction

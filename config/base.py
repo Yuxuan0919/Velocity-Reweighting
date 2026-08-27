@@ -92,6 +92,9 @@ def get_config():
     train.quality_adaptive_quantile_max = 0.8
     # Maximum absolute probability-mass shift used by the quantile variant.
     train.quality_adaptive_max_mass_shift = 1.0
+    # Prediction used to compute the trajectory-alpha discrepancy. Options:
+    # "forward_prediction" (current trainable model) or "old_prediction" (EMA/old adapter).
+    train.trajectory_alpha_prediction = "forward_prediction"
     # the fraction of timesteps to train on. if set to less than 1.0, the model will be trained on a subset of the
     # timesteps for each sample. this will speed up training but reduce the accuracy of policy gradient estimates.
     train.timestep_fraction = 0.99

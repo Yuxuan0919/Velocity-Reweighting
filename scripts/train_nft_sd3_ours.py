@@ -749,6 +749,13 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
+    trajectory_alpha_prediction = config.train.trajectory_alpha_prediction
+    valid_trajectory_alpha_predictions = {"forward_prediction", "old_prediction"}
+    if trajectory_alpha_prediction not in valid_trajectory_alpha_predictions:
+        raise ValueError(
+            "config.train.trajectory_alpha_prediction must be one of "
+            f"{sorted(valid_trajectory_alpha_predictions)}, got {trajectory_alpha_prediction!r}"
+        )
 
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
@@ -1469,9 +1476,15 @@ def main(_):
                     with torch.no_grad():
                         conditional_velocity = noise.float() - x0.float()
                         velocity_discrepancy = conditional_velocity - old_prediction.detach().float()
+                        trajectory_alpha_base_prediction = (
+                            forward_prediction
+                            if trajectory_alpha_prediction == "forward_prediction"
+                            else old_prediction
+                        )
                         trajectory_alpha = 1.0 / (
-                            # torch.abs(velocity_discrepancy).mean(
-                            torch.abs(conditional_velocity - forward_prediction.float()).mean(
+                            torch.abs(
+                                conditional_velocity - trajectory_alpha_base_prediction.float()
+                            ).mean(
                                 dim=tuple(range(1, x0.ndim)), keepdim=True
                             )
                             + algorithm_epsilon

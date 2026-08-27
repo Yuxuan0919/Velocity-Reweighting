@@ -12,9 +12,8 @@ REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
 
 LOGDIR="${REPO_DIR}/logs"
 # Set to -1 to use the current global reward std (+1e-4) as gamma.
-IMPORTANCE_WEIGHT_GAMMA="${IMPORTANCE_WEIGHT_GAMMA:-0.01}"
 SAVE_DIR="${REPO_DIR}/outputs/nft_sd3_geneval_nft_ours-exp-weights-gamma-ada-KL1e-4-beta1.0-fulltime"
-RUN_NAME="sd35_geneval_h200_8gpu_nft_ours-exp-weights-gamma-ada-KL1e-4-beta1.0--fulltime"
+RUN_NAME="sd35_geneval_h200_8gpu_nft_ours-exp-weights-gamma-ada-KL1e-4-beta1.0-fulltime"
 
 NPROC_PER_NODE=8
 
@@ -38,13 +37,13 @@ export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
 export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
 export DIFFUSERS_CACHE="${HF_HOME}/diffusers"
 
-torchrun --standalone --nnodes=1 --nproc_per_node="${NPROC_PER_NODE}" scripts/weight_exp/train_nft_sd3_ours-exp-weight.py \
+torchrun --standalone --nnodes=1 --nproc_per_node="${NPROC_PER_NODE}" scripts/weight_exps/train_nft_sd3_ours-exp-weight.py \
   --config=config/nft.py:sd3_geneval \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
   --config.save_dir="${SAVE_DIR}" \
   --config.run_name="${RUN_NAME}" \
-  --config.train.importance_weight_gamma="${IMPORTANCE_WEIGHT_GAMMA}" \
+  --config.train.importance_weight_gamma=-1.0 \
   --config.beta=1.0 \
   --config.train.beta=0.0001 \
   --config.train.timestep_fraction=1.0 
