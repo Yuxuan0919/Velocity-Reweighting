@@ -11,7 +11,7 @@ OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
 TRAIN_SCRIPT="scripts/baseline_exps/train_nft_sd3_ours-1.singleloss-alpha-theta.py"
 
 LOGDIR="${LOGDIR:-${REPO_DIR}/logs/baseline_exps}"
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/baseline_exps/nft_sd3_geneval_h200_8gpu_nft_ours-1singleloss-xpred-alpha-theta-KL1e-4-beta1.0}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/baseline_exps/sd35_geneval_h200_8gpu_nft_ours-1singleloss-xpred-alpha-theta-KL1e-4-beta1.0}"
 RUN_NAME="${RUN_NAME:-sd35_geneval_h200_8gpu_nft_ours-1singleloss-xpred-alpha-theta-KL1e-4-beta1.0}"
 
 NPROC_PER_NODE=8

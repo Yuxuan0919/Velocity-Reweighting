@@ -78,7 +78,7 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/baseline_exps/nft_sd3_geneval_4090_${WORLD_SIZE}gpu_nft_ours-1singleloss-xpred-alpha-old-KL1e-4-beta1.0-fulltime}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/baseline_exps/sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-1singleloss-xpred-alpha-old-KL1e-4-beta1.0-fulltime}"
 RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-1singleloss-xpred-alpha-old-KL1e-4-beta1.0-fulltime}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
