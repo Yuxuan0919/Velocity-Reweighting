@@ -7,7 +7,7 @@ CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 
 OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
-TRAIN_SCRIPT="scripts/baseline_exps/train_nft_sd3_ours-1.singleloss-alpha-theta.py"
+TRAIN_SCRIPT="scripts/train_nft_sd3_ours-1.singleloss-alpha.py"
 
 LOGDIR="${LOGDIR:-${REPO_DIR}/logs/baseline_exps}"
 PLATFORM_NNODES="${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-}}"

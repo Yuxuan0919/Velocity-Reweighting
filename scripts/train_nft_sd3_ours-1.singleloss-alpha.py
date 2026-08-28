@@ -1261,7 +1261,7 @@ def main(_):
                             + algorithm_epsilon
                         )
 
-                        correction_coefficient = float(config.beta) * (importance_weight / prompt_normalizer - 1)
+                        correction_coefficient = float(config.beta) * (importance_weight - 1)
                         correction_coefficient_expanded = correction_coefficient.view(
                             -1, *([1] * (x0.ndim - 1))
                         )
