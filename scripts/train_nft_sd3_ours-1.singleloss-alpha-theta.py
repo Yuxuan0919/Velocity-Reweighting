@@ -302,6 +302,54 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
     return zero_std_ratio, prompt_std_devs.mean()
 
 
+
+def compute_reinforced_flow_weights(
+    prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
+):
+    r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
+    prompts = np.asarray(prompts)
+    rollout_batch_ids = np.asarray(rollout_batch_ids)
+    nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
+    if nft_advantages.ndim > 1:
+        # NFT repeats each clean-sample advantage over training timesteps.
+        nft_advantages = nft_advantages[:, 0]
+    if advantage_clip <= 0:
+        raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
+    # if not 0.0 <= coverage_beta <= 1.0:
+    #     raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
+    if epsilon <= 0:
+        raise ValueError(f"epsilon must be positive, got {epsilon}")
+    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
+        raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
+
+    advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
+    if advantage_mode == "positive_only":
+        advantages_clip = np.clip(advantages_clip, 0.0, advantage_clip)
+    elif advantage_mode == "negative_only":
+        advantages_clip = np.clip(advantages_clip, -advantage_clip, 0.0)
+    elif advantage_mode == "one_only":
+        advantages_clip = np.where(advantages_clip > 0.0, 1.0, 0.0)
+    elif advantage_mode == "binary":
+        advantages_clip = np.sign(advantages_clip)
+
+    # This is exactly 2 * r - 1 in the original NFT code:
+    # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
+    normalized_advantages = advantages_clip / advantage_clip
+    importance_weights = 1.0 + normalized_advantages
+    prompt_normalizers = np.empty_like(importance_weights)
+
+    prompt_groups = defaultdict(list)
+    for sample_idx, (rollout_batch_id, prompt) in enumerate(zip(rollout_batch_ids, prompts, strict=True)):
+        prompt_groups[(int(rollout_batch_id), str(prompt))].append(sample_idx)
+
+    for sample_indices in prompt_groups.values():
+        sample_indices = np.asarray(sample_indices, dtype=np.int64)
+        prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
+        prompt_normalizers[sample_indices] = prompt_z_bar
+
+    return normalized_advantages, importance_weights, prompt_normalizers
+
+
 def log_scalars(writer, scalars, step):
     if writer is None:
         return
@@ -483,6 +531,13 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
+    trajectory_alpha_prediction = config.train.trajectory_alpha_prediction
+    valid_trajectory_alpha_predictions = {"forward_prediction", "old_prediction"}
+    if trajectory_alpha_prediction not in valid_trajectory_alpha_predictions:
+        raise ValueError(
+            "config.train.trajectory_alpha_prediction must be one of "
+            f"{sorted(valid_trajectory_alpha_predictions)}, got {trajectory_alpha_prediction!r}"
+        )
 
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
@@ -841,6 +896,7 @@ def main(_):
                 )
 
             transformer_ddp.module.set_adapter("old")
+            # transformer_ddp.module.set_adapter("default")  # Algorithm 1: roll out with the current model theta.
             with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
                 with torch.no_grad():
                     images, latents, _ = pipeline_with_logprob(
@@ -875,6 +931,7 @@ def main(_):
                     "timesteps": timesteps,
                     "next_timesteps": torch.concatenate([timesteps[:, 1:], torch.zeros_like(timesteps[:, :1])], dim=1),
                     "latents_clean": latents[:, -1],
+                    "rollout_batch_ids": torch.full((len(prompts),), i, device=device, dtype=torch.long),
                     "rewards_future": rewards_future,  # Store future
                 }
             )
@@ -919,12 +976,22 @@ def main(_):
                 global_step,
             )
 
+        # if config.per_prompt_stat_tracking:
+        #     prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
+        #     prompts_all_decoded = pipeline.tokenizer.batch_decode(
+        #         prompt_ids_all.cpu().numpy(), skip_special_tokens=True
+        #     )
+        prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
+        prompts_all_decoded = pipeline.tokenizer.batch_decode(
+            prompt_ids_all.cpu().numpy(), skip_special_tokens=True
+        )
+        rollout_batch_ids_all = gather_tensor_to_all(collated_samples["rollout_batch_ids"], world_size).numpy()
+        algorithm_epsilon = 1e-5
+
         if config.per_prompt_stat_tracking:
-            prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
-            prompts_all_decoded = pipeline.tokenizer.batch_decode(
-                prompt_ids_all.cpu().numpy(), skip_special_tokens=True
-            )
             # Stat tracker update expects numpy arrays for rewards
+            # advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
+            # stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
             advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
 
             if is_main_process(rank):
@@ -947,8 +1014,22 @@ def main(_):
                 )
             stat_tracker.clear()
         else:
+            # avg_rewards_all = gathered_rewards_dict["avg"]
+            # advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
+            # pass
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
+
+        normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
+            prompts_all_decoded,
+            rollout_batch_ids_all,
+            advantages,
+            advantage_clip=float(config.train.adv_clip_max),
+            coverage_beta=float(config.beta),
+            epsilon=algorithm_epsilon,
+            advantage_mode=getattr(config.train, "adv_mode", "all"),
+        )
+        total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
         # Distribute advantages back to processes
         samples_per_gpu = collated_samples["timesteps"].shape[0]
         if advantages.ndim == 1:
@@ -958,14 +1039,27 @@ def main(_):
             collated_samples["advantages"] = torch.from_numpy(
                 advantages.reshape(world_size, samples_per_gpu, -1)[rank]
             ).to(device)
+            collated_samples["importance_weights"] = torch.from_numpy(
+                importance_weights.reshape(world_size, samples_per_gpu)[rank]
+            ).to(device=device, dtype=torch.float32)
+            collated_samples["prompt_normalizers"] = torch.from_numpy(
+                prompt_normalizers.reshape(world_size, samples_per_gpu)[rank]
+            ).to(device=device, dtype=torch.float32)
         else:
             assert False
 
         if is_main_process(rank):
             logger.info(f"Advantages mean: {collated_samples['advantages'].abs().mean().item()}")
+            logger.info(
+                "Importance weights mean: %.6f; prompt normalizers mean: %.6f; D: %d",
+                collated_samples["importance_weights"].mean().item(),
+                collated_samples["prompt_normalizers"].mean().item(),
+                total_rollout_size,
+            )
 
         del collated_samples["rewards"]
         del collated_samples["prompt_ids"]
+        del collated_samples["rollout_batch_ids"]
 
         num_batches = config.sample.num_batches_per_epoch * config.sample.train_batch_size // config.train.batch_size
 
@@ -1085,73 +1179,123 @@ def main(_):
                             else:  # Full model - this requires a frozen copy of the model
                                 assert False
                     loss_terms = {}
-                    # Policy Gradient Loss
-                    advantages_clip = torch.clamp(
-                        train_sample_batch["advantages"][:, j_idx],
-                        -config.train.adv_clip_max,
-                        config.train.adv_clip_max,
-                    )
-                    if hasattr(config.train, "adv_mode"):
-                        if config.train.adv_mode == "positive_only":
-                            advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
-                        elif config.train.adv_mode == "negative_only":
-                            advantages_clip = torch.clamp(advantages_clip, -config.train.adv_clip_max, 0)
-                        elif config.train.adv_mode == "one_only":
-                            advantages_clip = torch.where(
-                                advantages_clip > 0, torch.ones_like(advantages_clip), torch.zeros_like(advantages_clip)
-                            )
-                        elif config.train.adv_mode == "binary":
-                            advantages_clip = torch.sign(advantages_clip)
+                    # # Policy Gradient Loss
+                    # advantages_clip = torch.clamp(
+                    #     train_sample_batch["advantages"][:, j_idx],
+                    #     -config.train.adv_clip_max,
+                    #     config.train.adv_clip_max,
+                    # )
+                    # if hasattr(config.train, "adv_mode"):
+                    #     if config.train.adv_mode == "positive_only":
+                    #         advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
+                    #     elif config.train.adv_mode == "negative_only":
+                    #         advantages_clip = torch.clamp(advantages_clip, -config.train.adv_clip_max, 0)
+                    #     elif config.train.adv_mode == "one_only":
+                    #         advantages_clip = torch.where(
+                    #             advantages_clip > 0, torch.ones_like(advantages_clip), torch.zeros_like(advantages_clip)
+                    #         )
+                    #     elif config.train.adv_mode == "binary":
+                    #         advantages_clip = torch.sign(advantages_clip)
 
-                    # normalize advantage
-                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
-                    r = torch.clamp(normalized_advantages_clip, 0, 1)
+                    # # normalize advantage
+                    # normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
+                    # r = torch.clamp(normalized_advantages_clip, 0, 1)
                     loss_terms["x0_norm"] = torch.mean(x0**2).detach()
                     loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
 
-                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
-                    implicit_negative_prediction = (
-                        1.0 + config.beta
-                    ) * old_prediction.detach() - config.beta * forward_prediction
-
-                    x0_prediction = xt - t_expanded * positive_prediction
-
-                    # Official adaptive normalization (kept for reference):
-                    with torch.no_grad():
-                        weight_factor = (
-                            torch.abs(x0_prediction.double() - x0.double())
-                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                            .clip(min=0.00001)
-                        )
+                    # Original DiffusionNFT two-branch objective (kept for reference):
+                    # positive_prediction = (
+                    #     config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
+                    # )
+                    # implicit_negative_prediction = (
+                    #     1.0 + config.beta
+                    # ) * old_prediction.detach() - config.beta * forward_prediction
+                    #
+                    # # adaptive weighting
+                    # x0_prediction = xt - t_expanded * positive_prediction
                     # with torch.no_grad():
-                        # weight_factor = t_expanded.square().clip(min=1e-8)
-                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
+                    #     weight_factor = (
+                    #         torch.abs(x0_prediction.double() - x0.double())
+                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                    #         .clip(min=0.00001)
+                    #     )
+                    # positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
+                    #     dim=tuple(range(1, x0.ndim))
+                    # )
+                    # negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
+                    # with torch.no_grad():
+                    #     negative_weight_factor = (
+                    #         torch.abs(negative_x0_prediction.double() - x0.double())
+                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                    #         .clip(min=0.00001)
+                    #     )
+                    # negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
+                    #     dim=tuple(range(1, x0.ndim))
+                    # )
+                    # ori_policy_loss = (
+                    #     r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
+                    # )
+                    # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
+
+                    # Convert the SD3 flow-velocity outputs to x0 predictions,
+                    # following the x-prediction objective used by DiffusionNFT.
+                    importance_weight = train_sample_batch["importance_weights"].float()
+                    prompt_normalizer = train_sample_batch["prompt_normalizers"].float()
+                    forward_x_prediction = xt.float() - t_expanded.float() * forward_prediction.float()
+                    with torch.no_grad():
+                        old_x_prediction = xt.float() - t_expanded.float() * old_prediction.detach().float()
+                        clean_x_discrepancy = x0.float() - old_x_prediction
+                        trajectory_alpha_base_x_prediction = (
+                            forward_x_prediction
+                            if trajectory_alpha_prediction == "forward_prediction"
+                            else old_x_prediction
+                        )
+                        trajectory_alpha = 1.0 / (
+                            torch.abs(
+                                x0.float() - trajectory_alpha_base_x_prediction.float()
+                            ).mean(
+                                dim=tuple(range(1, x0.ndim)), keepdim=True
+                            )
+                            + algorithm_epsilon
+                        )
+
+                        correction_coefficient = float(config.beta) * (importance_weight / prompt_normalizer - 1)
+                        correction_coefficient_expanded = correction_coefficient.view(
+                            -1, *([1] * (x0.ndim - 1))
+                        )
+                        target_x_prediction = old_x_prediction + correction_coefficient_expanded * clean_x_discrepancy
+                        
+
+                    target_x_prediction_loss = (trajectory_alpha * (forward_x_prediction - target_x_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
 
-                    # Official adaptive normalization (kept for reference):
-                    with torch.no_grad():
-                        negative_weight_factor = (
-                            torch.abs(negative_x0_prediction.double() - x0.double())
-                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                            .clip(min=0.00001)
-                        )
-                    # with torch.no_grad():
-                    #     negative_weight_factor = t_expanded.square().clip(min=1e-8)
-                    negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
-                        dim=tuple(range(1, x0.ndim))
-                    )
-
-                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
-                    policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
+                    ori_policy_loss = target_x_prediction_loss
+                    policy_loss = float(config.train.adv_clip_max) * ori_policy_loss.mean()
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
+                    # loss_terms["single_branch_coeff_abs_mean"] = single_branch_coeff.abs().mean().detach()
+                    # loss_terms["clean_weight_factor"] = weight_factor.mean().detach()
+                    loss_terms["importance_weight"] = importance_weight.mean().detach()
+                    loss_terms["importance_weight_max"] = importance_weight.max().detach()
+                    loss_terms["importance_weight_min"] = importance_weight.min().detach()
+                    loss_terms["prompt_normalizer"] = prompt_normalizer.mean().detach()
+                    loss_terms["prompt_normalizer_max"] = prompt_normalizer.max().detach()
+                    loss_terms["prompt_normalizer_min"] = prompt_normalizer.min().detach()
+                    loss_terms["target_importance"] = target_importance.mean().detach()
+                    loss_terms["target_importance_max"] = target_importance.max().detach()
+                    loss_terms["target_importance_min"] = target_importance.min().detach()
+                    loss_terms["trajectory_alpha"] = trajectory_alpha.mean().detach()
+                    loss_terms["trajectory_alpha_max"] = trajectory_alpha.max().detach()
+                    loss_terms["trajectory_alpha_min"] = trajectory_alpha.min().detach()
+                    loss_terms["correction_coefficient_abs_mean"] = correction_coefficient.abs().mean().detach()
+                    loss_terms["correction_coefficient_max"] = correction_coefficient.max().detach()
+                    loss_terms["correction_coefficient_min"] = correction_coefficient.min().detach()
 
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
