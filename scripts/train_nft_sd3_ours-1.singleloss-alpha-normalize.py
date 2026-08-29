@@ -1205,7 +1205,10 @@ def main(_):
                             )
                             + algorithm_epsilon
                         )
-
+                        # Alpha theoretically has unit expectation; enforce its
+                        # empirical mean over the current training batch.
+                        trajectory_alpha = trajectory_alpha / trajectory_alpha.mean()
+                        
                         correction_coefficient = float(config.beta) * (importance_weight - 1)
                         correction_coefficient_expanded = correction_coefficient.view(
                             -1, *([1] * (x0.ndim - 1))

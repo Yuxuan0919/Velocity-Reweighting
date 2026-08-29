@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm/project/chineseculture/public/yuxuan/miniconda3}"
 CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
@@ -9,9 +9,11 @@ SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
 
 LOGDIR="${LOGDIR:-${REPO_DIR}/logs/baseline_exps}"
-NNODES="${NNODES:-2}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
-NODE_RANK="${NODE_RANK:-${SLURM_NODEID:-0}}"
+PLATFORM_NNODES="${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-}}"
+PLATFORM_NODE_RANK="${SENSECORE_PYTORCH_NODE_RANK:-${RANK:-${SLURM_NODEID:-}}}"
+NNODES="${NNODES:-${PLATFORM_NNODES:-2}}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-${SENSECORE_ACCELERATE_DEVICE_COUNT:-8}}"
+NODE_RANK="${NODE_RANK:-${PLATFORM_NODE_RANK}}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-6}"
 
 case "${NPROC_PER_NODE}" in
@@ -36,6 +38,9 @@ case "${WORLD_SIZE}" in
     ;;
 esac
 
+if [[ -z "${NODE_RANK}" ]] && ((NNODES == 1)); then
+  NODE_RANK=0
+fi
 case "${NODE_RANK}" in
   ''|*[!0-9]*)
     echo "NODE_RANK must be an integer from 0 to NNODES-1" >&2
@@ -124,4 +129,6 @@ torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" 
   --config.train.batch_size="${PER_DEVICE_BATCH}" \
   --config.train.gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}" \
   --config.beta=1 \
-  --config.train.beta=0.0001
+  --config.train.beta=0.0001 \
+  --config.train.timestep_fraction=1.0 
+
