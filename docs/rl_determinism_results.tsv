@@ -1,0 +1,26 @@
+id	profile	change_from_control	ab_result	first_divergent_step	differing_tags	scalar_values	canonical_sha256	runtime_a_s	runtime_b_s	interpretation
+00	strict_control	math SDPA plus all strict guards	BITWISE_IDENTICAL	-	0/40	123	d030e23a129498bd2d92bd4f29b85b57ea81936e7269a5ba93b708f8a4523809	94	102	strict control
+01	sync_reward_2batch	two batches and synchronous reward	BITWISE_IDENTICAL	-	0/40	123	ffb6f1710f78f71041f69561231143aebac554e05464ad3548e082b58c3769d8	117	116	control for real reward overlap
+02	async_reward_2batch	01 with asynchronous reward	BITWISE_IDENTICAL	-	0/40	123	ffb6f1710f78f71041f69561231143aebac554e05464ad3548e082b58c3769d8	115	117	identical to 01 in this two-batch test; no async effect observed
+03	sdpa_default	00 with default SDPA	BITWISE_IDENTICAL	-	0/40	123	7eaf931907a69eca47e7cb158ff76a93bb25323a97a84ebfb597072b74cd630d	86	90	no A/B divergence observed with the torch guard
+04	sdpa_flash	00 with global flash-only SDPA	RUN_ERROR	-	-	0	-	75	-	unsupported by VAE FP32 attention; not a determinism failure
+05	sdpa_efficient	00 with efficient-only SDPA	BITWISE_IDENTICAL	-	0/40	123	c1173b7425fc15c5d1fcf8864c7fa5cb5b7571614a33dea03eed3c9f001ac8c2	89	88	no A/B divergence observed with the torch guard
+06	sdpa_cudnn	00 with global cuDNN-only SDPA	RUN_ERROR	-	-	0	-	75	-	unsupported for at least one SD3 attention shape
+07	adamw_default	default AdamW foreach/fused policy	BITWISE_IDENTICAL	-	0/40	123	f8c135b21759ca7ab1f77ad0883345f5a2b4e2094798b048cb76b846800387f8	95	93	changes trajectory; no A/B divergence observed in three steps
+08	clip_default	default clip_grad_norm foreach policy	BITWISE_IDENTICAL	-	0/40	123	d030e23a129498bd2d92bd4f29b85b57ea81936e7269a5ba93b708f8a4523809	94	95	no observable effect
+09	tf32	TF32 enabled	BITWISE_IDENTICAL	-	0/40	123	e8bf97f2109eb34cf84278ae45d2f384af2ac2932a870310c4651c23cfed910c	90	94	changes trajectory; no A/B divergence observed in three steps
+10	no_torch_guard	math SDPA without torch deterministic guard	BITWISE_IDENTICAL	-	0/40	123	d030e23a129498bd2d92bd4f29b85b57ea81936e7269a5ba93b708f8a4523809	72	76	no A/B divergence observed on the math path
+11	no_cudnn_guard	without cudnn deterministic/benchmark guard	BITWISE_IDENTICAL	-	0/40	123	d030e23a129498bd2d92bd4f29b85b57ea81936e7269a5ba93b708f8a4523809	94	94	no observable effect under math
+12	nccl_auto	automatic NCCL algorithm/protocol/channels	BITWISE_IDENTICAL	-	0/40	123	2151326571ea2ff5c8dd8b6bf4e817e388b5faf693a66fce7216128e587d17d3	90	100	changes trajectory; no A/B divergence observed on this host in three steps
+13	no_torch_or_cublas	math without torch or CUBLAS guards	BITWISE_IDENTICAL	-	0/40	123	d030e23a129498bd2d92bd4f29b85b57ea81936e7269a5ba93b708f8a4523809	74	73	no A/B divergence observed without either guard under math
+14	minimal_math	all other guards off; math SDPA only	BITWISE_IDENTICAL	-	0/40	123	149d9c607f5f6994d762b8683158b452fb2547945de63843a5f67343817999d7	75	71	math SDPA alone is sufficient for this three-step pair
+15	baseline	local harness with all determinism controls at default	DIVERGED	1	28/40	123	-	70	66	first observed scalar divergence after the first update
+16	minimal_default	14 with math changed to default SDPA	DIVERGED	1	30/40	123	-	73	67	clean single-variable isolation of SDPA
+17	default_no_torch_guard	default SDPA; all strict guards except torch deterministic	DIVERGED	1	30/40	123	-	70	68	torch guard is necessary in this three-step default-SDPA contrast
+18	default_only_torch_guard	default SDPA; only torch deterministic retained	BITWISE_IDENTICAL	-	0/40	123	3cac31e9d03640896701168cc4b8bae2bab2e45ac134bc48049376a3ecc6e058	84	89	torch guard alone is sufficient for this three-step pair
+19	minimal_efficient	all guards off; efficient SDPA only	DIVERGED	1	29/40	123	-	66	66	A/B divergence observed on efficient backward without the guard
+20	default_only_torch_guard_100step	profile 18 extended to 100 steps	BITWISE_IDENTICAL	-	0/40	4100	362beda457df721e9b2c663e464e9aa7b9c002bdf2aaa6185cc472091c694ac5	516.009	512.220	formal acceptance pass
+21	backend_trace	default SDPA without/with torch guard	TRACE_ONLY	-	-	41	-	-	-	no guard dispatched cuDNN; guard dispatched Flash for the traced train microbatch
+22	transformer_cudnn_no_guard	force cuDNN only for training transformer; no guard	DIVERGED	1	30/40	123	-	71	68	A/B divergence observed on the pinned cuDNN path
+23	transformer_flash_no_guard	force Flash only for training transformer; no guard	DIVERGED	1	30/40	123	-	71	68	A/B divergence observed on the pinned Flash path without the guard
+24	transformer_flash_torch_guard	23 with torch deterministic guard	BITWISE_IDENTICAL	-	0/40	123	3cac31e9d03640896701168cc4b8bae2bab2e45ac134bc48049376a3ecc6e058	86	88	no A/B divergence observed on the pinned Flash path with the guard
