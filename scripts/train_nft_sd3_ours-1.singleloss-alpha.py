@@ -177,6 +177,12 @@ def set_seed(seed: int, rank: int = 0):
     torch.cuda.manual_seed_all(seed + rank)
 
 
+def configure_deterministic_runtime(enabled: bool):
+    """Require deterministic PyTorch algorithms without changing other numerics."""
+    if enabled:
+        torch.use_deterministic_algorithms(True, warn_only=False)
+
+
 class TextPromptDataset(Dataset):
     def __init__(self, dataset, split="train"):
         self.file_path = os.path.join(dataset, f"{split}.txt")
@@ -531,6 +537,8 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
+    strict_determinism = bool(getattr(config, "strict_determinism", False))
+    configure_deterministic_runtime(strict_determinism)
     trajectory_alpha_prediction = config.train.trajectory_alpha_prediction
     valid_trajectory_alpha_predictions = {"forward_prediction", "old_prediction"}
     if trajectory_alpha_prediction not in valid_trajectory_alpha_predictions:

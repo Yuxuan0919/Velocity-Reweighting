@@ -11,6 +11,10 @@ def get_config():
 
     # random seed for reproducibility.
     config.seed = 42
+    # Opt in to deterministic PyTorch kernels. This is disabled by default
+    # because deterministic implementations can be slower or reject an
+    # unsupported nondeterministic operator at runtime.
+    config.strict_determinism = False
     # top-level logging directory for checkpoint saving.
     config.logdir = "logs"
     # number of epochs to train for. each epoch is one round of sampling from the model followed by training on those
