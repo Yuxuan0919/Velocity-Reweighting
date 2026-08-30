@@ -1,7 +1,12 @@
-import imp
+import importlib.util
 import os
 
-base = imp.load_source("base", os.path.join(os.path.dirname(__file__), "base.py"))
+_base_path = os.path.join(os.path.dirname(__file__), "base.py")
+_base_spec = importlib.util.spec_from_file_location("velocity_reweighting_config_base", _base_path)
+if _base_spec is None or _base_spec.loader is None:
+    raise ImportError(f"Unable to load base config from {_base_path}")
+base = importlib.util.module_from_spec(_base_spec)
+_base_spec.loader.exec_module(base)
 
 
 def get_config(name):

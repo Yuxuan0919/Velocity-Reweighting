@@ -11,6 +11,9 @@ def get_config():
 
     # random seed for reproducibility.
     config.seed = 42
+    # Enforce bitwise-reproducible PyTorch/CUDA execution. This is intentionally
+    # opt-in because it disables faster nondeterministic kernels.
+    config.strict_determinism = False
     # top-level logging directory for checkpoint saving.
     config.logdir = "logs"
     # number of epochs to train for. each epoch is one round of sampling from the model followed by training on those

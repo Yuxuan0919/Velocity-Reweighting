@@ -177,6 +177,49 @@ def set_seed(seed: int, rank: int = 0):
     torch.cuda.manual_seed_all(seed + rank)
 
 
+def configure_deterministic_runtime(enabled: bool):
+    if not enabled:
+        return
+
+    if os.environ.get("CUBLAS_WORKSPACE_CONFIG") not in {":4096:8", ":16:8"}:
+        raise RuntimeError(
+            "strict_determinism requires CUBLAS_WORKSPACE_CONFIG=:4096:8 or :16:8 "
+            "to be set before Python starts"
+        )
+    if os.environ.get("TORCH_ALLOW_TF32_CUBLAS_OVERRIDE", "0") != "0":
+        raise RuntimeError(
+            "strict_determinism requires TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=0 "
+            "to be set before Python starts"
+        )
+
+    torch.use_deterministic_algorithms(True, warn_only=False)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.set_float32_matmul_precision("highest")
+
+    # Attention backward is the first point at which otherwise identical runs
+    # diverge on H100/H200. Keep only the deterministic math implementation.
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+        torch.backends.cuda.enable_cudnn_sdp(False)
+    torch.backends.cuda.enable_math_sdp(True)
+
+
+def submit_reward(executor, reward_fn, *args, synchronous=False, **kwargs):
+    if not synchronous:
+        return executor.submit(reward_fn, *args, **kwargs)
+
+    reward_future = futures.Future()
+    try:
+        reward_future.set_result(reward_fn(*args, **kwargs))
+    except BaseException as error:
+        reward_future.set_exception(error)
+    return reward_future
+
+
 class TextPromptDataset(Dataset):
     def __init__(self, dataset, split="train"):
         self.file_path = os.path.join(dataset, f"{split}.txt")
@@ -445,7 +488,15 @@ def eval_fn(
                     model_type="sd3",
                 )
 
-        rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=False)
+        rewards_future = submit_reward(
+            executor,
+            reward_fn,
+            images,
+            prompts,
+            prompt_metadata,
+            only_strict=False,
+            synchronous=bool(getattr(config, "strict_determinism", False)),
+        )
         time.sleep(0)
         rewards, reward_metadata = rewards_future.result()
 
@@ -531,6 +582,10 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
+    strict_determinism = bool(getattr(config, "strict_determinism", False))
+    if strict_determinism:
+        config.allow_tf32 = False
+    configure_deterministic_runtime(strict_determinism)
     trajectory_alpha_prediction = config.train.trajectory_alpha_prediction
     valid_trajectory_alpha_predictions = {"forward_prediction", "old_prediction"}
     if trajectory_alpha_prediction not in valid_trajectory_alpha_predictions:
@@ -642,6 +697,8 @@ def main(_):
         betas=(config.train.adam_beta1, config.train.adam_beta2),
         weight_decay=config.train.adam_weight_decay,
         eps=config.train.adam_epsilon,
+        foreach=False if strict_determinism else None,
+        fused=False if strict_determinism else None,
     )
 
     # --- Datasets and Dataloaders ---
@@ -694,7 +751,7 @@ def main(_):
     else:
         assert False
 
-    executor = futures.ThreadPoolExecutor(max_workers=8)  # Async reward computation
+    executor = futures.ThreadPoolExecutor(max_workers=1 if strict_determinism else 8)
 
     # Train!
     samples_per_epoch = config.sample.train_batch_size * world_size * config.sample.num_batches_per_epoch
@@ -920,7 +977,15 @@ def main(_):
             latents = torch.stack(latents, dim=1)
             timesteps = pipeline.scheduler.timesteps.repeat(len(prompts), 1).to(device)
 
-            rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=True)
+            rewards_future = submit_reward(
+                executor,
+                reward_fn,
+                images,
+                prompts,
+                prompt_metadata,
+                only_strict=True,
+                synchronous=strict_determinism,
+            )
             time.sleep(0)
 
             samples_data_list.append(
@@ -1271,7 +1336,11 @@ def main(_):
                     if current_accumulated_steps % effective_grad_accum_steps == 0:
                         if mixed_precision_dtype == torch.float16:
                             scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(transformer_ddp.module.parameters(), config.train.max_grad_norm)
+                        torch.nn.utils.clip_grad_norm_(
+                            transformer_ddp.module.parameters(),
+                            config.train.max_grad_norm,
+                            foreach=False if strict_determinism else None,
+                        )
                         if mixed_precision_dtype == torch.float16:
                             scaler.step(optimizer)
                         else:
