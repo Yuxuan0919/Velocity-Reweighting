@@ -1147,7 +1147,7 @@ def main(_):
                     )
 
                     ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
-                    policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
+                    policy_loss = ori_policy_loss.mean()
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
@@ -1165,7 +1165,7 @@ def main(_):
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    loss += config.train.beta * torch.mean(kl_div_loss)
+                    loss += config.train.beta / config.train.adv_clip_max * torch.mean(kl_div_loss)
                     kl_div_loss = torch.mean(kl_div_loss)
                     loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach()
                     loss_terms["kl_div"] = torch.mean(
