@@ -6,8 +6,8 @@ CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm/project/chineseculture/public/yuxuan/m
 CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 
-OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
-TRAIN_SCRIPT="scripts/train_nft_sd3_ours-1.singleloss-alpha-normalize.py"
+REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
+TRAIN_SCRIPT="scripts/train_nft_sd3_origin-Aequality-multiply2.py"
 
 LOGDIR="${LOGDIR:-${REPO_DIR}/logs/baseline_exps}"
 PLATFORM_NNODES="${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-}}"
@@ -78,8 +78,8 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/baseline_exps/sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-1singleloss-xpred-alpha-theta-normalize-KL1e-4-beta1.0-fulltime}"
-RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-1singleloss-xpred-alpha-theta-normalize-KL1e-4-beta1.0-fulltime}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/baseline_exps/sd35_pickscore_4090_${WORLD_SIZE}gpu_nft_baseline-Aequality-fix-gradclip-KL1e-4-beta1.0-fulltime}"
+RUN_NAME="${RUN_NAME:-sd35_pickscore_4090_${WORLD_SIZE}gpu_nft_baseline-Aequality-fix-gradclip-KL1e-4-beta1.0-fulltime}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
@@ -89,7 +89,7 @@ cd "${REPO_DIR}"
 export PYTHONPATH="${REPO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-${DEFAULT_CUDA_VISIBLE_DEVICES}}"
 export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
-export MASTER_PORT="${MASTER_PORT:-29522}"
+export MASTER_PORT="${MASTER_PORT:-29529}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
@@ -100,7 +100,7 @@ if ((NNODES > 1)) && [[ "${MASTER_ADDR}" == "127.0.0.1" || "${MASTER_ADDR}" == "
   exit 2
 fi
 
-export GENEVAL_OPENCLIP_PATH="${OPENCLIP_CKPT}"
+export REWARD_CKPTS_DIR="${REWARD_CKPTS}"
 export HF_HOME="${REPO_DIR}/.cache/huggingface"
 export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
 export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
@@ -118,10 +118,10 @@ else
 fi
 
 echo "Distributed platform env: SENSECORE_PYTORCH_NODE_RANK=${SENSECORE_PYTORCH_NODE_RANK:-unset}, RANK=${RANK:-unset}, SENSECORE_PYTORCH_NNODES=${SENSECORE_PYTORCH_NNODES:-unset}, platform WORLD_SIZE=${PLATFORM_NNODES:-unset}"
-echo "Launching alpha-theta on node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
+echo "Launching PickScore A-equality x2 on node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}"
 
 torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" "${TRAIN_SCRIPT}" \
-  --config=config/nft.py:sd3_geneval \
+  --config=config/nft.py:sd3_pickscore \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
   --config.save_dir="${SAVE_DIR}" \
@@ -134,4 +134,4 @@ torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" 
   --config.beta=1.0 \
   --config.train.beta=0.0001 \
   --config.train.timestep_fraction=1.0 \
-  --config.train.trajectory_alpha_prediction=forward_prediction
+  --config.train.max_grad_norm=1.0 

@@ -342,12 +342,31 @@ def compute_reinforced_flow_weights(
     for sample_idx, (rollout_batch_id, prompt) in enumerate(zip(rollout_batch_ids, prompts, strict=True)):
         prompt_groups[(int(rollout_batch_id), str(prompt))].append(sample_idx)
 
+    m_plus_per_group = []
+    m_minus_per_group = []
     for sample_indices in prompt_groups.values():
         sample_indices = np.asarray(sample_indices, dtype=np.int64)
+        group_advantages_clip = advantages_clip[sample_indices]
+        m_plus_per_group.append(np.maximum(group_advantages_clip, 0.0).sum())
+        m_minus_per_group.append(np.maximum(-group_advantages_clip, 0.0).sum())
+
         prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
         prompt_normalizers[sample_indices] = prompt_z_bar
 
-    return normalized_advantages, importance_weights, prompt_normalizers
+    m_plus_per_group = np.asarray(m_plus_per_group, dtype=np.float64)
+    m_minus_per_group = np.asarray(m_minus_per_group, dtype=np.float64)
+    mass_shift_stats = {
+        "m_plus_mean": float(m_plus_per_group.mean()),
+        "m_minus_mean": float(m_minus_per_group.mean()),
+        "m_plus_std": float(m_plus_per_group.std()),
+        "m_minus_std": float(m_minus_per_group.std()),
+        "m_plus_max": float(m_plus_per_group.max()),
+        "m_plus_min": float(m_plus_per_group.min()),
+        "m_minus_max": float(m_minus_per_group.max()),
+        "m_minus_min": float(m_minus_per_group.min()),
+    }
+
+    return normalized_advantages, importance_weights, prompt_normalizers, mass_shift_stats
 
 
 def log_scalars(writer, scalars, step):
@@ -1020,15 +1039,36 @@ def main(_):
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
 
-        normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
-            prompts_all_decoded,
-            rollout_batch_ids_all,
-            advantages,
-            advantage_clip=float(config.train.adv_clip_max),
-            coverage_beta=float(config.beta),
-            epsilon=algorithm_epsilon,
-            advantage_mode=getattr(config.train, "adv_mode", "all"),
+        normalized_advantages, importance_weights, prompt_normalizers, mass_shift_stats = (
+            compute_reinforced_flow_weights(
+                prompts_all_decoded,
+                rollout_batch_ids_all,
+                advantages,
+                advantage_clip=float(config.train.adv_clip_max),
+                coverage_beta=float(config.beta),
+                epsilon=algorithm_epsilon,
+                advantage_mode=getattr(config.train, "adv_mode", "all"),
+            )
         )
+        if is_main_process(rank):
+            log_scalars(
+                writer,
+                {f"mass_shift/{key}": value for key, value in mass_shift_stats.items()},
+                global_step,
+            )
+            logger.info(
+                "Prompt-group mass shift stats: "
+                "m_plus mean=%.6f std=%.6f min=%.6f max=%.6f; "
+                "m_minus mean=%.6f std=%.6f min=%.6f max=%.6f",
+                mass_shift_stats["m_plus_mean"],
+                mass_shift_stats["m_plus_std"],
+                mass_shift_stats["m_plus_min"],
+                mass_shift_stats["m_plus_max"],
+                mass_shift_stats["m_minus_mean"],
+                mass_shift_stats["m_minus_std"],
+                mass_shift_stats["m_minus_min"],
+                mass_shift_stats["m_minus_max"],
+            )
         total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
         # Distribute advantages back to processes
         samples_per_gpu = collated_samples["timesteps"].shape[0]
@@ -1205,10 +1245,7 @@ def main(_):
                             )
                             + algorithm_epsilon
                         )
-                        # Alpha theoretically has unit expectation; enforce its
-                        # empirical mean over the current training batch.
-                        trajectory_alpha = trajectory_alpha / trajectory_alpha.mean()
-                        
+
                         correction_coefficient = float(config.beta) * (importance_weight - 1)
                         correction_coefficient_expanded = correction_coefficient.view(
                             -1, *([1] * (x0.ndim - 1))

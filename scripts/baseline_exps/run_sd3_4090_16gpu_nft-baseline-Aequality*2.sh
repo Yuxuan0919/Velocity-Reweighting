@@ -7,7 +7,7 @@ CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 
 OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
-TRAIN_SCRIPT="scripts/train_nft_sd3_ours-1.singleloss-alpha-normalize.py"
+TRAIN_SCRIPT="scripts/train_nft_sd3_origin-Aequality-multiply2.py"
 
 LOGDIR="${LOGDIR:-${REPO_DIR}/logs/baseline_exps}"
 PLATFORM_NNODES="${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-}}"
@@ -78,8 +78,8 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/baseline_exps/sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-1singleloss-xpred-alpha-old-normalize-KL1e-4-beta1.0-fulltime}"
-RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-1singleloss-xpred-alpha-old-normalize-KL1e-4-beta1.0-fulltime}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/baseline_exps/sd35_geneval_4090_${WORLD_SIZE}gpu_nft_baseline-Aequality-fix-gradclip-KL1e-4-beta1.0-fulltime}"
+RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_baseline-Aequality-fix-gradclip-KL1e-4-beta1.0-fulltime}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
@@ -134,4 +134,4 @@ torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" 
   --config.beta=1.0 \
   --config.train.beta=0.0001 \
   --config.train.timestep_fraction=1.0 \
-  --config.train.trajectory_alpha_prediction=old_prediction
+  --config.train.max_grad_norm=1.0

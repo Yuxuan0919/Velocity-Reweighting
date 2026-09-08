@@ -82,6 +82,10 @@ def get_config():
     train.num_inner_epochs = 1
     # clip advantages to the range [-adv_clip_max, adv_clip_max].
     train.adv_clip_max = 5
+    # [Scheme B/C addition] Hard-selection scheme and retained mass ratio.
+    # Override with --config.train.mass_shift_scheme=B/C and --config.train.mass_shift_rho=<rho>.
+    train.mass_shift_scheme = "B"
+    train.mass_shift_rho = 1.0
     # Temperature used by the reward-based importance weight. Set to -1 to use
     # the current global reward std (+1e-4), matching NFT advantage scaling.
     # omega_i = exp(r_i / gamma) / mean_group(exp(r / gamma)).

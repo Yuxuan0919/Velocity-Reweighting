@@ -7,11 +7,22 @@ CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 
 OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
+TRAIN_SCRIPT="scripts/train_nft_sd3_ours-4.singleloss-alpha-selection.py"
 
-LOGDIR="${REPO_DIR}/logs"
-# Set to -1 to use the current global reward std (+1e-4) as gamma.
-IMPORTANCE_WEIGHT_GAMMA="${IMPORTANCE_WEIGHT_GAMMA:-0.01}"
+MASS_SHIFT_SCHEME="${MASS_SHIFT_SCHEME:-B}"
+MASS_SHIFT_RHO="${MASS_SHIFT_RHO:-1.0}"
+EXPERIMENT_TAG="${EXPERIMENT_TAG:-scheme-${MASS_SHIFT_SCHEME}-rho-${MASS_SHIFT_RHO}}"
+EXPERIMENT_BETA="${EXPERIMENT_BETA:-1.0}"
 
+case "${MASS_SHIFT_SCHEME}" in
+  B|C) ;;
+  *)
+    echo "MASS_SHIFT_SCHEME must be B or C" >&2
+    exit 2
+    ;;
+esac
+
+LOGDIR="${LOGDIR:-${REPO_DIR}/logs/weight_exps}"
 PLATFORM_NNODES="${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-}}"
 PLATFORM_NODE_RANK="${SENSECORE_PYTORCH_NODE_RANK:-${RANK:-${SLURM_NODEID:-}}}"
 NNODES="${NNODES:-${PLATFORM_NNODES:-2}}"
@@ -80,8 +91,8 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/nft_sd3_geneval_4090_${WORLD_SIZE}gpu_nft_ours-exp-weight-gamma-${IMPORTANCE_WEIGHT_GAMMA}-KL1e-4-beta1.0-fulltime}"
-RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-exp-weight-gamma-${IMPORTANCE_WEIGHT_GAMMA}-KL1e-4-beta1.0-fulltime}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/weight_exps/sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-4selection-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
+RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-4selection-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
@@ -91,7 +102,7 @@ cd "${REPO_DIR}"
 export PYTHONPATH="${REPO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-${DEFAULT_CUDA_VISIBLE_DEVICES}}"
 export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
-export MASTER_PORT="${MASTER_PORT:-29519}"
+export MASTER_PORT="${MASTER_PORT:-29521}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
@@ -120,9 +131,9 @@ else
 fi
 
 echo "Distributed platform env: SENSECORE_PYTORCH_NODE_RANK=${SENSECORE_PYTORCH_NODE_RANK:-unset}, RANK=${RANK:-unset}, SENSECORE_PYTORCH_NNODES=${SENSECORE_PYTORCH_NNODES:-unset}, platform WORLD_SIZE=${PLATFORM_NNODES:-unset}"
-echo "Launching node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}, importance-weight gamma=${IMPORTANCE_WEIGHT_GAMMA}"
+echo "Launching ${EXPERIMENT_TAG} on node ${NODE_RANK}/${NNODES}: ${NNODES}x${NPROC_PER_NODE}=${WORLD_SIZE} GPUs, per-device batch=${PER_DEVICE_BATCH}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective batch=${EFFECTIVE_BATCH}, scheme=${MASS_SHIFT_SCHEME}, rho=${MASS_SHIFT_RHO}, beta=${EXPERIMENT_BETA}"
 
-torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" scripts/weight_exps/train_nft_sd3_ours-exp-weight.py \
+torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" "${TRAIN_SCRIPT}" \
   --config=config/nft.py:sd3_geneval \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
@@ -133,7 +144,10 @@ torchrun "${TORCHRUN_DISTRIBUTED_ARGS[@]}" --nproc_per_node="${NPROC_PER_NODE}" 
   --config.sample.num_batches_per_epoch="${GRADIENT_ACCUMULATION_STEPS}" \
   --config.train.batch_size="${PER_DEVICE_BATCH}" \
   --config.train.gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}" \
-  --config.train.importance_weight_gamma="${IMPORTANCE_WEIGHT_GAMMA}" \
-  --config.beta=1.0 \
+  --config.train.mass_shift_scheme="${MASS_SHIFT_SCHEME}" \
+  --config.train.mass_shift_rho="${MASS_SHIFT_RHO}" \
+  --config.beta="${EXPERIMENT_BETA}" \
   --config.train.beta=0.0001 \
-  --config.train.timestep_fraction=1.0
+  --config.train.timestep_fraction=1.0 \
+  --config.train.trajectory_alpha_prediction=old_prediction \
+  "$@"

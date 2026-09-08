@@ -33,7 +33,6 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
-from torchvision.utils import make_grid
 from functools import partial
 import tqdm
 from peft import LoraConfig, get_peft_model, PeftModel
@@ -303,69 +302,6 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
     return zero_std_ratio, prompt_std_devs.mean()
 
 
-
-def resolve_importance_weight_gamma(rewards, configured_gamma):
-    """Resolve a fixed gamma or the DiffusionNFT global-reward-std mode."""
-    configured_gamma = float(configured_gamma)
-    if configured_gamma == -1.0:
-        rewards = np.asarray(rewards, dtype=np.float64)
-        if rewards.ndim > 1:
-            # Every timestep column contains the same reward. Selecting one
-            # column matches PerPromptStatTracker's global std value.
-            rewards = rewards[:, 0]
-        if not np.all(np.isfinite(rewards)):
-            raise ValueError("rewards must contain only finite values")
-        return float(np.std(rewards) + 1e-4)
-    if configured_gamma <= 0:
-        raise ValueError(
-            "importance_weight_gamma must be positive or -1 for global std, "
-            f"got {configured_gamma}"
-        )
-    return configured_gamma
-
-
-def compute_importance_weights(
-    prompts, rollout_batch_ids, rewards, importance_weight_gamma
-):
-    r"""Compute omega_i = exp(r_i / gamma) / mean_group(exp(r / gamma))."""
-    prompts = np.asarray(prompts)
-    rollout_batch_ids = np.asarray(rollout_batch_ids)
-    rewards = np.asarray(rewards, dtype=np.float64)
-    if rewards.ndim > 1:
-        # Rewards are repeated over training timesteps before all-gather.
-        rewards = rewards[:, 0]
-    if importance_weight_gamma <= 0:
-        raise ValueError(
-            "importance_weight_gamma must be positive, "
-            f"got {importance_weight_gamma}"
-        )
-    if not np.all(np.isfinite(rewards)):
-        raise ValueError("rewards must contain only finite values")
-    if not (len(prompts) == len(rollout_batch_ids) == len(rewards)):
-        raise ValueError(
-            "prompts, rollout_batch_ids, and rewards must have the same length"
-        )
-
-    importance_weights = np.empty_like(rewards)
-
-    prompt_groups = defaultdict(list)
-    for sample_idx, (rollout_batch_id, prompt) in enumerate(
-        zip(rollout_batch_ids, prompts, strict=True)
-    ):
-        prompt_groups[(int(rollout_batch_id), str(prompt))].append(sample_idx)
-
-    for sample_indices in prompt_groups.values():
-        sample_indices = np.asarray(sample_indices, dtype=np.int64)
-        group_logits = rewards[sample_indices] / importance_weight_gamma
-        # Subtracting a group-wise constant cancels during mean normalization
-        # and prevents exp(r / gamma) from overflowing for small gamma.
-        group_weights = np.exp(group_logits)
-        group_weights /= np.mean(group_weights)
-        importance_weights[sample_indices] = group_weights
-
-    return importance_weights
-
-
 def log_scalars(writer, scalars, step):
     if writer is None:
         return
@@ -378,132 +314,6 @@ def log_scalars(writer, scalars, step):
             value = value.item()
         if isinstance(value, (int, float)):
             writer.add_scalar(key, value, step)
-
-
-def get_nested_config_value(config, path, default):
-    value = config
-    for key in path.split("."):
-        if isinstance(value, dict):
-            if key not in value:
-                return default
-            value = value[key]
-        elif hasattr(value, key):
-            value = getattr(value, key)
-        else:
-            return default
-    return value
-
-
-def get_image_log_settings(config):
-    num_prompts = get_nested_config_value(config, "sample.log_num_prompts", None)
-    if num_prompts is None:
-        num_prompts = int(os.getenv("NFT_LOG_NUM_PROMPTS", 5))
-
-    num_images_per_prompt = get_nested_config_value(config, "sample.log_num_images_per_prompt", None)
-    if num_images_per_prompt is None:
-        num_images_per_prompt = int(
-            os.getenv("NFT_LOG_NUM_IMAGES_PER_PROMPT", int(config.sample.num_image_per_prompt))
-        )
-
-    return max(1, int(num_prompts)), max(1, int(num_images_per_prompt))
-
-
-def reward_values_to_numpy(reward_values):
-    """Move CUDA reward tensors to host memory before NumPy logging."""
-    if isinstance(reward_values, torch.Tensor):
-        return reward_values.detach().cpu().numpy()
-    if isinstance(reward_values, (list, tuple)):
-        return np.asarray([reward_values_to_numpy(value) for value in reward_values])
-    return np.asarray(reward_values)
-
-
-def format_reward_value(value):
-    value = reward_values_to_numpy(value)
-    if value.size == 0:
-        return None
-    scalar = float(value.reshape(-1)[0])
-    if scalar == -10:
-        return None
-    return f"{scalar:.2f}"
-
-
-def select_prompt_image_logs(images, prompts, rewards, max_prompts, max_images_per_prompt):
-    prompt_to_indices = defaultdict(list)
-    selected_prompt_order = []
-    for idx, prompt in enumerate(prompts):
-        prompt_key = str(prompt)
-        if prompt_key not in prompt_to_indices:
-            if len(selected_prompt_order) >= max_prompts:
-                continue
-            selected_prompt_order.append(prompt_key)
-        if len(prompt_to_indices[prompt_key]) < max_images_per_prompt:
-            prompt_to_indices[prompt_key].append(idx)
-
-    selected_indices = []
-    captions = []
-    for prompt_idx, prompt in enumerate(selected_prompt_order):
-        for image_idx, sample_idx in enumerate(prompt_to_indices[prompt]):
-            selected_indices.append(sample_idx)
-            reward_text_parts = []
-            for reward_key, reward_values in rewards.items():
-                if sample_idx >= len(reward_values):
-                    continue
-                reward_value = format_reward_value(reward_values[sample_idx])
-                if reward_value is not None:
-                    reward_text_parts.append(f"{reward_key}: {reward_value}")
-            reward_text = " | ".join(reward_text_parts)
-            captions.append(
-                f"prompt {prompt_idx}, image {image_idx} | {prompt[:1000]}"
-                + (f" | {reward_text}" if reward_text else "")
-            )
-
-    if not selected_indices:
-        return images[:0], []
-    return images[selected_indices], captions
-
-
-def select_prompt_image_log_indices(prompt_counts, prompts, max_prompts, max_images_per_prompt):
-    selected_indices = []
-    selected_prompts = []
-    for idx, prompt in enumerate(prompts):
-        prompt_key = str(prompt)
-        if prompt_key not in prompt_counts:
-            if len(prompt_counts) >= max_prompts:
-                continue
-            prompt_counts[prompt_key] = 0
-        if prompt_counts[prompt_key] >= max_images_per_prompt:
-            continue
-        prompt_counts[prompt_key] += 1
-        selected_indices.append(idx)
-        selected_prompts.append(prompt)
-    return selected_indices, selected_prompts
-
-
-def append_prompt_image_log_batch(log_batches, prompt_counts, images, prompts, rewards, max_prompts, max_images_per_prompt):
-    selected_indices, selected_prompts = select_prompt_image_log_indices(
-        prompt_counts, prompts, max_prompts, max_images_per_prompt
-    )
-    if not selected_indices:
-        return
-
-    selected_rewards = {
-        reward_key: reward_values_to_numpy(reward_values)[selected_indices]
-        for reward_key, reward_values in rewards.items()
-    }
-    log_batches.append((images.detach().cpu()[selected_indices], selected_prompts, selected_rewards))
-
-
-def log_image_grid(writer, tag, images, captions, step, max_images=15, nrow=None):
-    if writer is None:
-        return
-    num_images = min(max_images, len(images))
-    if num_images == 0:
-        return
-    image_grid = make_grid(images[:num_images].float().clamp(0, 1), nrow=nrow or min(5, num_images))
-    writer.add_image(tag, image_grid, step)
-    if captions:
-        caption_text = "\n".join(f"{idx}. {caption}" for idx, caption in enumerate(captions[:num_images]))
-        writer.add_text(f"{tag}_captions", caption_text, step)
 
 
 def eval_fn(
@@ -536,9 +346,6 @@ def eval_fn(
     sample_neg_pooled_prompt_embeds = neg_pooled_prompt_embed.repeat(config.sample.test_batch_size, 1)
 
     all_rewards = defaultdict(list)
-    image_log_num_prompts, image_log_num_images_per_prompt = get_image_log_settings(config)
-    eval_image_log_prompt_items = []
-    eval_image_log_prompt_set = set()
 
     test_sampler = (
         DistributedSampler(test_dataloader.dataset, num_replicas=world_size, rank=rank, shuffle=False)
@@ -593,15 +400,6 @@ def eval_fn(
         rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=False)
         time.sleep(0)
         rewards, reward_metadata = rewards_future.result()
-        if is_main_process(rank):
-            for prompt, metadata in zip(prompts, prompt_metadata):
-                prompt_key = str(prompt)
-                if prompt_key in eval_image_log_prompt_set:
-                    continue
-                if len(eval_image_log_prompt_items) >= image_log_num_prompts:
-                    break
-                eval_image_log_prompt_set.add(prompt_key)
-                eval_image_log_prompt_items.append((prompt, metadata))
 
         for key, value in rewards.items():
             rewards_tensor = torch.as_tensor(value, device=device).float()
@@ -610,85 +408,6 @@ def eval_fn(
 
     if is_main_process(rank):
         final_rewards = {key: np.concatenate(value_list) for key, value_list in all_rewards.items()}
-
-        if eval_image_log_prompt_items:
-            eval_image_log_batches = []
-            eval_image_log_prompt_counts = {}
-            eval_log_prompts = [
-                prompt
-                for prompt, _ in eval_image_log_prompt_items
-                for _ in range(image_log_num_images_per_prompt)
-            ]
-            eval_log_metadata = [
-                metadata
-                for _, metadata in eval_image_log_prompt_items
-                for _ in range(image_log_num_images_per_prompt)
-            ]
-            for start in range(0, len(eval_log_prompts), config.sample.test_batch_size):
-                batch_prompts = eval_log_prompts[start : start + config.sample.test_batch_size]
-                batch_metadata = eval_log_metadata[start : start + config.sample.test_batch_size]
-                prompt_embeds, pooled_prompt_embeds = compute_text_embeddings(
-                    batch_prompts, text_encoders, tokenizers, max_sequence_length=128, device=device
-                )
-                current_batch_size = len(prompt_embeds)
-                with torch_autocast(enabled=(config.mixed_precision in ["fp16", "bf16"]), dtype=mixed_precision_dtype):
-                    with torch.no_grad():
-                        images, _, _ = pipeline_with_logprob(
-                            pipeline,
-                            prompt_embeds=prompt_embeds,
-                            pooled_prompt_embeds=pooled_prompt_embeds,
-                            negative_prompt_embeds=sample_neg_prompt_embeds[:current_batch_size],
-                            negative_pooled_prompt_embeds=sample_neg_pooled_prompt_embeds[:current_batch_size],
-                            num_inference_steps=config.sample.eval_num_steps,
-                            guidance_scale=config.sample.guidance_scale,
-                            output_type="pt",
-                            height=config.resolution,
-                            width=config.resolution,
-                            noise_level=config.sample.noise_level,
-                            deterministic=True,
-                            solver="flow",
-                            model_type="sd3",
-                        )
-                rewards_future = executor.submit(reward_fn, images, batch_prompts, batch_metadata, only_strict=False)
-                time.sleep(0)
-                rewards, reward_metadata = rewards_future.result()
-                append_prompt_image_log_batch(
-                    eval_image_log_batches,
-                    eval_image_log_prompt_counts,
-                    images,
-                    batch_prompts,
-                    rewards,
-                    image_log_num_prompts,
-                    image_log_num_images_per_prompt,
-                )
-
-            images_to_log = torch.cat([batch_images for batch_images, _, _ in eval_image_log_batches], dim=0)
-            prompts_to_log = [
-                prompt for _, batch_prompts, _ in eval_image_log_batches for prompt in batch_prompts
-            ]
-            rewards_to_log = {
-                reward_key: np.concatenate(
-                    [reward_values_to_numpy(batch_rewards[reward_key]) for _, _, batch_rewards in eval_image_log_batches],
-                    axis=0,
-                )
-                for reward_key in eval_image_log_batches[0][2]
-            }
-            images_to_log, captions = select_prompt_image_logs(
-                images_to_log,
-                prompts_to_log,
-                rewards_to_log,
-                image_log_num_prompts,
-                image_log_num_images_per_prompt,
-            )
-            log_image_grid(
-                writer,
-                "eval/images",
-                images_to_log,
-                captions,
-                global_step,
-                max_images=image_log_num_prompts * image_log_num_images_per_prompt,
-                nrow=image_log_num_images_per_prompt,
-            )
         log_scalars(
             writer,
             {f"eval_reward/{key}": np.mean(value[value != -10]) for key, value in final_rewards.items()},
@@ -764,18 +483,6 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
-    configured_importance_weight_gamma = float(
-        config.train.importance_weight_gamma
-    )
-    if (
-        configured_importance_weight_gamma != -1.0
-        and configured_importance_weight_gamma <= 0
-    ):
-        raise ValueError(
-            "config.train.importance_weight_gamma must be positive or -1 "
-            "for global reward std, "
-            f"got {config.train.importance_weight_gamma}"
-        )
 
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
@@ -948,13 +655,6 @@ def main(_):
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_train_batch_size}")
     logger.info(f"  Number of gradient updates per inner epoch = {samples_per_epoch // total_train_batch_size}")
     logger.info(f"  Number of inner epochs = {config.train.num_inner_epochs}")
-    if configured_importance_weight_gamma == -1.0:
-        logger.info("  Importance weight gamma = global reward std + 1e-4")
-    else:
-        logger.info(
-            "  Importance weight gamma = %.6g",
-            configured_importance_weight_gamma,
-        )
 
     reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
     eval_reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
@@ -1140,8 +840,7 @@ def main(_):
                     stat_tracker=stat_tracker if config.per_prompt_stat_tracking else None,
                 )
 
-            # transformer_ddp.module.set_adapter("old")
-            transformer_ddp.module.set_adapter("default")  # Algorithm 1: roll out with the current model theta.
+            transformer_ddp.module.set_adapter("old")
             with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
                 with torch.no_grad():
                     images, latents, _ = pipeline_with_logprob(
@@ -1176,7 +875,6 @@ def main(_):
                     "timesteps": timesteps,
                     "next_timesteps": torch.concatenate([timesteps[:, 1:], torch.zeros_like(timesteps[:, :1])], dim=1),
                     "latents_clean": latents[:, -1],
-                    "rollout_batch_ids": torch.full((len(prompts),), i, device=device, dtype=torch.long),
                     "rewards_future": rewards_future,  # Store future
                 }
             )
@@ -1198,17 +896,6 @@ def main(_):
             for k in samples_data_list[0].keys()
         }
 
-        # Logging images (main process)
-        if epoch % 10 == 0 and is_main_process(rank):
-            images_to_log = images.cpu()  # from last sampling batch on this rank
-            prompts_to_log = prompts  # from last sampling batch on this rank
-            rewards_to_log = collated_samples["rewards"]["avg"][-len(images_to_log) :].cpu()
-            num_to_log = min(15, len(images_to_log))
-            captions = [
-                f"{str(prompts_to_log[idx])[:100]} | avg: {float(rewards_to_log[idx]):.2f}"
-                for idx in range(num_to_log)
-            ]
-            log_image_grid(writer, "train/images", images_to_log, captions, global_step)
         collated_samples["rewards"]["avg"] = (
             collated_samples["rewards"]["avg"].unsqueeze(1).repeat(1, num_train_timesteps)
         )
@@ -1232,22 +919,13 @@ def main(_):
                 global_step,
             )
 
-        # if config.per_prompt_stat_tracking:
-        #     prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
-        #     prompts_all_decoded = pipeline.tokenizer.batch_decode(
-        #         prompt_ids_all.cpu().numpy(), skip_special_tokens=True
-        #     )
-        prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
-        prompts_all_decoded = pipeline.tokenizer.batch_decode(
-            prompt_ids_all.cpu().numpy(), skip_special_tokens=True
-        )
-        rollout_batch_ids_all = gather_tensor_to_all(collated_samples["rollout_batch_ids"], world_size).numpy()
-        algorithm_epsilon = 1e-5
-
         if config.per_prompt_stat_tracking:
-            # Keep reward statistics up to date, but do not use the returned
-            # NFT advantages to construct importance weights.
-            stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
+            prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
+            prompts_all_decoded = pipeline.tokenizer.batch_decode(
+                prompt_ids_all.cpu().numpy(), skip_special_tokens=True
+            )
+            # Stat tracker update expects numpy arrays for rewards
+            advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
 
             if is_main_process(rank):
                 group_size, trained_prompt_num = stat_tracker.get_stats()
@@ -1268,45 +946,26 @@ def main(_):
                     global_step,
                 )
             stat_tracker.clear()
-
-        effective_importance_weight_gamma = resolve_importance_weight_gamma(
-            gathered_rewards_dict["avg"], configured_importance_weight_gamma
-        )
-        importance_weights = compute_importance_weights(
-            prompts_all_decoded,
-            rollout_batch_ids_all,
-            rewards=gathered_rewards_dict["avg"],
-            importance_weight_gamma=effective_importance_weight_gamma,
-        )
-        total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
-        # Distribute raw-reward-derived importance weights back to processes.
+        else:
+            avg_rewards_all = gathered_rewards_dict["avg"]
+            advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
+        # Distribute advantages back to processes
         samples_per_gpu = collated_samples["timesteps"].shape[0]
+        if advantages.ndim == 1:
+            advantages = advantages[:, None]
 
-        if importance_weights.shape[0] == world_size * samples_per_gpu:
-            collated_samples["importance_weights"] = torch.from_numpy(
-                importance_weights.reshape(world_size, samples_per_gpu)[rank]
-            ).to(device=device, dtype=torch.float32)
+        if advantages.shape[0] == world_size * samples_per_gpu:
+            collated_samples["advantages"] = torch.from_numpy(
+                advantages.reshape(world_size, samples_per_gpu, -1)[rank]
+            ).to(device)
         else:
             assert False
 
         if is_main_process(rank):
-            log_scalars(
-                writer,
-                {
-                    "stats/importance_weight_gamma": effective_importance_weight_gamma,
-                },
-                global_step,
-            )
-            logger.info(
-                "Effective gamma: %.6g; importance weights mean: %.6f; D: %d",
-                effective_importance_weight_gamma,
-                collated_samples["importance_weights"].mean().item(),
-                total_rollout_size,
-            )
+            logger.info(f"Advantages mean: {collated_samples['advantages'].abs().mean().item()}")
 
         del collated_samples["rewards"]
         del collated_samples["prompt_ids"]
-        del collated_samples["rollout_batch_ids"]
 
         num_batches = config.sample.num_batches_per_epoch * config.sample.train_batch_size // config.train.batch_size
 
@@ -1426,110 +1085,90 @@ def main(_):
                             else:  # Full model - this requires a frozen copy of the model
                                 assert False
                     loss_terms = {}
+                    # Policy Gradient Loss
+                    advantages_clip = torch.clamp(
+                        train_sample_batch["advantages"][:, j_idx],
+                        -config.train.adv_clip_max,
+                        config.train.adv_clip_max,
+                    )
+                    if hasattr(config.train, "adv_mode"):
+                        if config.train.adv_mode == "positive_only":
+                            advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
+                        elif config.train.adv_mode == "negative_only":
+                            advantages_clip = torch.clamp(advantages_clip, -config.train.adv_clip_max, 0)
+                        elif config.train.adv_mode == "one_only":
+                            advantages_clip = torch.where(
+                                advantages_clip > 0, torch.ones_like(advantages_clip), torch.zeros_like(advantages_clip)
+                            )
+                        elif config.train.adv_mode == "binary":
+                            advantages_clip = torch.sign(advantages_clip)
+
+                    # normalize advantage
+                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
+                    r = torch.clamp(normalized_advantages_clip, 0, 1)
                     loss_terms["x0_norm"] = torch.mean(x0**2).detach()
                     loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
 
-                    # Original DiffusionNFT two-branch objective (kept for reference):
-                    # positive_prediction = (
-                    #     config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
-                    # )
-                    # implicit_negative_prediction = (
-                    #     1.0 + config.beta
-                    # ) * old_prediction.detach() - config.beta * forward_prediction
-                    #
-                    # # adaptive weighting
-                    # x0_prediction = xt - t_expanded * positive_prediction
-                    # with torch.no_grad():
-                    #     weight_factor = (
-                    #         torch.abs(x0_prediction.double() - x0.double())
-                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                    #         .clip(min=0.00001)
-                    #     )
-                    # positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
-                    #     dim=tuple(range(1, x0.ndim))
-                    # )
-                    # negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
-                    # with torch.no_grad():
-                    #     negative_weight_factor = (
-                    #         torch.abs(negative_x0_prediction.double() - x0.double())
-                    #         .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                    #         .clip(min=0.00001)
-                    #     )
-                    # negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
-                    #     dim=tuple(range(1, x0.ndim))
-                    # )
-                    # ori_policy_loss = (
-                    #     r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
-                    # )
-                    # policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
+                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
+                    implicit_negative_prediction = (
+                        1.0 + config.beta
+                    ) * old_prediction.detach() - config.beta * forward_prediction
 
+                    x0_prediction = xt - t_expanded * positive_prediction
 
-                    # Algorithm 1: reward-induced target velocity and its
-                    # importance-weighted, timestep-adapted regression loss.
-                    importance_weight = train_sample_batch["importance_weights"].float()
+                    # Official adaptive normalization (kept for reference):
                     with torch.no_grad():
-                        conditional_velocity = noise.float() - x0.float()
-                        velocity_discrepancy = conditional_velocity - old_prediction.detach().float()
-                        trajectory_alpha = 1.0 / (
-                            torch.abs(velocity_discrepancy).mean(
-                            # torch.abs(conditional_velocity - forward_prediction.float()).mean(
-                                dim=tuple(range(1, x0.ndim)), keepdim=True
-                            )
-                            + algorithm_epsilon
+                        weight_factor = (
+                            torch.abs(x0_prediction.double() - x0.double())
+                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                            .clip(min=0.00001)
                         )
-                        # Alpha theoretically has unit expectation; enforce its
-                        # empirical mean over the current training batch.
-                        trajectory_alpha = trajectory_alpha / trajectory_alpha.mean()
-                        # importance_weight is already group-normalized omega,
-                        # so the reward-induced shift is directly delta=omega-1.
-                        correction_coefficient = float(config.beta) * (
-                            importance_weight - 1.0
-                        )
-                        correction_coefficient_expanded = correction_coefficient.view(
-                            -1, *([1] * (x0.ndim - 1))
-                        )
-                        target_velocity = old_prediction.detach().float() + correction_coefficient_expanded * (
-                            trajectory_alpha * velocity_discrepancy
-                        )
-
-                    target_velocity_loss = ((forward_prediction - target_velocity) ** 2).mean(
+                    # with torch.no_grad():
+                        # weight_factor = t_expanded.square().clip(min=1e-8)
+                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    target_importance = importance_weight
-                    
-                    # ori_policy_loss = t.float() * target_importance * target_velocity_loss
-                    # ori_policy_loss = t.float() / float(config.beta) * target_velocity_loss
-                    ori_policy_loss = t.float() * target_velocity_loss
+                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
 
+                    # Official adaptive normalization (kept for reference):
+                    with torch.no_grad():
+                        negative_weight_factor = (
+                            torch.abs(negative_x0_prediction.double() - x0.double())
+                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                            .clip(min=0.00001)
+                        )
+                    # with torch.no_grad():
+                    #     negative_weight_factor = t_expanded.square().clip(min=1e-8)
+                    negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
+                        dim=tuple(range(1, x0.ndim))
+                    )
 
-                    policy_loss = float(config.train.adv_clip_max) * ori_policy_loss.mean()
+                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
+                    # 不再 * config.train.adv_clip_max
+                    policy_loss = ori_policy_loss.mean()
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
-                    # loss_terms["single_branch_coeff_abs_mean"] = single_branch_coeff.abs().mean().detach()
-                    # loss_terms["clean_weight_factor"] = weight_factor.mean().detach()
-                    loss_terms["importance_weight"] = importance_weight.mean().detach()
-                    loss_terms["importance_weight_max"] = importance_weight.max().detach()
-                    loss_terms["importance_weight_min"] = importance_weight.min().detach()
-                    loss_terms["target_importance"] = target_importance.mean().detach()
-                    loss_terms["target_importance_max"] = target_importance.max().detach()
-                    loss_terms["target_importance_min"] = target_importance.min().detach()
-                    loss_terms["trajectory_alpha"] = trajectory_alpha.mean().detach()
-                    loss_terms["trajectory_alpha_max"] = trajectory_alpha.max().detach()
-                    loss_terms["trajectory_alpha_min"] = trajectory_alpha.min().detach()
-                    loss_terms["correction_coefficient_abs_mean"] = correction_coefficient.abs().mean().detach()
-                    loss_terms["correction_coefficient_max"] = correction_coefficient.max().detach()
-                    loss_terms["correction_coefficient_min"] = correction_coefficient.min().detach()
+                    # log weight factor
+                    loss_terms["positive_weight_factor"] = weight_factor.mean().detach()
+                    loss_terms["positive_weight_factor_max"] = weight_factor.max().detach()
+                    loss_terms["positive_weight_factor_min"] = weight_factor.min().detach()
+                    loss_terms["negative_weight_factor"] = negative_weight_factor.mean().detach()
+                    loss_terms["negative_weight_factor_max"] = negative_weight_factor.max().detach()
+                    loss_terms["negative_weight_factor_min"] = negative_weight_factor.min().detach()
+
 
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    loss += config.train.beta * torch.mean(kl_div_loss)
+                    # kl loss 除以 config.train.adv_clip_max
+                    loss += config.train.beta / config.train.adv_clip_max * torch.mean(kl_div_loss)
+                    
                     kl_div_loss = torch.mean(kl_div_loss)
                     loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach()
                     loss_terms["kl_div"] = torch.mean(
@@ -1542,7 +1181,7 @@ def main(_):
                     loss_terms["total_loss"] = loss.detach()
 
                     # Scale loss for gradient accumulation and DDP (DDP averages grads, so no need to divide by world_size here)
-                    scaled_loss = loss / effective_grad_accum_steps
+                    scaled_loss = loss / effective_grad_accum_steps 
                     if mixed_precision_dtype == torch.float16:
                         scaler.scale(scaled_loss).backward()  # one accumulation
                     else:

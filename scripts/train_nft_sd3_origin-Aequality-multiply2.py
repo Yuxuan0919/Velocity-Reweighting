@@ -1166,8 +1166,10 @@ def main(_):
                     )
 
                     loss += config.train.beta * torch.mean(kl_div_loss)
-                    loss_terms["kl_div_loss_max"] = torch.max(kl_div_loss).detach()
-                    loss_terms["kl_div_loss_min"] = torch.min(kl_div_loss).detach()
+                    
+                    # 验证是否是loss在float16数值下溢，total loss整体乘上2
+                    loss *= 2
+                    
                     kl_div_loss = torch.mean(kl_div_loss)
                     loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach()
                     loss_terms["kl_div"] = torch.mean(

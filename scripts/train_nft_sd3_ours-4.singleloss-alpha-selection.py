@@ -302,6 +302,110 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
     return zero_std_ratio, prompt_std_devs.mean()
 
 
+
+def compute_reinforced_flow_weights(
+    prompts,
+    rollout_batch_ids,
+    nft_advantages,
+    advantage_clip,
+    # coverage_beta,  # Disabled: it was only used by the inactive prompt normalizer.
+    epsilon,
+    advantage_mode="all",
+    mass_shift_scheme="B",  # [Scheme B/C addition]
+    mass_shift_rho=1.0,  # [Scheme B/C addition]
+):
+    r"""Map the original NFT advantages to \hat A and W."""
+    prompts = np.asarray(prompts)
+    rollout_batch_ids = np.asarray(rollout_batch_ids)
+    nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
+    if nft_advantages.ndim > 1:
+        # NFT repeats each clean-sample advantage over training timesteps.
+        nft_advantages = nft_advantages[:, 0]
+    if advantage_clip <= 0:
+        raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
+    # Prompt-normalizer-only validation (disabled with prompt normalization):
+    # if not 0.0 <= coverage_beta <= 1.0:
+    #     raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
+    if epsilon <= 0:
+        raise ValueError(f"epsilon must be positive, got {epsilon}")
+    # [Scheme B/C addition] Validate the two new hyperparameters.
+    mass_shift_scheme = str(mass_shift_scheme).upper()
+    if mass_shift_scheme not in {"B", "C"}:
+        raise ValueError(f"mass_shift_scheme must be 'B' or 'C', got {mass_shift_scheme!r}")
+    if not 0.0 < mass_shift_rho <= 1.0:
+        raise ValueError(f"mass_shift_rho must be in (0, 1], got {mass_shift_rho}")
+    if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
+        raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
+
+    advantages_clip = np.clip(nft_advantages, -advantage_clip, advantage_clip)
+    if advantage_mode == "positive_only":
+        advantages_clip = np.clip(advantages_clip, 0.0, advantage_clip)
+    elif advantage_mode == "negative_only":
+        advantages_clip = np.clip(advantages_clip, -advantage_clip, 0.0)
+    elif advantage_mode == "one_only":
+        advantages_clip = np.where(advantages_clip > 0.0, 1.0, 0.0)
+    elif advantage_mode == "binary":
+        advantages_clip = np.sign(advantages_clip)
+
+    # This is exactly 2 * r - 1 in the original NFT code:
+    # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
+    normalized_advantages = advantages_clip / advantage_clip
+    # [Original base scheme, kept for reference]
+    # importance_weights = 1.0 + normalized_advantages
+
+    # [Scheme B/C addition] Store the final w - 1 after hard selection.
+    selected_advantages = np.zeros_like(normalized_advantages)
+    importance_weights = np.empty_like(normalized_advantages)
+    # prompt_normalizers = np.empty_like(importance_weights)  # Unused by target/loss.
+
+    prompt_groups = defaultdict(list)
+    for sample_idx, (rollout_batch_id, prompt) in enumerate(zip(rollout_batch_ids, prompts, strict=True)):
+        prompt_groups[(int(rollout_batch_id), str(prompt))].append(sample_idx)
+
+    for sample_indices in prompt_groups.values():
+        sample_indices = np.asarray(sample_indices, dtype=np.int64)
+
+        # [Scheme B/C addition] Select the strongest samples whose cumulative
+        # mass is closest to rho times the original mass on that side.
+        def select_strong_tail(side_indices, positive_side):
+            if len(side_indices) == 0:
+                return side_indices
+            side_values = normalized_advantages[side_indices]
+            order = np.argsort(-side_values if positive_side else side_values, kind="stable")
+            sorted_indices = side_indices[order]
+            cumulative_mass = np.cumsum(np.abs(normalized_advantages[sorted_indices]))
+            boundary = np.argmin(np.abs(cumulative_mass - mass_shift_rho * cumulative_mass[-1]))
+            return sorted_indices[: boundary + 1]
+
+        negative_indices = sample_indices[normalized_advantages[sample_indices] < 0.0]
+        positive_indices = sample_indices[normalized_advantages[sample_indices] > 0.0]
+
+        if mass_shift_scheme == "B":
+            retained_negative_indices = select_strong_tail(negative_indices, positive_side=False)
+            selected_advantages[retained_negative_indices] = (
+                normalized_advantages[retained_negative_indices] / mass_shift_rho
+            )
+        else:  # Scheme C keeps the complete negative side without 1 / rho rescaling.
+            selected_advantages[negative_indices] = normalized_advantages[negative_indices]
+
+        retained_positive_indices = select_strong_tail(positive_indices, positive_side=True)
+        selected_advantages[retained_positive_indices] = (
+            normalized_advantages[retained_positive_indices] / mass_shift_rho
+        )
+        importance_weights[sample_indices] = 1.0 + selected_advantages[sample_indices]
+        # [Scheme B/C addition end]
+
+        # Prompt normalization is disabled because this value was only logged
+        # and never used by the target, policy loss, or KL loss.
+        # prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
+        # prompt_normalizers[sample_indices] = prompt_z_bar
+
+    # [Original base scheme, kept for reference]
+    # return normalized_advantages, importance_weights, prompt_normalizers
+    # [Scheme B/C addition] Return the selected and rescaled signal (w - 1).
+    return selected_advantages, importance_weights
+
+
 def log_scalars(writer, scalars, step):
     if writer is None:
         return
@@ -483,6 +587,21 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
+    trajectory_alpha_prediction = config.train.trajectory_alpha_prediction
+    valid_trajectory_alpha_predictions = {"forward_prediction", "old_prediction"}
+    if trajectory_alpha_prediction not in valid_trajectory_alpha_predictions:
+        raise ValueError(
+            "config.train.trajectory_alpha_prediction must be one of "
+            f"{sorted(valid_trajectory_alpha_predictions)}, got {trajectory_alpha_prediction!r}"
+        )
+
+    # [Scheme B/C addition] Read and validate command-line-overridable hyperparameters.
+    mass_shift_scheme = str(config.train.mass_shift_scheme).upper()
+    mass_shift_rho = float(config.train.mass_shift_rho)
+    if mass_shift_scheme not in {"B", "C"}:
+        raise ValueError(f"config.train.mass_shift_scheme must be 'B' or 'C', got {mass_shift_scheme!r}")
+    if not 0.0 < mass_shift_rho <= 1.0:
+        raise ValueError(f"config.train.mass_shift_rho must be in (0, 1], got {mass_shift_rho}")
 
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
@@ -506,6 +625,8 @@ def main(_):
         writer = SummaryWriter(log_dir=log_dir)
         writer.add_text("config", f"```text\n{config}\n```", 0)
     logger.info(f"\n{config}")
+    # [Scheme B/C addition]
+    logger.info("Mass-shift hard selection: scheme=%s, rho=%.6f", mass_shift_scheme, mass_shift_rho)
 
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
 
@@ -840,7 +961,8 @@ def main(_):
                     stat_tracker=stat_tracker if config.per_prompt_stat_tracking else None,
                 )
 
-            transformer_ddp.module.set_adapter("old")
+            # transformer_ddp.module.set_adapter("old")
+            transformer_ddp.module.set_adapter("default")  # roll out with the current model theta.
             with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
                 with torch.no_grad():
                     images, latents, _ = pipeline_with_logprob(
@@ -875,6 +997,7 @@ def main(_):
                     "timesteps": timesteps,
                     "next_timesteps": torch.concatenate([timesteps[:, 1:], torch.zeros_like(timesteps[:, :1])], dim=1),
                     "latents_clean": latents[:, -1],
+                    "rollout_batch_ids": torch.full((len(prompts),), i, device=device, dtype=torch.long),
                     "rewards_future": rewards_future,  # Store future
                 }
             )
@@ -919,12 +1042,22 @@ def main(_):
                 global_step,
             )
 
+        # if config.per_prompt_stat_tracking:
+        #     prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
+        #     prompts_all_decoded = pipeline.tokenizer.batch_decode(
+        #         prompt_ids_all.cpu().numpy(), skip_special_tokens=True
+        #     )
+        prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
+        prompts_all_decoded = pipeline.tokenizer.batch_decode(
+            prompt_ids_all.cpu().numpy(), skip_special_tokens=True
+        )
+        rollout_batch_ids_all = gather_tensor_to_all(collated_samples["rollout_batch_ids"], world_size).numpy()
+        algorithm_epsilon = 1e-5
+
         if config.per_prompt_stat_tracking:
-            prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
-            prompts_all_decoded = pipeline.tokenizer.batch_decode(
-                prompt_ids_all.cpu().numpy(), skip_special_tokens=True
-            )
             # Stat tracker update expects numpy arrays for rewards
+            # advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
+            # stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
             advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
 
             if is_main_process(rank):
@@ -947,8 +1080,24 @@ def main(_):
                 )
             stat_tracker.clear()
         else:
+            # avg_rewards_all = gathered_rewards_dict["avg"]
+            # advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
+            # pass
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
+
+        selected_advantages, importance_weights = compute_reinforced_flow_weights(
+            prompts_all_decoded,
+            rollout_batch_ids_all,
+            advantages,
+            advantage_clip=float(config.train.adv_clip_max),
+            # coverage_beta=float(config.beta),  # Prompt normalization is disabled.
+            epsilon=algorithm_epsilon,
+            advantage_mode=getattr(config.train, "adv_mode", "all"),
+            mass_shift_scheme=mass_shift_scheme,  # [Scheme B/C addition]
+            mass_shift_rho=mass_shift_rho,  # [Scheme B/C addition]
+        )
+        total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
         # Distribute advantages back to processes
         samples_per_gpu = collated_samples["timesteps"].shape[0]
         if advantages.ndim == 1:
@@ -958,14 +1107,27 @@ def main(_):
             collated_samples["advantages"] = torch.from_numpy(
                 advantages.reshape(world_size, samples_per_gpu, -1)[rank]
             ).to(device)
+            collated_samples["importance_weights"] = torch.from_numpy(
+                importance_weights.reshape(world_size, samples_per_gpu)[rank]
+            ).to(device=device, dtype=torch.float32)
+            # collated_samples["prompt_normalizers"] = torch.from_numpy(
+            #     prompt_normalizers.reshape(world_size, samples_per_gpu)[rank]
+            # ).to(device=device, dtype=torch.float32)
         else:
             assert False
 
         if is_main_process(rank):
             logger.info(f"Advantages mean: {collated_samples['advantages'].abs().mean().item()}")
+            # The prompt-normalizer statistic is disabled with prompt normalization.
+            logger.info(
+                "Importance weights mean: %.6f; D: %d",
+                collated_samples["importance_weights"].mean().item(),
+                total_rollout_size,
+            )
 
         del collated_samples["rewards"]
         del collated_samples["prompt_ids"]
+        del collated_samples["rollout_batch_ids"]
 
         num_batches = config.sample.num_batches_per_epoch * config.sample.train_batch_size // config.train.batch_size
 
@@ -1085,96 +1247,91 @@ def main(_):
                             else:  # Full model - this requires a frozen copy of the model
                                 assert False
                     loss_terms = {}
-                    # Policy Gradient Loss
-                    advantages_clip = torch.clamp(
-                        train_sample_batch["advantages"][:, j_idx],
-                        -config.train.adv_clip_max,
-                        config.train.adv_clip_max,
-                    )
-                    if hasattr(config.train, "adv_mode"):
-                        if config.train.adv_mode == "positive_only":
-                            advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
-                        elif config.train.adv_mode == "negative_only":
-                            advantages_clip = torch.clamp(advantages_clip, -config.train.adv_clip_max, 0)
-                        elif config.train.adv_mode == "one_only":
-                            advantages_clip = torch.where(
-                                advantages_clip > 0, torch.ones_like(advantages_clip), torch.zeros_like(advantages_clip)
-                            )
-                        elif config.train.adv_mode == "binary":
-                            advantages_clip = torch.sign(advantages_clip)
 
-                    # normalize advantage
-                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
-                    r = torch.clamp(normalized_advantages_clip, 0, 1)
                     loss_terms["x0_norm"] = torch.mean(x0**2).detach()
                     loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
 
-                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
-                    implicit_negative_prediction = (
-                        1.0 + config.beta
-                    ) * old_prediction.detach() - config.beta * forward_prediction
 
-                    x0_prediction = xt - t_expanded * positive_prediction
-
-                    # Official adaptive normalization (kept for reference):
+                    importance_weight = train_sample_batch["importance_weights"].float()
+                    # prompt_normalizer = train_sample_batch["prompt_normalizers"].float()
+                    forward_x_prediction = xt.float() - t_expanded.float() * forward_prediction.float()
                     with torch.no_grad():
-                        weight_factor = (
-                            torch.abs(x0_prediction.double() - x0.double())
-                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                            .clip(min=0.00001)
+                        old_x_prediction = xt.float() - t_expanded.float() * old_prediction.detach().float()
+                        clean_x_discrepancy = x0.float() - old_x_prediction
+                        trajectory_alpha_base_x_prediction = (
+                            forward_x_prediction
+                            if trajectory_alpha_prediction == "forward_prediction"
+                            else old_x_prediction
                         )
-                    # with torch.no_grad():
-                        # weight_factor = t_expanded.square().clip(min=1e-8)
-                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
+                        # Match train_nft_sd3_origin.py's FP64 adaptive
+                        # normalization.  Multiplying this FP64 factor by the
+                        # squared residual promotes policy_loss (and thus the
+                        # accumulated total loss) to FP64, while model forward
+                        # remains under AMP.
+                        trajectory_alpha = 1.0 / (
+                            torch.abs(
+                                x0.double() - trajectory_alpha_base_x_prediction.double()
+                            ).mean(
+                                dim=tuple(range(1, x0.ndim)), keepdim=True
+                            )
+                            + algorithm_epsilon
+                        )
+
+                        correction_coefficient = float(config.beta) * (importance_weight - 1)
+                        correction_coefficient_expanded = correction_coefficient.view(
+                            -1, *([1] * (x0.ndim - 1))
+                        )
+                        target_x_prediction = old_x_prediction + correction_coefficient_expanded * clean_x_discrepancy
+
+                    target_x_prediction_loss = (trajectory_alpha * (forward_x_prediction - target_x_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
+                    ori_policy_loss = target_x_prediction_loss
 
-                    # Official adaptive normalization (kept for reference):
-                    with torch.no_grad():
-                        negative_weight_factor = (
-                            torch.abs(negative_x0_prediction.double() - x0.double())
-                            .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
-                            .clip(min=0.00001)
-                        )
-                    # with torch.no_grad():
-                    #     negative_weight_factor = t_expanded.square().clip(min=1e-8)
-                    negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
-                        dim=tuple(range(1, x0.ndim))
-                    )
-
-                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
-                    policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
+                    policy_loss = float(config.train.adv_clip_max) * ori_policy_loss.mean()
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
-                    # log weight factor
-                    loss_terms["positive_weight_factor"] = weight_factor.mean().detach()
-                    loss_terms["positive_weight_factor_max"] = weight_factor.max().detach()
-                    loss_terms["positive_weight_factor_min"] = weight_factor.min().detach()
-                    loss_terms["negative_weight_factor"] = negative_weight_factor.mean().detach()
-                    loss_terms["negative_weight_factor_max"] = negative_weight_factor.max().detach()
-                    loss_terms["negative_weight_factor_min"] = negative_weight_factor.min().detach()
+                    # loss_terms["single_branch_coeff_abs_mean"] = single_branch_coeff.abs().mean().detach()
+                    # loss_terms["clean_weight_factor"] = weight_factor.mean().detach()
+                    loss_terms["importance_weight"] = importance_weight.mean().detach()
+                    loss_terms["importance_weight_max"] = importance_weight.max().detach()
+                    loss_terms["importance_weight_min"] = importance_weight.min().detach()
+                    # loss_terms["prompt_normalizer"] = prompt_normalizer.mean().detach()
+                    # loss_terms["prompt_normalizer_max"] = prompt_normalizer.max().detach()
+                    # loss_terms["prompt_normalizer_min"] = prompt_normalizer.min().detach()
+                    # loss_terms["target_importance"] = target_importance.mean().detach()
+                    # loss_terms["target_importance_max"] = target_importance.max().detach()
+                    # loss_terms["target_importance_min"] = target_importance.min().detach()
+                    loss_terms["trajectory_alpha"] = trajectory_alpha.mean().detach()
+                    loss_terms["trajectory_alpha_max"] = trajectory_alpha.max().detach()
+                    loss_terms["trajectory_alpha_min"] = trajectory_alpha.min().detach()
+                    loss_terms["correction_coefficient_abs_mean"] = correction_coefficient.abs().mean().detach()
+                    loss_terms["correction_coefficient_max"] = correction_coefficient.max().detach()
+                    loss_terms["correction_coefficient_min"] = correction_coefficient.min().detach()
 
+                    # Compute the complete KL branch in FP64 even when the
+                    # transformer forward pass runs under FP16/BF16 autocast.
+                    forward_prediction_fp64 = forward_prediction.double()
+                    ref_forward_prediction_fp64 = ref_forward_prediction.double()
+                    old_prediction_fp64 = old_prediction.double()
 
-                    kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
+                    kl_div_loss = ((forward_prediction_fp64 - ref_forward_prediction_fp64) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    loss += config.train.beta * torch.mean(kl_div_loss)
-                    loss_terms["kl_div_loss_max"] = torch.max(kl_div_loss).detach()
-                    loss_terms["kl_div_loss_min"] = torch.min(kl_div_loss).detach()
                     kl_div_loss = torch.mean(kl_div_loss)
-                    loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach()
-                    loss_terms["kl_div"] = torch.mean(
-                        ((forward_prediction - ref_forward_prediction) ** 2).mean(dim=tuple(range(1, x0.ndim)))
-                    ).detach()
+                    loss += config.train.beta * kl_div_loss
+                    loss_terms["kl_div_loss"] = kl_div_loss.detach()
+                    loss_terms["kl_div"] = kl_div_loss.detach()
                     loss_terms["old_kl_div"] = torch.mean(
-                        ((old_prediction - ref_forward_prediction) ** 2).mean(dim=tuple(range(1, x0.ndim)))
+                        ((old_prediction_fp64 - ref_forward_prediction_fp64) ** 2).mean(
+                            dim=tuple(range(1, x0.ndim))
+                        )
                     ).detach()
 
                     loss_terms["total_loss"] = loss.detach()
@@ -1193,12 +1350,7 @@ def main(_):
                     if current_accumulated_steps % effective_grad_accum_steps == 0:
                         if mixed_precision_dtype == torch.float16:
                             scaler.unscale_(optimizer)
-                        grad_norm_before_clip = torch.nn.utils.clip_grad_norm_(
-                            transformer_ddp.module.parameters(), config.train.max_grad_norm
-                        )
-                        grad_norm_after_clip = torch.clamp(
-                            grad_norm_before_clip.detach(), max=float(config.train.max_grad_norm)
-                        )
+                        torch.nn.utils.clip_grad_norm_(transformer_ddp.module.parameters(), config.train.max_grad_norm)
                         if mixed_precision_dtype == torch.float16:
                             scaler.step(optimizer)
                         else:
@@ -1209,8 +1361,6 @@ def main(_):
                         optimizer.zero_grad()
 
                         log_info = {k: torch.mean(torch.stack(v_list)).item() for k, v_list in info_accumulated.items()}
-                        log_info["grad_norm_before_clip"] = grad_norm_before_clip.detach().float().item()
-                        log_info["grad_norm_after_clip"] = grad_norm_after_clip.float().item()
                         info_tensor = torch.tensor([log_info[k] for k in sorted(log_info.keys())], device=device)
                         dist.all_reduce(info_tensor, op=dist.ReduceOp.AVG)
                         reduced_log_info = {k: info_tensor[ki].item() for ki, k in enumerate(sorted(log_info.keys()))}

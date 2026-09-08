@@ -199,7 +199,7 @@ $\{(\mathbf{z}, w(\mathbf{z})\}$
 
 
 
-
+{\color{gray}
 \emph{Partial rollout coverage.}
 In practice, rollout samples may only cover a subset of the original 
 distribution. 
@@ -224,17 +224,31 @@ For the background region,
 there is no reward available
 and
 we assume that unnormalized weight is $1$.
-Thus, the normalization constant is
-\begin{align}
-    Z
-    = (1-\beta)
-+
-\frac{\beta}{D}
-\sum_i
-\exp(r(\mathbf z_i)/\gamma),
-\end{align}
-where $\{\mathbf z_i\}$
-are the $D$ rollout samples.
+We also expect that
+the normalized weight
+remains $1$.
+Thus, we do the normalization 
+over the rollout samples.
+The updated weight is still
+$\frac{
+\exp(r(\mathbf z)/\gamma)
+}
+{
+\frac{1}{D}
+\sum_j
+\exp(r(\mathbf z_j)/\gamma)
+}$.
+}
+% \begin{align}
+%     Z
+%     = (1-\beta)
+% +
+% \frac{\beta}{D}
+% \sum_i
+% \exp(r(\mathbf z_i)/\gamma),
+% \end{align}
+% where $\{\mathbf z_i\}$
+% are the $D$ rollout samples.
 % The normalized re-weight is 
 % \begin{align}
 %   w_{\mathrm{bg}}(\mathbf z)
@@ -249,26 +263,26 @@ are the $D$ rollout samples.
 % }.
 % \end{align}
 
-For the observed rollout region, each clean sample $\mathbf z$ receives an
-additional reward-dependent correction:
-\begin{align}
-w(\mathbf z)
-&=
-\frac{
-\beta
-\exp(r(\mathbf z)/\gamma)
-}
-{
-(1-\beta)
-+
-\frac{\beta}{D}
-\sum_j
-\exp(r(\mathbf z_j)/\gamma)
-}.
-\end{align}
+% For the observed rollout region, each clean sample $\mathbf z$ receives an
+% additional reward-dependent correction:
+% \begin{align}
+% w(\mathbf z)
+% &=
+% \frac{
+% \beta
+% \exp(r(\mathbf z)/\gamma)
+% }
+% {
+% (1-\beta)
+% +
+% \frac{\beta}{D}
+% \sum_j
+% \exp(r(\mathbf z_j)/\gamma)
+% }.
+% \end{align}
 
 
-\subsection{Incremental Velocity Prediction}
+\subsection{Incremental Velocity Target Update}
 \noindent\textbf{Optimal velocity field.} 
 We first give the optimal velocity field in standard flow matching. 
 It is the posterior expectation of the conditional velocity:
@@ -327,7 +341,13 @@ p_t(\mathbf{x}_t)
 [
 \alpha_t(\mathbf{x}_t,\mathbf{z})
 \mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
-].
+]\\
+&=
+\sum_{k=1}^K
+\frac{1}{K}
+\alpha_t(\mathbf{x}_t,\mathbf{z}_k)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_k)
+.
 \end{align}
 Here, $\alpha_t(\mathbf{x}_t,\mathbf{z})
 =
@@ -343,10 +363,290 @@ conditional distribution $p(\mathbf{z}|\mathbf{x}_t)$.
 
 
 \noindent\textbf{Velocity field
-from unweighting to reweighting.} 
+from
+unweighted to reweighted samples.} 
 The optimal velocity field 
 for reweighted samples
 is given as the following,
+\begin{align}
+    \mathbf{v}^{n}(\mathbf{x}_t,t)
+    &=  \frac{1}{\sum_{k=1}^Kw(\mathbf{z}_k)}
+    \sum_{k=1}^K
+    w(\mathbf{z}_k)
+\alpha^n_t(\mathbf{x}_t,\mathbf{z}_k)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_k) \\
+&\approx  \frac{1}{\sum_{k=1}^Kw(\mathbf{z}_k)}
+\sum_{k=1}^K
+    w(\mathbf{z}_k)
+\alpha^o_t(\mathbf{x}_t,\mathbf{z}_k)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_k) \\
+&=  \frac{1}{K + \sum_{k=1}^K(w(\mathbf{z}_k) - 1)}
+(
+\sum_{k=1}^K
+\alpha^o_t(\mathbf{x}_t,\mathbf{z}_k)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_k) 
++ 
+\sum_{k=1}^K
+    ( w(\mathbf{z}_k) - 1)
+\alpha^o_t(\mathbf{x}_t,\mathbf{z}_k)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_k)
+)\\
+&=  \mathbf{v}^o(\mathbf{x}_t,t)
++ \frac{1}{K + \sum_{k=1}^K
+    ( w(\mathbf{z}_k) - 1)} 
+\sum_{k=1}^K
+    ( w(\mathbf{z}_k) - 1)
+    (
+\alpha^o_t(\mathbf{x}_t,\mathbf{z}_k)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_k)
+- \mathbf{v}^o(\mathbf{x}_t,t)
+)\\
+&=  \mathbf{v}^o(\mathbf{x}_t,t)
++ \frac{1}{K} 
+\sum_{k=1}^K
+    ( w(\mathbf{z}_k) - 1)
+\alpha^o_t(\mathbf{x}_t,\mathbf{z}_k)
+(
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_k)
+- \frac{1}{\alpha^o_t(\mathbf{x}_t,\mathbf{z}_k)}\mathbf{v}^o(\mathbf{x}_t,t)
+)
+.
+\end{align}
+Here,
+the approximation
+from the first line to the second line
+is that 
+we use $\alpha^o$
+to approximate $\alpha^n$.
+The last equality
+is based on the incremental update,
+whose details are given in 
+Appendix.
+
+\noindent\textbf{Online ratio $\alpha^o_t(\mathbf{x}_t,\mathbf{z}_k)$.}
+The conditional-to-marginal ratio
+$\alpha_t(\mathbf{x}_t,\mathbf{z})
+=
+\frac{
+p_t(\mathbf{x}_t|\mathbf{z})
+}
+{
+p_t(\mathbf{x}_t)
+}$ 
+is computationally infeasible.
+The numerator 
+$p_t(\mathbf{x}_t|\mathbf{z})$
+can be computed,
+and the dominator
+$
+p_t(\mathbf{x}_t)
+= \mathbb{E}_{\mathbf{z}} [p_t(\mathbf{x}_t|\mathbf{z})]
+$
+is not easy to compute
+{as we need to enumerate
+many $\mathbf{z}$
+for the same $\mathbf{x}_t$}.
+
+We find that
+$\alpha_t(\mathbf{x}_t,\mathbf{z})$
+reflects
+the degree
+that 
+$\mathbf{z}$ contributes to $\mathbf{x}_t$.
+The contribution degree
+is monotonically related to 
+the distance between 
+the velocity $\mathbf{v}(\mathbf{x}_t,t)$ and 
+$\mathbf{v}_t(\mathbf{x}_t | \mathbf{z})$:
+$
+\|
+\mathbf{v}_t(\mathbf{x}_t | \mathbf{z})
+- \mathbf{v}(\mathbf{x}_t,t)\|_1
+$.
+In addition,
+we notice that 
+the expectation of 
+$\alpha_t(\mathbf{x}_t,\mathbf{z})
+\propto \tilde{\alpha}_t(\mathbf{x}_t,\mathbf{z})
+=
+\frac{1}
+{
+\|
+\mathbf{v}_t(\mathbf{x}_t | \mathbf{z})
+- \mathbf{v}(\mathbf{x}_t,t)\|_1}
+$
+is $1$.
+So we perform batch normalization
+as the approximation:
+\begin{align}
+    \alpha_t(\mathbf{x}_t,\mathbf{z})
+    = \frac{\tilde{\alpha}_t(\mathbf{x}_t,\mathbf{z})}
+    {
+    \frac{1}{B}
+    \sum_b \tilde{\alpha}_{t_b}(\mathbf{x}_{t_b},\mathbf{z}_b)
+    }
+\end{align}
+
+
+
+
+
+
+\noindent\textbf{EMA target.}
+The update velocity depends on
+online velocity model, 
+which makes the learning process instable.
+We follow the widely-used strategy
+and use EMA velocity $\mathbf{v}^{-}(\mathbf{x}_t,t)$ to
+replace 
+$\mathbf{v}^o(\mathbf{x}_t,t)$
+form the target:
+\begin{align}
+    \boldsymbol{\theta}^{-}_t
+    = \rho \boldsymbol{\theta}^{-}_t
+    + (1-\rho) \boldsymbol{\theta}_t.
+\end{align}
+
+In addition,
+the coefficient 
+$\frac{1}{\alpha^o_t(\mathbf{x}_t,\mathbf{z}_k)}$ of
+the second $\mathbf{v}^o(\mathbf{x}_t,t)$
+also changes online,
+making the learning process instable.
+We considered two options.
+The first option
+is to use an EMA ratio.
+The second one is
+to use the expectation 
+of the ratio:
+$\mathbb{E}_{\mathbf{z}}[\alpha^o_t(\mathbf{x}_t,\mathbf{z})] = 1$.
+
+{
+\color{gray}
+\emph{Partial rollout coverage.}
+The updated velocity
+is written as follows,
+\begin{align}
+        \mathbf{v}^{n}(\mathbf{x}_t,t)
+&=  \mathbf{v}^o(\mathbf{x}_t,t)
++ \frac{1}{K + \sum_{d=1}^D
+    ( w(\mathbf{z}_d) - 1)} 
+\sum_{d=1}^D
+    ( w(\mathbf{z}_d) - 1)
+    (
+\alpha^o_t(\mathbf{x}_t,\mathbf{z}_d)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_d)
+- \mathbf{v}^o(\mathbf{x}_t,t)
+) \\
+&=  \mathbf{v}^o(\mathbf{x}_t,t)
++ \frac{1}{K}
+\sum_{d=1}^D
+    ( w(\mathbf{z}_d) - 1)
+    (
+\alpha^o_t(\mathbf{x}_t,\mathbf{z}_d)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_d)
+- \mathbf{v}^o(\mathbf{x}_t,t)
+) \\
+&=  \mathbf{v}^o(\mathbf{x}_t,t)
++ \frac{D}{K}  
+\frac{1}{D}
+\sum_{d=1}^D
+    ( w(\mathbf{z}_d) - 1)
+    (
+\alpha^o_t(\mathbf{x}_t,\mathbf{z}_d)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_d)
+- \mathbf{v}^o(\mathbf{x}_t,t)
+) \\
+&=  \mathbf{v}^o(\mathbf{x}_t,t)
++ \beta 
+\frac{1}{D}
+\sum_{d=1}^D
+    ( w(\mathbf{z}_d) - 1)
+    (
+\alpha^o_t(\mathbf{x}_t,\mathbf{z}_d)
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z}_d)
+- \mathbf{v}^o(\mathbf{x}_t,t)
+) 
+.
+\end{align}
+}
+
+{
+\color{blue}
+do not use $\beta$?
+$\beta$ can be absorbed into
+the design of $w(\mathbf{z}_d)$.
+
+$\beta$ is larger means:
+larger positive weight
+($w - 1$),
+and lower negative weight.
+In other words,
+correction 
+is
+more aggressive.
+So we can discard $\beta$?
+
+$\beta$ controls
+the correction degree?
+}
+
+{
+\color{gray}
+The following could be put into
+Appendix
+for explaining the incremental update
+in a simplified form.
+The old average velocity from
+a set of $K$ velocities $\{\mathbf{v}_k\}$:
+\begin{align}
+    \mathbf{v}^o
+    = \frac{1}{K}\sum_{k=1}^K \mathbf{v}_k.
+\end{align}
+We change the weight
+e.g.,
+for velocity $\mathbf{v}_i$,
+to $w_i$.
+The new average velocity becomes:
+\begin{align}
+    \mathbf{v}^n
+    & = \frac{1}{K + (w_i -1)} 
+    (
+    \sum_{k\neq i} \mathbf{v}_k
+    + w_i \mathbf{v}_i
+    ) \\
+    & = \frac{1}{K + (w_i -1)} 
+    (
+    \sum_{k=1}^K  \mathbf{v}_k
+    + (w_i -1) \mathbf{v}_i
+    )
+    \\
+    & = \frac{1}{K + (w_i -1)} 
+    (
+    K  \mathbf{v}^o
+    + (w_i -1) \mathbf{v}_i
+    )
+    \\
+    & = \frac{1}{K + (w_i -1)} 
+    (
+    (K + (w_i -1))\mathbf{v}^o
+    -
+    (w_i -1) \mathbf{v}^o
+    + 
+    (w_i -1) \mathbf{v}_i
+    )  
+    \\
+    & = 
+    \mathbf{v}^o
+    +
+    \frac{1}{K + (w_i -1)} 
+    (w_i -1) ( \mathbf{v}_i
+    - \mathbf{v}^o).
+\end{align}
+
+We can also derive it
+from the fact
+that the expectation of importance ratio is $1$
 \begin{align}
 \mathbf{v}^{n}(\mathbf{x}_t,t)
 &=
@@ -370,307 +670,741 @@ is given as the following,
 {\pi^{\mathrm{o}}(\mathbf{z})}
 \alpha_t^{\textrm{o}}(\mathbf{x}_t,\mathbf{z})
 \mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
-\right].
-\end{align}
-
-\newpage
-\clearpage
-
-
-
-with
-respect to $\mathbf{v}_{\theta}$. Importantly, the optimal solution is not a
-simple expectation over $\pi^n(\mathbf{z})$, since the velocity field is
-defined on the marginal distribution of $\mathbf{x}_t$. Instead, it is given
-by the posterior expectation of the conditional velocity:
-\begin{align}
-\mathbf{v}^{n}(\mathbf{x}_t,t)
-=
-\mathbb{E}
-\left[
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
-\mid
-\mathbf{x}_t
-\right].
-\end{align}
-Under the reward-optimized distribution $\pi^n(\mathbf{z})$, the posterior
-distribution is
-\begin{align}
-p^n(\mathbf{z}|\mathbf{x}_t)
-=
-\frac{
-\pi^n(\mathbf{z})
-p_t(\mathbf{x}_t|\mathbf{z})
-}
-{
-\int
-\pi^n(\mathbf{z}')
-p_t(\mathbf{x}_t|\mathbf{z}')
-d\mathbf{z}'
-} 
-= 
-\frac{
-\pi^n(\mathbf{z})
-p_t(\mathbf{x}_t|\mathbf{z})
-}
-{
-p_t^n(\mathbf{x}_t)
-},
-\end{align}
-where
-$
-p_t^n(\mathbf{x}_t)$
-denotes the marginal distribution induced by the reward-optimized source
-distribution.
-
-Therefore, the reward-optimal velocity field becomes
-\begin{align}
-\mathbf{v}^{n}(\mathbf{x}_t,t)
-&=
-\frac{
-\mathbb{E}_{\mathbf{z}\sim\pi^n}
-\left[
-p_t(\mathbf{x}_t|\mathbf{z})
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
-\right]
-}
-{
-p_t^n(\mathbf{x}_t)
-}\\
-&=
-\mathbb{E}_{\mathbf{z}\sim\pi^n}
-\left[
-\frac{p_t(\mathbf{x}_t|\mathbf{z})}{p_t^n(\mathbf{x}_t)}
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
-\right] \\
-&=
-\mathbb{E}_{\mathbf{z}\sim\pi^n}
-[
-\alpha_t^n(\mathbf{x}_t,\mathbf{z})
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
-].
-\end{align}
-Here, $\alpha_t^n(\mathbf{x}_t,\mathbf{z})
-=
-\frac{
-p_t(\mathbf{x}_t|\mathbf{z})
-}
-{
-p_t^n(\mathbf{x}_t)
-}$ (conditional-to-marginal ratio) 
-serves as a posterior correction
-factor that transforms the prior distribution $\pi^n(\mathbf{z})$ into the
-conditional distribution $p^n(\mathbf{z}|\mathbf{x}_t)$.
-
-This formulation shows that reward optimization modifies the flow dynamics
-through posterior reweighting of conditional trajectories. Unlike simple
-reward-weighted regression, which only changes the contribution of individual
-samples, the proposed formulation explicitly characterizes the reward-optimal
-velocity field by modifying the conditional aggregation of flow trajectories.
-
-\noindent\textbf{Reward-tilted velocity field.}
-The reward-tilted velocity field is obtained by replacing the original
-latent distribution $\pi^{\mathrm{o}}(\mathbf{z})$ with the reward-improved
-distribution $\pi^{\mathrm{n}}(\mathbf{z})$. Specifically, the optimal distribution
-reweights the latent samples according to their rewards, leading to
-\begin{align}
-\mathbf{v}^{n}(\mathbf{x}_t,t)
-&=
-\mathbb{E}_{\mathbf{z}\sim\pi^n}
-\left[
-\alpha_t^n(\mathbf{x}_t,\mathbf{z})
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
 \right]\\
-&=
+& = 
 \mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
 \left[
-\frac{\pi^n(\mathbf{z})}
-{\pi_{\mathrm{old}}(\mathbf{z})}
-\alpha_t^n(\mathbf{x}_t,\mathbf{z})
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
-\right]\\
-&\approx
-\mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
-\left[
-\frac{\pi^n(\mathbf{z})}
-{\pi^{\mathrm{o}}(\mathbf{z})}
 \alpha_t^{\textrm{o}}(\mathbf{x}_t,\mathbf{z})
 \mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right]
++
+\mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
+\left[
+(
+\frac{\pi^n(\mathbf{z})}
+{\pi^{\mathrm{o}}(\mathbf{z})}
+-1
+)
+\alpha_t^{\textrm{o}}(\mathbf{x}_t,\mathbf{z})
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right]\\
+& = 
+\mathbf{v}^o(\mathbf{x}_t,t)
++
+\mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
+\left[
+(
+\frac{\pi^n(\mathbf{z})}
+{\pi^{\mathrm{o}}(\mathbf{z})}
+-1
+)
+\alpha_t^{\textrm{o}}(\mathbf{x}_t,\mathbf{z})
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right]
+\\
+& = 
+\mathbf{v}^o(\mathbf{x}_t,t)
++
+\mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
+\left[
+(
+\frac{\pi^n(\mathbf{z})}
+{\pi^{\mathrm{o}}(\mathbf{z})}
+-1
+)
+( 
+\alpha_t^{\textrm{o}}(\mathbf{x}_t,\mathbf{z})
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+- \mathbf{v}^o(\mathbf{x}_t,t)
+)
+\right]
+.
+\end{align}
+Next:
+\color{red}
+we can show 
+that
+subtracting $\mathbf{v}^o(\mathbf{x}_t,t)$
+leads to smaller variance?
+}
+
+\subsection{Strict Derivation of Reward-Tilted Velocity Correction}
+\label{sec:strict_correction}
+
+
+Using the importance weight, we rewrite $\mathbf{v}^{\mathrm{n}}$ as an
+expectation under $\pi^{\mathrm{o}}$:
+\begin{align}
+\mathbf{v}^{\mathrm{n}}(\mathbf{x}_t,t)
+=
+\mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
+\left[
+w_r(\mathbf{z})\,
+\alpha_t^{\mathrm{n}}(\mathbf{x}_t,\mathbf{z})\,
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
 \right].
 \end{align}
-Here,
-$\frac{\pi^n(\mathbf{z})}{\pi^{\mathrm{o}}(\mathbf{z})}$ is the importance
-weight that transforms samples drawn from the original latent distribution
-into samples from the reward-optimized distribution. Therefore, the
-reward-guided velocity can be interpreted as an importance-weighted
-aggregation of the original conditional velocity fields, where high-reward
-latent variables receive larger contributions to the resulting vector field.
-
-The resulting velocity update can be interpreted as an incremental correction
-of the current flow field:
+The exact increment is therefore
 \begin{align}
-\color{red}
-\mathbf v^n(\mathbf x_t,t)
-=
-\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
-+
-\mathbb E_{\mathbf z\sim P_{\mathcal D}}
-[
-\mathbf c_t(\mathbf x_t,\mathbf z)
-].
-\end{align}
-The
-sample-wise correction with adaptive weight is
-\begin{align}
-\mathbf c_t(\mathbf x_t,\mathbf z)
-=
-\underbrace{
-\alpha^{\textrm{o}}_t(\mathbf x_t,\mathbf z)
-}_{\text{trajectory contribution}}
-\times
-\underbrace{
-\beta\left(
-\exp(r(\mathbf z)/\gamma)-1
-\right)/Z
-}_{\text{mass shift}}
-\times
-\underbrace{
-\left(
-\mathbf v_t(\mathbf x_t|\mathbf z)
+\Delta(\mathbf{x}_t,t)
+&=
+\mathbf{v}^{\mathrm{n}}(\mathbf{x}_t,t)
 -
-\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\\
+&=
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+\left(
+w_r\alpha_t^{\mathrm{n}}
+-
+\alpha_t^{\mathrm{o}}
 \right)
-}_{\text{velocity discrepancy}}.
+\mathbf{v}_t
+\right]
+\\
+&=
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
+\mathbf{v}_t
+\right]
++
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+w_r(\alpha_t^{\mathrm{n}}-\alpha_t^{\mathrm{o}})\,
+\mathbf{v}_t
+\right].
+\end{align}
+
+
+To obtain a computable form, we adopt the approximation
+\begin{align}
+\alpha_t^{\mathrm{n}}(\mathbf{x}_t,\mathbf{z})
+\approx
+\alpha_t^{\mathrm{o}}(\mathbf{x}_t,\mathbf{z}).
+\end{align}
+Under this approximation,
+\begin{align}
+\Delta(\mathbf{x}_t,t)
+&\approx
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right].
+\end{align}
+
+Since $\mathbb{E}_{\pi^{\mathrm{o}}}[\alpha_t^{\mathrm{o}}]=1$,
+the increment can be decomposed as
+\begin{align}
+\Delta(\mathbf{x}_t,t)
+&\approx
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
+\left(
+\mathbf{v}_t-\mathbf{v}^{\mathrm{o}}
+\right)
+\right]
++
+\mathbf{v}^{\mathrm{o}}\,
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}
+\right].
+\end{align}
+
+Under the incremental update regime, we assume that the reward-induced
+distribution shift is sufficiently small such that the timestep marginal
+distribution changes only mildly,
+$p_t^{\mathrm{n}}(\mathbf{x}_t)
+\approx
+p_t^{\mathrm{o}}(\mathbf{x}_t)$.
+Since
+\begin{align}
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+w_r\alpha_t^{\mathrm{o}}
+\right]
+=
+\frac{
+p_t^{\mathrm{n}}(\mathbf{x}_t)
+}{
+p_t^{\mathrm{o}}(\mathbf{x}_t)
+},
+\end{align}
+and
+$\mathbb{E}_{\pi^{\mathrm{o}}}
+[\alpha_t^{\mathrm{o}}]=1$,
+we have
+\begin{align}
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}
+\right]
+=
+\frac{
+p_t^{\mathrm{n}}(\mathbf{x}_t)
+}{
+p_t^{\mathrm{o}}(\mathbf{x}_t)
+}
+-1
+\approx
+0.
+\end{align}
+
+
+the global offset vanishes and the increment becomes a pure local
+correction:
+\begin{align}
+\Delta(\mathbf{x}_t,t)
+&\approx
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
+\left(
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+-
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\right)
+\right].
 \end{align}
 
 
 
+\noindent\textbf{Partial rollout coverage.}
+In practice, rollout samples only cover a fraction $\beta$ of the probability
+mass of the old distribution. We model
+\begin{align}
+\pi^{\mathrm{o}}
+=
+(1-\beta)\pi_{\mathrm{bg}}
++
+\beta\pi_{\mathcal D},
+\end{align}
+where $\pi_{\mathrm{bg}}$ denotes the unobserved background distribution and
+\begin{align}
+\pi_{\mathcal D}
+=
+\frac{1}{D}
+\sum_{i=1}^{D}
+\delta_{\mathbf z_i}
+\end{align}
+is the empirical distribution of the observed rollout samples.
 
-\textbf{Importance weight under partial rollout coverage.} 
-The reward-induced importance weight is
+Since no reward is available for the background region, we set
+\begin{align}
+\exp\left(\frac{r(\mathbf z)}{\gamma}\right)=1,
+\qquad
+\mathbf z\sim\pi_{\mathrm{bg}}.
+\end{align}
+The normalization constant is therefore
+\begin{align}
+Z
+&=
+\mathbb{E}_{\mathbf z\sim\pi^{\mathrm{o}}}
+\left[
+\exp\left(\frac{r(\mathbf z)}{\gamma}\right)
+\right]
+\\
+&=
+(1-\beta)
++
+\frac{\beta}{D}
+\sum_{i=1}^{D}
+\exp\left(\frac{r(\mathbf z_i)}{\gamma}\right).
+\end{align}
+
+The reward-tilted distribution is
+\begin{align}
+\pi^{\mathrm{n}}(\mathbf z)
+=
+\frac{1}{Z}
+\exp\left(\frac{r(\mathbf z)}{\gamma}\right)
+\pi^{\mathrm{o}}(\mathbf z).
+\end{align}
+Hence, the corresponding importance ratio is
 \begin{align}
 w_r(\mathbf z)
 =
-\frac{\pi^n(\mathbf z)}
-{\pi^{\mathrm{o}}(\mathbf z)}
+\frac{\pi^{\mathrm{n}}}{\pi^{\mathrm{o}}}(\mathbf z)
 =
 \frac{1}{Z}
-\exp
+\exp\left(\frac{r(\mathbf z)}{\gamma}\right).
+\end{align}
+
+Under the partial rollout model, this gives
+\begin{align}
+w_r(\mathbf z)
+=
+\begin{cases}
+\displaystyle
+\frac{1}{Z},
+& \mathbf z\in\mathrm{bg},
+\\[3mm]
+\displaystyle
+\frac{
+\exp\left(r(\mathbf z)/\gamma\right)
+}{Z},
+& \mathbf z\in\mathcal D.
+\end{cases}
+\end{align}
+
+
+The increment decomposes into background and observed contributions:
+\begin{align}
+\Delta(\mathbf{x}_t,t)
+&=
+\mathbf{v}^{\mathrm{n}}(\mathbf{x}_t,t)
+-
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\\
+&\approx
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
 \left(
-\frac{r(\mathbf z)}{\gamma}
-\right).
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+-
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\right)
+\right]
+\\
+&\approx
+(1-\beta)\,
+\mathbb{E}_{\pi_{\mathrm{bg}}}
+\left[
+\left(\frac{1}{Z}-1\right)
+\alpha_t^{\mathrm{o}}
+\left(\mathbf{v}_t-\mathbf{v}^{\mathrm{o}}\right)
+\right]
+\\
+&\quad
++\beta\,
+\mathbb{E}_{\pi_{\mathcal{D}}}
+\left[
+\left(
+\frac{\exp(r/\gamma)}{Z}-1
+\right)
+\alpha_t^{\mathrm{o}}
+\left(\mathbf{v}_t-\mathbf{v}^{\mathrm{o}}\right)
+\right].
 \end{align}
+The background term cannot be estimated from rollout samples and is
+usually omitted, effectively assuming that the background contributes
+negligibly to the local correction. Dropping the background term, the
+observed rollout samples give the per-sample correction
 
-In practice, rollout samples only cover a subset of the original clean-data
-distribution. We model the old distribution as a mixture of an unobserved
-background region and an observed rollout region:
 \begin{align}
-\pi^{\mathrm{o}}(\mathbf z)
+\boxed{
+\mathbf{c}_t(\mathbf{x}_t,\mathbf{z})
 =
-(1-\beta)
-\pi_{\mathrm{bg}}(\mathbf z)
-+
 \beta
-\pi_{\mathcal D}(\mathbf z),
+\left(
+\frac{\exp\!\left(r(\mathbf{z})/\gamma\right)}{Z}
+-
+1
+\right)
+\alpha_t^{\mathrm{o}}(\mathbf{x}_t,\mathbf{z})
+\left(
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+-
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\right)
+},
 \end{align}
-where $\beta$ denotes the probability mass covered by rollout samples,
-$\pi_{\mathcal D}$ is the empirical rollout distribution, and
-$\pi_{\mathrm{bg}}$ represents the remaining undrawn population.
 
-The importance ratio can be decomposed according to the two
-sub-populations.
-For the background region, we assume that the reward is 
-the value $\bar r$.
-The corresponding importance weight is
+
 \begin{align}
-w_{\mathrm{bg}}(\mathbf z)
-&=
-\frac{\pi^n(\mathbf z)}
-{\pi^{\mathrm{o}}(\mathbf z)}
+\mathbf v^n(\mathbf x_t,t)
 =
-\frac{
-\exp(\bar r/\gamma)
-}
-{
-(1-\beta)\exp(\bar r/\gamma)
-+
-\frac{\beta}{D}
-\sum_i
-\exp(r(\mathbf z_i)/\gamma)
-}.
+\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
++ 
+\mathbb{E}_{z\sim\pi_{\mathcal{D}}} [\mathbf c_t(\mathbf x_t,\mathbf z)],
 \end{align}
-After absorbing the common background reward term into the normalization
-($\bar{r} = 0$), this
-becomes
+
+
+where $Z$ is defined above.
+
+\noindent\textbf{Revised derivation:}
+
 \begin{align}
-w_{\mathrm{bg}}(\mathbf{z})
-=
-\frac{1}
-{
-(1-\beta)
-+
-\frac{\beta}{D}
-\sum_i
-\exp(r(\mathbf z_i)/\gamma)
-}.
+    \bar{Z}=~&
+    1 + \frac{\beta}{D}(\sum_i(\exp(\bar{r}(\mathbf{z})/\gamma)-1))
 \end{align}
-
-Thus, the background population receives a shared baseline reweighting caused
-by probability mass redistribution.
-
-
-For the observed rollout region, each clean sample $\mathbf z$ receives an
-additional reward-dependent correction:
 \begin{align}
-w_{\mathcal D}(\mathbf z)
-&=
-\frac{
-\exp(r(\mathbf z)/\gamma)
-}
-{
-(1-\beta)
-+
-\frac{\beta}{D}
-\sum_j
-\exp(r(\mathbf z_j)/\gamma)
-}.
+w_t(\mathbf{x}_t,\mathbf{z}) = \alpha_t(\mathbf{x}_t, \mathbf{z})(\exp(\bar{r}(\mathbf{z}_i)/\gamma) -1 )
 \end{align}
-% This can be decomposed as
-% \begin{align}
-% w_{\mathcal D}(\mathbf z)
-% &=
-% \frac{
-% \frac{\beta}{D}
-% }
-% {
-% (1-\beta)
-% +
-% \frac{\beta}{D}
-% \sum_j
-% \exp(r(\mathbf z_j)/\gamma)
-% }
-% +
-% \frac{
-% \frac{\beta}{D}
-% (
-% \exp(r(\mathbf z_i)/\gamma)-1
-% )
-% }
-% {
-% (1-\beta)
-% +
-% \frac{\beta}{D}
-% \sum_j
-% \exp(r(\mathbf z_j)/\gamma)
-% }.
-% \end{align}
-% The first term corresponds to the common mass redistribution shared by all
-% observed samples, while the second term represents the
-% sample-specific reward-induced correction.
 
-% The observed rollout samples therefore provide an incremental correction to the
-% current distribution rather than a complete replacement of the original
-% population.
+\begin{align}
+\mathbf{v}_{old}(\mathbf{x}_t, t) 
+=~&{\color{blue}\mathbb{E}_{\mathbf{z} \sim \pi_{old}(\mathbf{z})}
+    \left[\alpha_t(\mathbf{x}_t, \mathbf{z})\mathbf{v}_t(\mathbf{x}_t | \mathbf{z})\right]} 
+\end{align}    
+
+
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \frac{\pi^*(\mathbf{z})}{\pi_{\mathrm{old}}(\mathbf{z})}\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        w_r(\mathbf{z})\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    +
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+\end{align}
+
+Split $\mathbf{v}_t$ into $\mathbf{v}_{\mathrm{old}} + (\mathbf{v}_t - \mathbf{v}_{\mathrm{old}})$:
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)\,
+        \alpha_t\,
+        \mathbf{v}_t
+    \right]
+    \\
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)\,
+        \alpha_t\,
+        \bigl( \mathbf{v}_t - \mathbf{v}_{\mathrm{old}} \bigr)
+    \right]
+    \notag \\
+    &\quad
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)\,
+        \alpha_t
+    \right]
+    \mathbf{v}_{\mathrm{old}}
+\end{align}
+
+Under the incremental update assumption, $p_t^{\mathrm{n}}(\mathbf{x}_t) \approx p_t^{\mathrm{o}}(\mathbf{x}_t)$, the global offset term vanishes:
+\begin{align}
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)\,
+        \alpha_t
+    \right]
+    &=
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        w_r \alpha_t
+    \right]
+    -
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \alpha_t
+    \right]
+    \\
+    &=
+    \frac{p_t^{\mathrm{n}}(\mathbf{x}_t)}{p_t^{\mathrm{o}}(\mathbf{x}_t)}
+    -
+    1
+    \;\approx\;
+    0
+\end{align}
+
+Thus we obtain
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &\approx
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \bigl( \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z}) - \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t) \bigr)
+    \right]
+\end{align}
+
+Substituting the partial-coverage mixture model $\pi_{\mathrm{old}} = (1-\beta)\pi_{\mathrm{bg}} + \beta P_{\mathcal{D}}$ and neglecting the background contribution to the local velocity residual gives
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &\approx
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \beta\,
+    \mathbb{E}_{\mathbf{z} \sim P_{\mathcal{D}}(\mathbf{z})}
+    \left[
+        \left(
+            \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right)}{\bar{Z}}
+            - 1
+        \right)
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \left(
+            \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+            -
+            \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        \right)
+    \right]
+\end{align}
+
+The final velocity correction formula is
+\begin{align}
+    \boxed{
+        \mathbf{v}^*(\mathbf{x}_t, t)
+        \approx
+        \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        +
+        \beta\,
+        \mathbb{E}_{\mathbf{z} \sim P_{\mathcal{D}}(\mathbf{z})}
+        \left[
+            \left(
+                \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right)}{\bar{Z}}
+                - 1
+            \right)
+            \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+            \left(
+                \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+                -
+                \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+            \right)
+        \right]
+    }
+\end{align}
+
+\noindent\textbf{Another derivation:}
+\begin{align}
+    \bar{Z}=~&
+    1 + \frac{\beta}{D}(\sum_i(\exp(\bar{r}(\mathbf{z})/\gamma)-1))
+\end{align}
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \frac{\pi^*(\mathbf{z})}{\pi_{\mathrm{old}}(\mathbf{z})}\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        w_r(\mathbf{z})\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+\end{align}
+
+Add and subtract $\mathbf{v}_{\mathrm{old}}$ inside the expectation:
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)
+        \bigl( \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}} \bigr)
+    \right]
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)
+    \right]
+    \mathbf{v}_{\mathrm{old}}
+\end{align}
+
+Since $w_r = \pi^* / \pi_{\mathrm{old}}$ is a likelihood ratio, $\mathbb{E}_{\pi_{\mathrm{old}}}[w_r]=1$, hence $\mathbb{E}_{\pi_{\mathrm{old}}}[w_r-1]=0$. Therefore the last term vanishes exactly:
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)
+        \bigl( \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}} \bigr)
+    \right]
+\end{align}
+
+\begin{align}
+    \pi_{\mathrm{old}}
+    =
+    (1-\beta)\,\pi_{\mathrm{bg}}
+    +
+    \beta\,\pi_{\mathcal{D}},
+    \qquad
+    \pi_{\mathcal{D}}
+    =
+    \frac{1}{D}
+    \sum_{i=1}^{D}
+    \delta_{\mathbf{z}_i}
+\end{align}
+
+\begin{align}
+    w_r(\mathbf{z}) - 1
+    =
+    \begin{cases}
+        \displaystyle
+        \frac{1}{\bar{Z}} - 1
+        =
+        -\frac{\bar{Z}-1}{\bar{Z}},
+        & \mathbf{z} \sim \pi_{\mathrm{bg}},
+        \\[4mm]
+        \displaystyle
+        \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right)}{\bar{Z}} - 1
+        =
+        \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right) - \bar{Z}}{\bar{Z}},
+        & \mathbf{z} \sim \pi_{\mathcal{D}}.
+    \end{cases}
+\end{align}
+
+Starting from the exact identity
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)
+        \bigl(
+            \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}}
+        \bigr)
+    \right]
+\end{align}
+
+Expand the expectation under the partial-coverage mixture:
+\begin{align}
+    &\mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)
+        \bigl(
+            \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+            \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+            -
+            \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        \bigr)
+    \right]
+    \\
+    &=
+    (1-\beta)\,
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{bg}}}
+    \left[
+        \left( \frac{1}{\bar{Z}} - 1 \right)
+        \bigl(
+            \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}}
+        \bigr)
+    \right]
+    +
+    \beta\,
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathcal{D}}}
+    \left[
+        \left(
+            \frac{\exp(\bar{r}/\gamma)}{\bar{Z}} - 1
+        \right)
+        \bigl(
+            \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}}
+        \bigr)
+    \right]
+\end{align}
+
+The observed rollout region contributes the empirical average
+\begin{align}
+    &\frac{\beta}{\bar{Z}}
+    \frac{1}{D}
+    \sum_{i=1}^{D}
+    \left[
+        \left(
+            \exp\!\left( \frac{\bar{r}(\mathbf{z}_i)}{\gamma} \right)
+            -
+            \bar{Z}
+        \right)
+        \left(
+            \alpha_t(\mathbf{x}_t, \mathbf{z}_i)\,
+            \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z}_i)
+            -
+            \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        \right)
+    \right]
+\end{align}
+
+Therefore the exact reward-optimized velocity field under the partial-coverage mixture model is
+\begin{align}
+    \boxed{
+    \begin{aligned}
+        \mathbf{v}^*(\mathbf{x}_t, t)
+        &=
+        \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        \\
+        &\quad
+        +
+        \frac{\beta}{\bar{Z}}
+        \frac{1}{D}
+        \sum_{i=1}^{D}
+        \left[
+            \left(
+                \exp\!\left( \frac{\bar{r}(\mathbf{z}_i)}{\gamma} \right)
+                -
+                \bar{Z}
+            \right)
+            \left(
+                \alpha_t(\mathbf{x}_t, \mathbf{z}_i)\,
+                \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z}_i)
+                -
+                \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+            \right)
+        \right]
+    \end{aligned}
+    }
+\end{align}
+
+
 
 \noindent\textbf{Objective.}
 We train the parameterized velocity field $\mathbf v_{\boldsymbol{\theta}}$
@@ -768,11 +1502,12 @@ The gradient is as follows,
  }_{\text{trajectory contribution}}
  \times
  \underbrace{
- \frac{\beta
- \left(
- \exp(r(\mathbf z)/\gamma)-1
- \right)}
- {Z}
+\beta
+\left(
+\frac{\exp\!\left(r(\mathbf{z})/\gamma\right)}{Z}
+-
+1
+\right)
  }_{\text{mass shift}}
  \times
  \underbrace{\frac{\partial\mathbf{v}_{\boldsymbol{\theta}}(\mathbf x_t,t)}
@@ -802,11 +1537,12 @@ w_{\mathrm{adapt}}(\mathbf x_t,\mathbf z)
 \frac{\pi^n(\mathbf z)}
 {\pi^{\mathrm{o}}(\mathbf z)}
 \alpha_t^o(\mathbf x_t,\mathbf z)
-\frac{\beta
+\beta
 \left(
-\exp(r(\mathbf z)/\gamma)-1
-\right)}
-{Z}.
+\frac{\exp\!\left(r(\mathbf{z})/\gamma\right)}{Z}
+-
+1
+\right).
 \end{align}
 Compared with conventional flow matching, which treats all training pairs equally,
 the proposed weighting dynamically emphasizes samples that are more aligned with
@@ -1041,279 +1777,107 @@ it becomes uniform, all are $1$.
 
 
 
-\begin{algorithm}[H]
-\caption{Reinforced Flow Matching}
-\label{alg:velocity-add-delete}
-\begin{algorithmic}[1]
-\Require Initial model $\theta_0$, reward function $R$, prompt distribution
-$p(c)$, Total prompts each training iteration $C$, rollout size for each prompt $K$, batch size $B$, total size $D = KC$, 
-rollout coverage coefficient $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference regularization
-$\lambda_{\mathrm{ref}}$, EMA rate $\eta$, reward-scale constant $\epsilon_R$, and numerical constant $\epsilon_{\mathrm{alg}}$.
+\begin{algorithm}[t]
+    \caption{Reinforced Flow Matching}
+    \label{alg:velocity-add-delete}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$, prompt distribution $p(c)$, number of prompts per iteration $C$, rollout size per prompt $K$, batch size $B$, total samples per iteration $D = KC$, rollout coverage coefficient $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference regularization $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, reward-scale constant $\epsilon_R$, numerical constant $\epsilon_{\mathrm{alg}}$, gradient accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:} Training policy $\theta \leftarrow \theta_0$, old policy $\theta_{\mathrm{old}} \leftarrow \theta_0$, reference policy $\theta_{\mathrm{ref}} \leftarrow \theta_0$, data buffer $\mathcal{D} \leftarrow \emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j \sim p(c)$, $j = 1, \dots, C$}} \Comment{Rollout Step, Data Collection}
+                \State Sample $K$ clean images $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$ conditioned on $c_j$.
+                \State Evaluate rewards $R_{j,k} \leftarrow R(\mathbf{x}_0^{j,k}, c_j)$ for $k = 1, \dots, K$.
+            \EndFor
 
-\State $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}
-\leftarrow\theta_0$.
+            \State Compute prompt-wise reward means
+            $\bar{R}_{c_j} \leftarrow \frac{1}{K}\sum_{k=1}^{K} R_{j,k}$ for $j = 1, \dots, C$.
 
-\For{each training iteration}
-            
-    \For{each prompt $c_j\sim p(c)$ (Total C prompts each iteration.)}
-        \State Sample $K$ clean rollout samples
-        $\{\mathbf{x}_{0}^{j,k}\}_{k=1}^{K}$
-        with $\theta$ conditioned on $c_j$.
+            \State Compute global reward mean
+            $\bar{R} \leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K} R_{j,k}$.
 
-        \State Compute rewards
-        $R_{j,k}\leftarrow R(\mathbf{x}_{0}^{j,k},c_j)$
-        for $k=1,\ldots,K$.
-    \EndFor
+            \State Compute global reward scale
+            $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2} + \epsilon_R$.
 
-    \State Compute the prompt-wise reward means
-    $\displaystyle
-    \bar R_{c_j}\leftarrow K^{-1}\sum_{k=1}^{K}R_{j,k}$
-    for $j=1,\ldots,C$.
+            \For{\text{each prompt $c_j$, $j = 1, \dots, C$}}
+                \State Compute normalized weights
+                \[
+                    \Delta_{j,k} \leftarrow \frac{1}{\Delta_{\mathrm{clip}}}
+                    \operatorname{clip}\!\left(
+                        \frac{R_{j,k} - \bar{R}_{c_j}}{\sigma_R},
+                        -\Delta_{\mathrm{clip}},
+                        \Delta_{\mathrm{clip}}
+                    \right),
+                    \quad
+                    W_{j,k} \leftarrow 1 + \Delta_{j,k},
+                    \quad k = 1, \dots, K.
+                \]
+                \State $\bar{Z}_{c_j} \leftarrow 1 + \frac{\beta}{K}\sum_{k=1}^{K}\Delta_{j,k}$.
+                \State Store samples in buffer:
+                $\mathcal{D} \leftarrow \mathcal{D} \cup \{(c_j, \mathbf{x}_0^{j,k}, W_{j,k}, \bar{Z}_{c_j})\}_{k=1}^{K}$.
+            \EndFor
 
-    \State Compute the current-iteration global reward mean
-    $\displaystyle
-    \bar R\leftarrow D^{-1}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k}$.
+            \For{\text{each mini batch } $\{(c_i, \mathbf{x}_i^0, W_i, \bar{Z}_{c_i})\}_{i=1}^{B} \subset \mathcal{D}$} \Comment{Gradient Step, Policy Optimization}
+                \State Sample timesteps $t_i \sim \mathcal{U}(0,1)$ and noise $\boldsymbol{\epsilon}_i \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$.
+                \State Set $\mathbf{x}_i^{t_i} \leftarrow (1 - t_i)\mathbf{x}_i^0 + t_i\boldsymbol{\epsilon}_i$ for $i = 1, \dots, B$.
+                \State Ground-truth velocity: $\mathbf{v}_i \leftarrow \boldsymbol{\epsilon}_i - \mathbf{x}_i^0$.
+                \State Predicted velocities:
+                $\mathbf{v}_i^{\theta} \leftarrow \mathbf{v}_{\theta}(\mathbf{x}_i^{t_i}, c_i, t_i)$,
+                $\mathbf{v}_i^{\mathrm{old}} \leftarrow \mathbf{v}_{\theta_{\mathrm{old}}}(\mathbf{x}_i^{t_i}, c_i, t_i)$,
+                $\mathbf{v}_i^{\mathrm{ref}} \leftarrow \mathbf{v}_{\theta_{\mathrm{ref}}}(\mathbf{x}_i^{t_i}, c_i, t_i)$.
 
-    \State Compute the current-iteration global reward scale
-    $\displaystyle
-    \sigma_R\leftarrow
-    \sqrt{
-    D^{-1}\sum_{j=1}^{C}\sum_{k=1}^{K}
-    (R_{j,k}-\bar R)^2
-    }
-    +\epsilon_R$.
+                \State Compute per-sample scale:
+                \[
+                    \widetilde{\alpha}_i \leftarrow
+                    \frac{1}{
+                        \operatorname{sg}\!\left[
+                            \operatorname{mean}\left|\mathbf{v}_i - \mathbf{v}_i^{\theta}\right|
+                        \right] + \epsilon_{\mathrm{alg}}
+                    },
+                    \quad
+                    \alpha_i \leftarrow
+                    \frac{\widetilde{\alpha}_i}{
+                        \frac{1}{B}\sum_{j=1}^{B}\widetilde{\alpha}_j
+                    },
+                    \quad i = 1, \dots, B.
+                \]
 
-    \For{each prompt $c_j$, $j=1,\ldots,C$}
-        \For{$k=1,\ldots,K$}
-            \State $\displaystyle
-            \Delta_{j,k}
-            \leftarrow
-            \frac{1}{\Delta_{\mathrm{clip}}}
-            \operatorname{clip}
-            \left(
-            \frac{R_{j,k}-\bar R_{c_j}}{\sigma_R},
-            -\Delta_{\mathrm{clip}},
-            \Delta_{\mathrm{clip}}
-            \right)$.
+                \State Target velocity:
+                \[
+                    \mathbf{v}_i^{\mathrm{target}} \leftarrow
+                    \mathbf{v}_i^{\mathrm{old}}
+                    +
+                    \beta\left(
+                        \frac{W_i}{\bar{Z}_{c_i}} - 1
+                    \right)
+                    \alpha_i\left(
+                        \mathbf{v}_i - \mathbf{v}_i^{\mathrm{old}}
+                    \right).
+                \]
 
-            \State $W(\mathbf{x}_{0}^{j,k},c_j)
-            \leftarrow 1+\Delta_{j,k}$.
+                \State $\mathcal{L}_{\mathrm{target}} \leftarrow
+                \frac{1}{B}\sum_{i=1}^{B} t_i
+                \left\|\mathbf{v}_i^{\theta} - \mathbf{v}_i^{\mathrm{target}}\right\|_2^2$.
+
+                \State $\mathcal{L}_{\mathrm{ref}} \leftarrow
+                \frac{1}{B}\sum_{i=1}^{B}
+                \left\|\mathbf{v}_i^{\theta} - \mathbf{v}_i^{\mathrm{ref}}\right\|_2^2$.
+
+                \State $\mathcal{L} \leftarrow
+                \frac{1}{N_{\mathrm{acc}}}\left(
+                    \Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{target}}
+                    +
+                    \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}}
+                \right)$.
+
+                \State Backpropagate $\mathcal{L}$ and accumulate gradients without updating $\theta$.
+            \EndFor
+
+            \State Update $\theta$ once using the accumulated gradients.
+            \State $\theta_{\mathrm{old}} \leftarrow \eta\theta_{\mathrm{old}} + (1-\eta)\theta$, clear buffer $\mathcal{D} \leftarrow \emptyset$. \Comment{Online Update}
         \EndFor
-
-        \State $\displaystyle
-        \bar{Z}_{c_j}
-        \leftarrow
-        1+
-        \frac{\beta}{K}
-        \sum_{k=1}^{K}
-        \Delta_{j,k}$.
-
-
-        % \For{$k=1,\ldots,K$}
-        %     \State Sample or store $J$ training timesteps
-        %     $\{t_{k}\}_{j=1}^{J}$ for sample $\mathbf{x}_0^k$.
-
-        %     \For{$j=1,\ldots$}
-        %         \State Add
-        %         $\left\{
-        %         c,\mathbf{x}_0^k,t_{k},
-        %         W(\mathbf{x}_0^k,c),\bar Z_c
-        %         \right\}$
-        %         to $\mathcal{D}$.
-        %     \EndFor
-        % \EndFor
-    \EndFor
-
-    \For{each minibatch
-    $\{
-    (c_i,\mathbf{x}_i^0,t_i,
-    W(\mathbf{x}_i^0,c_i),\bar Z_{c_i})
-    \}_{i=1}^{B}\sim\mathcal{D}$}
-
-        \State Sample
-        $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$
-        and set
-        $\mathbf{x}_i^{t_i}
-        \leftarrow
-        (1-t_i)\mathbf{x}_i^0
-        +
-        t_i\boldsymbol{\epsilon}_i$
-        for $i=1,\ldots,B$.
-
-        \State $\mathbf{v}_i \leftarrow \boldsymbol{\epsilon}_i - \mathbf{x}_i^0$ 
-
-        \State $\mathbf{v}_i^{\theta}
-        \leftarrow
-        \mathbf{v}_{\theta}
-        (\mathbf{x}_i^{t_i},c_i,t_i)$.
-
-        \State $\mathbf{v}_i^{\mathrm{old}}
-        \leftarrow
-        \mathbf{v}_{\theta_{\mathrm{old}}}
-        (\mathbf{x}_i^{t_i},c_i,t_i)$.
-
-        \State $\mathbf{v}_i^{\mathrm{ref}}
-        \leftarrow
-        \mathbf{v}_{\theta_{\mathrm{ref}}}
-        (\mathbf{x}_i^{t_i},c_i,t_i)$.
-
-        \State $\displaystyle
-        \widetilde{\alpha}_i
-        \leftarrow
-        \frac{1}{
-        \mathtt{sg}\!\left[
-        \operatorname{mean}
-        \left|
-        \mathbf v_i-\mathbf v_i^{\mathrm{\theta}}
-        \right|
-        \right]
-        +\epsilon_{\mathrm{alg}}}$
-        for $i=1,\ldots,B$.
-
-        \State $\displaystyle
-        \alpha_i
-        \leftarrow
-        \frac{\widetilde{\alpha}_i}{
-        B^{-1}\sum_{j=1}^{B}\widetilde{\alpha}_j
-        }$
-        for $i=1,\ldots,B$.
-
-        % \State $\widehat{\mathbf{x}}_{0,i}^{\theta}
-        % \leftarrow
-        % \mathbf{x}_i^{t_i}
-        % -
-        % t_i\mathbf{v}_i^{\theta}$.
-
-        % \State $\widehat{\mathbf{x}}_{0,i}^{\mathrm{old}}
-        % \leftarrow
-        % \mathbf{x}_i^{t_i}
-        % -
-        % t_i\mathbf{v}_i^{\mathrm{old}}$.
-
-        % \State $\displaystyle
-        % \mathbf{v}_{i}^{target}
-        % \leftarrow
-        % \mathbf{v}_i^{\mathrm{old}}
-        % +
-        % \frac{
-        % \beta
-        % \left(
-        % W(\mathbf{x}_i^0,c_i)-1
-        % \right)
-        % }{
-        % \bar{Z}
-        % }
-        % \frac{
-        % \mathbf{v}_i
-        % -
-        % \mathbf{v}_i^{\mathrm{old}}
-        % }{sg[mean |\mathbf{v}_i - \mathbf{v}_i^{\mathrm{old}}|] + \epsilon_{\mathrm{alg}}}$.
-
-
-        % \State $\displaystyle
-        % \mathcal{L}_{\mathrm{target}}
-        % \leftarrow
-        % \frac{1}{B}
-        % \sum_{i=1}^{B}
-        % t_i
-        % \frac{
-        % \beta
-        % W(\mathbf{x}_i^0,c_i)
-        % }{
-        % D\bar{Z}
-        % }
-        % \left\|
-        % \widehat{\mathbf{v}}_{i}^{\theta}
-        % -
-        % \mathbf{v}_{i}^{target}
-        % \right\|_2^2$.
-
-        \State $\displaystyle
-        \mathbf{v}_{i}^{target}
-        \leftarrow
-        \mathbf{v}_i^{\mathrm{old}}
-        +
-        \frac{
-        \beta
-        \left(
-        W(\mathbf{x}_i^0,c_i)-1
-        \right)
-        }{
-        \bar{Z}_{c_i}
-        }
-        \alpha_i
-        \left(
-        \mathbf{v}_i
-        -
-        \mathbf{v}_i^{\mathrm{old}}
-        \right)
-        .$
-
-
-        % \State $\displaystyle
-        % \mathcal{L}_{\mathrm{target}}
-        % \leftarrow
-        % \frac{1}{B}
-        % \sum_{i=1}^{B}
-        % t_i
-        % \frac{
-        % W(\mathbf{x}_i^0,c_i)
-        % }{
-        % \bar{Z}_{c_i}
-        % }
-        % \left\|
-        % \widehat{\mathbf{v}}_{i}^{\theta}
-        % -
-        % \mathbf{v}_{i}^{target}
-        % \right\|_2^2
-        % .$
-
-        \State $\displaystyle
-        \mathcal{L}_{\mathrm{target}}
-        \leftarrow
-        \frac{1}{B}
-        \sum_{i=1}^{B}
-        t_i
-        \left\|
-        \widehat{\mathbf{v}}_{i}^{\theta}
-        -
-        \mathbf{v}_{i}^{target}
-        \right\|_2^2
-        .$
-        
-        \State $\displaystyle
-        \mathcal{L}_{\mathrm{ref}}
-        \leftarrow
-        \frac{1}{B}
-        \sum_{i=1}^{B}
-        \left\|
-        \mathbf{v}_i^{\theta}
-        -
-        \mathbf{v}_i^{\mathrm{ref}}
-        \right\|_2^2$.
-
-        \State $\mathcal{L}
-        \leftarrow
-        \frac{1}{N_{acc}}(\Delta_{\mathrm{clip}} \mathcal{L}_{\mathrm{target}}
-        +
-        \lambda_{\mathrm{ref}}
-        \mathcal{L}_{\mathrm{ref}})$.
-
-        \State Backpropagate $\mathcal{L}$ and accumulate the gradients
-        without updating $\theta$.
-    \EndFor
-
-    \State Update $\theta$ once using the accumulated gradients.
-
-    \State $\theta_{\mathrm{old}}
-    \leftarrow
-    \eta\theta_{\mathrm{old}}
-    +(1-\eta)\theta$.
-\EndFor
-\end{algorithmic}
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{v}_\theta$
 \end{algorithm}
-
-
 
 
 \newpage            
@@ -1386,90 +1950,41 @@ Eval. Dataset & Model & GenEval & OCR & PickScore & ClipScore & HPSv2.1 & Aesthe
 \paragraph{Single Reward Baseline for Ours and DiffusionNFT}
 
 
-\begin{table*}[t]
-\centering
-\caption{\textbf{Evaluation results of FlowGRPO, DiffusionNFT, and Ours trained on single rewards.}
+\begin{table}[!htbp]
+    \centering
+    \renewcommand{\arraystretch}{1.1}
+    \setlength{\tabcolsep}{4pt} % 减小列间距，降低超宽程度
+    \footnotesize
+    \caption{Evaluation results of FlowGRPO, DiffusionNFT, and Ours trained on single rewards.
 All methods are initialized from the CFG-free SD3.5-M base model.
 \colorbox{indomgray}{Gray-colored} cells indicate in-domain reward performance.
 Following the original evaluation protocol, CFG is enabled when evaluating non-OCR rewards for OCR-trained models.}
-\label{tab:single_reward_eval}
-\setlength{\tabcolsep}{5.5pt}
-\renewcommand{\arraystretch}{0.95}
-\footnotesize
-\resizebox{\textwidth}{!}{
-\begin{tabular}{lc cccccc cc}
-\toprule
-\multirow{2}{*}{Model}
-& \multirow{2}{*}{\#Iter}
-& \multicolumn{2}{c}{Rule-Based}
-& \multicolumn{6}{c}{Model-Based} \\
-\cmidrule(lr){3-4}
-\cmidrule(lr){5-10}
-& & GenEval & OCR
-& PickScore & ClipScore & HPSv2.1 & Aesthetic & ImgRwd & UniRwd \\
-\midrule
-
-SD3.5-M (w/o CFG)
-& -- 
-& 0.24 & 0.12
-& 20.51 & 0.237 & 0.204 & 5.13 & -0.58 & 2.02 \\
-
-\quad + CFG
-& --
-& 0.63 & 0.59
-& 22.34 & 0.285 & 0.279 & 5.36 & 0.85 & 3.03 \\
-
-\midrule
-
-\multirow{3}{*}{\quad + FlowGRPO}
-& 4k
-& \cellgray 0.97 & 0.30
-& 21.78 & 0.277 & 0.248 & 5.15 & 0.74 & 2.87 \\
-
-& 1k
-& 0.66 & \cellgray 0.96
-& 21.94 & 0.280 & 0.257 & 5.18 & 0.31 & 2.86 \\
-
-& 4k
-& 0.54 & 0.60
-& \cellgray 23.62 & 0.257 & 0.295 & 6.42 & 1.17 & 3.17 \\
-
-\midrule
-
-\multirow{3}{*}{\quad + DiffusionNFT}
-& 1k
-& \cellgray 0.98 & 0.36
-& 21.92 & 0.271 & 0.251 & 5.33 & 0.68 & 2.91 \\
-
-& 150
-& 0.54 & \cellgray 0.97
-& 21.63 & 0.281 & 0.246 & 5.19 & 0.37 & 2.81 \\
-
-& 2k
-& 0.53 & 0.64
-& \cellgray 24.03 & 0.270 & 0.315 & 6.17 & 1.29 & 3.40 \\
-
-\midrule
-
-\multirow{3}{*}{\quad + Ours}
-& -
-& \cellgray - & -
-& - & - & - & - & - & - \\
-
-& -
-& - & \cellgray -
-& - & - & - & - & - & - \\
-
-& -
-& - & -
-& \cellgray - & - & - & - & - & - \\
-
-\bottomrule
-\end{tabular}
-}
-\end{table*}
-
-
+    \label{tab:single-sd}
+    \resizebox{\textwidth}{!}{%
+        \begin{tabular}{lccccccccc}
+            \toprule
+            \multirow{2}{*}{Method} & \multirow{2}{*}{\#Steps} & \multicolumn{2}{c}{Rule-Based} & \multicolumn{6}{c}{Model-Based} \\ 
+            \cmidrule(lr){3-4} \cmidrule(r){5-10} 
+            & & GenEval & OCR  & PickScore & CLIPScore & HPSv2.1 & Aesthetic & ImgRwd & UniRwd \\ 
+            \midrule
+            SD 3.5 M (w/o CFG) & — & 0.24 & 0.12 & 0.2051 & 0.237 & 0.204 & 5.13 & -0.58 & 2.02 \\
+            + CFG & — & 0.63 & 0.59 & 0.2234 & 0.285 & 0.279 & 5.36 & 0.85 & 3.03 \\ 
+            \midrule
+            + FlowGRPO & 4K & \cellcolor{indomgray}0.97 & 0.30 & 0.2178 & 0.277 & 0.248 & 5.15 & 0.74 & 2.87 \\
+            + DiffusionNFT & 1K & \cellcolor{indomgray}0.98 & 0.36 & 0.2192 & 0.271 & 0.251 & 5.33 & 0.68 & 2.91 \\
+            + Ours & - & \cellcolor{indomgray}- & - & - & - & - & - & - & - \\ 
+            \midrule
+            + FlowGRPO & 1K & 0.66 & \cellcolor{indomgray}0.96 & 0.2194 & 0.280 & 0.257 & 5.18 & 0.31 & 2.86 \\
+            + DiffusionNFT & 150 & 0.54 & \cellcolor{indomgray}0.97 & 0.2163 & 0.281 & 0.246 & 5.19 & 0.37 & 2.81 \\ 
+            + Ours & - & - & \cellcolor{indomgray}- & - & - & - & - & - & - \\ 
+            \midrule
+            + FlowGRPO & 4K & 0.54 & 0.60 & \cellcolor{indomgray}0.2362 & 0.257 & 0.295 & 6.42 & 1.17 & 3.17 \\
+            + DiffusionNFT & 2K & 0.53 & 0.64 & \cellcolor{indomgray}0.2403 & 0.270 & 0.315 & 6.17 & 1.29 & 3.40 \\
+            + Ours & - & - & - & \cellcolor{indomgray}- & - & - & - & - & - \\
+            \bottomrule
+        \end{tabular}%
+    }
+\end{table}
 
 
 \subsection{Ablation study}
@@ -1539,7 +2054,7 @@ ablate the choice of rollout policy ($\pi_{\theta}$ or $\pi_{old}$).
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.75\linewidth]{imgs/ablation-rollout-policy.png}
+    \includegraphics[width=0.9\linewidth]{imgs/ablation-rollout-policy.png}
     \caption{Ablation for choice of rollout policy, green for $\pi_{old}$ and yellow for $\pi_{\theta}$.}
     \label{fig:placeholder}
 \end{figure}
@@ -1549,69 +2064,6 @@ ablate the choice of rollout policy ($\pi_{\theta}$ or $\pi_{old}$).
 
 
 
-
-
-\subsubsection{Ablation for $\alpha_t^{\mathrm{o}}(\mathbf x_t,\mathbf z)$}
-
-
-\begin{equation}
-\tilde{\alpha}_i
-=
-\frac{1}{
-\operatorname{sg}\!\left(
-\operatorname{mean}_{\mathrm{feat}}
-\left[
-\left|
-\mathbf{v}_i-\mathbf{v}^{\theta}_i
-\right|
-\right]
-\right)
-},
-\qquad
-\alpha_i
-=
-\frac{
-\tilde{\alpha}_i
-}{
-\frac{1}{B}
-\sum_{j=1}^{B}
-\tilde{\alpha}_j
-}.
-\end{equation}
-
-\begin{equation}
-\tilde{\alpha}'_i
-=
-\frac{1}{
-\operatorname{sg}\!\left(
-\operatorname{mean}_{\mathrm{feat}}
-\left[
-\left|
-\mathbf{v}_i-\mathbf{v}^{old}_i
-\right|
-\right]
-\right)
-},
-\qquad
-\alpha'_i
-=
-\frac{
-\tilde{\alpha}'_i
-}{
-\frac{1}{B}
-\sum_{j=1}^{B}
-\tilde{\alpha}'_j
-}.
-\end{equation}
-
-
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.75\linewidth]{imgs/ablation-alpha.png}
-    \caption{Ablation for $\alpha_t^{\mathrm{o}}(\mathbf x_t,\mathbf z)$; purple: $\alpha_i$ and black: $\alpha'_i$.}
-    \label{fig:ablation-alpha}
-\end{figure}
 
 
 
@@ -1683,7 +2135,7 @@ with replacement. We evaluate two resolutions:
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.75\linewidth]{imgs/ablation-timesteps.png}
+    \includegraphics[width=0.9\linewidth]{imgs/ablation-timesteps.png}
     \caption{Ablation on forward timestep sampling}
     \label{fig:ablation-timesteps}
 \end{figure}
@@ -1692,51 +2144,49 @@ with replacement. We evaluate two resolutions:
 
 The original training objective is
 
-$$
+\begin{equation}
 \mathcal{L}
 =
 \left(
 \Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{target}}
 +
 \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}}
+\label{eq:origin clip factor}
 \right),
-$$
+\end{equation}
 
 where $\Delta_{\mathrm{clip}}=5$ and $\lambda_{\mathrm{ref}}=10^{-4}$. Since training uses AdamW, scaling the entire loss by a positive constant approximately preserves the parameter update. Therefore, dividing the objective by $\Delta_{\mathrm{clip}}$ gives the approximately equivalent formulation
 
-$$
-\mathcal{L}
+\begin{equation}
+    \mathcal{L}
 =\mathcal{L}_{\mathrm{target}}
 +
 \frac{\lambda_{\mathrm{ref}}}{\Delta_{\mathrm{clip}}}\mathcal{L}_{\mathrm{ref}},
-$$
-
+\label{eq:move clip factor}
+\end{equation}
 
 We further evaluate a direct removal of $\Delta_{\mathrm{clip}}$ without rescaling $\lambda_{\mathrm{ref}}$:
 
-$$
-\mathcal{L}
+\begin{equation}
+    \mathcal{L}
 =
 \mathcal{L}_{\mathrm{target}}
 +
 \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}}.
-$$
+\label{eq:omit clip factor}
+\end{equation}
+
 
 We compare these formulations under the single-reward GenEval setting to examine whether the explicit mass-shift-clip scaling is necessary and how the resulting change in target--reference balance affects training.
 
 
+
 \begin{figure}[H]
     \centering
-    \fbox{
-        \parbox[c][4cm][c]{0.9\linewidth}{
-            \centering
-            \textit{Experimental results to be updated.}
-        }
-    }
-    \caption{Ablation results for the mass-shift clip.}
-    \label{fig:ablation-mass-shift-clip}
+    \includegraphics[width=1.0\linewidth]{imgs/ablation-mass-shift-clip-factor.png}
+    \caption{Ablation results for the mass-shift clip factor. Black for Equation~\ref{eq:origin clip factor}, red for Equation~\ref{eq:move clip factor} and blue for Equation~\ref{eq:omit clip factor}.}
+    \label{fig:ablation-mass-shift-clip-factor}
 \end{figure}
-
 
 
 \subsubsection{Only Positive and Negative}
@@ -1770,15 +2220,204 @@ W_i
 \end{align}
 
 
+\noindent\textbf{Adjusting $\beta$ for positive and negative advantage subsets.}
+The mixture coefficient $\beta$ in the partial rollout coverage model
+is defined as the probability mass of the old distribution that is
+covered by the observed rollout samples. In the full rollout case,
+$\beta_{\mathrm{all}}$ denotes the coverage of the complete set of $K$
+samples. In many settings we take $\beta_{\mathrm{all}}=1$, which means
+that the observed rollout samples are assumed to represent the entire
+old distribution up to the empirical approximation.
 
+Under $\beta_{\mathrm{all}}=1$, the old distribution is approximated as
+\begin{align}
+\pi^{\mathrm{o}}(\mathbf z)
+\approx
+\beta_{\mathrm{all}}\,\pi_{\mathcal{D}}(\mathbf z)
+=
+\frac{1}{K}\sum_{i=1}^{K}\delta_{\mathbf z_i},
+\end{align}
+so each observed sample carries an equal probability mass
+$1/K$.
+
+Now suppose we select a subset $S\subseteq\{1,\dots,K\}$ of size
+$K_S$, for example the samples with positive advantage ($A>0$) or
+negative advantage ($A<0$). The remaining $K-K_S$ samples are not
+discarded; they are treated as part of the unobserved background
+population. Thus the old distribution should be re-written as
+\begin{align}
+\pi^{\mathrm{o}}(\mathbf z)
+=
+(1-\beta_S)\,\pi_{\mathrm{bg}}(\mathbf z)
++
+\beta_S\,\pi_{\mathcal{S}}(\mathbf z),
+\end{align}
+where $\pi_{\mathcal{S}}$ is the empirical distribution over the
+selected subset, and $\beta_S$ is the probability mass covered by that
+subset.
+
+Since the full rollout set was assumed to cover mass
+$\beta_{\mathrm{all}}$, and each of the $K$ original samples carries
+mass $\beta_{\mathrm{all}}/K$, the selected subset covers mass
+\begin{align}
+\beta_S
+=
+\beta_{\mathrm{all}}\,\frac{K_S}{K}.
+\end{align}
+When $\beta_{\mathrm{all}}=1$, this reduces to
+\begin{align}
+\boxed{
+\beta_S
+=
+\frac{K_S}{K}
+}.
+\end{align}
+Therefore, if only positive-advantage samples are used,
+$\beta_{\mathrm{pos}}=K_{\mathrm{pos}}/K$; if only negative-advantage
+samples are used, $\beta_{\mathrm{neg}}=K_{\mathrm{neg}}/K$.
+
+\begin{itemize}
+    \item \textbf{black curve}: Algorithm~\ref{alg:velocity-add-delete} baseline;
+    \item \textbf{blue curve}: Only positive. Line 12 in Algorithm~\ref{alg:velocity-add-delete} has been changed to $\Delta_{j,k}
+            \leftarrow
+            \frac{1}{\Delta_{\mathrm{clip}}}
+            \operatorname{clip}
+            \left(
+            \frac{R_{j,k}-\bar R_{c_j}}{\sigma_R},
+            0,
+            \Delta_{\mathrm{clip}}
+            \right)$; the rest remains unchanged. That is, normalization and loss calculation still use the samples obtained from the entire rollout.
+    \item \textbf{red curve}: Only negative. Line 12 in Algorithm~\ref{alg:velocity-add-delete} has been changed to $\Delta_{j,k}
+            \leftarrow
+            \frac{1}{\Delta_{\mathrm{clip}}}
+            \operatorname{clip}
+            \left(
+            \frac{R_{j,k}-\bar R_{c_j}}{\sigma_R},
+            -\Delta_{\mathrm{clip}},
+            0
+            \right)$; the rest remains unchanged. That is, normalization and loss calculation still use the samples obtained from the entire rollout.
+    \item \textbf{green curve}: Only positive. Use Algorithm~\ref{alg:velocity-subset} but $\beta=1.0$. That is, normalization and loss calculation use the samples obtained from the positive.
+     \item \textbf{purple curve}: Only negative. Use Algorithm~\ref{alg:velocity-subset} but $\beta=1.0$. That is, normalization and loss calculation use the samples obtained from the negative.    
+\end{itemize}
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.75\linewidth]{imgs/ablation-pos&neg-only.png}
-    \caption{Abaltion for optimizing with only positive or negative samples. Purple for positive and green for negative. (Training mean reward curves)}
-    \label{fig:ablation-pos&neg-only}
+    \includegraphics[width=1.0\linewidth]{imgs/onlyposorneg.png}
+    \caption{Ablation results for the Only Positive and Negative.}
+    \label{fig:ablation-onlypos-neg}
 \end{figure}
 
+\begin{algorithm}
+\caption{Reinforced Flow Matching with Subset Selection}
+\label{alg:velocity-subset}
+\begin{algorithmic}[1]
+\Require Initial model $\theta_0$, reward function $R$, prompt distribution
+$p(c)$, Total prompts each training iteration $C$, rollout size for each prompt $K$, batch size $B$, total size $D = KC$, 
+mass-shift clip $\Delta_{\mathrm{clip}}$, reference regularization
+$\lambda_{\mathrm{ref}}$, EMA rate $\eta$, reward-scale constant $\epsilon_R$, and numerical constant $\epsilon_{\mathrm{alg}}$.
+\State $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}
+\leftarrow\theta_0$.
+
+\For{each training iteration}
+    \For{each prompt $c_j\sim p(c)$ (Total C prompts each iteration.)}
+        \State Sample $K$ clean rollout samples
+        $\{\mathbf{x}_{0}^{j,k}\}_{k=1}^{K}$
+        with $\theta$ conditioned on $c_j$.
+        \State Compute rewards
+        $R_{j,k}\leftarrow R(\mathbf{x}_{0}^{j,k},c_j)$
+        for $k=1,\ldots,K$.
+    \EndFor
+
+    \State Compute the prompt-wise reward means
+    $\bar R_{c_j}\leftarrow K^{-1}\sum_{k=1}^{K}R_{j,k}$
+    for $j=1,\ldots,C$.
+    \State Compute the global reward mean
+    $\bar R\leftarrow D^{-1}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k}$.
+    \State Compute the global reward scale
+    $\sigma_R\leftarrow
+    \sqrt{D^{-1}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k}-\bar R)^2}
+    +\epsilon_R$.
+
+    \For{each prompt $c_j$, $j=1,\ldots,C$}
+        \For{$k=1,\ldots,K$}
+            \State $\Delta_{j,k}
+            \leftarrow
+            \frac{1}{\Delta_{\mathrm{clip}}}
+            \operatorname{clip}\left(
+            \frac{R_{j,k}-\bar R_{c_j}}{\sigma_R},
+            -\Delta_{\mathrm{clip}},\Delta_{\mathrm{clip}}\right)$.
+        \EndFor
+        
+        \State \textbf{Select subset} $S_j$ based on the sign of $\Delta$:
+        
+        \State 
+        $\displaystyle
+        S_j =
+        \begin{cases}
+        \{k : \Delta_{j,k}>0\}, & \text{positive-only},\\
+        \{k : \Delta_{j,k}<0\}, & \text{negative-only}.
+        \end{cases}$
+        \State $K_{c_j}^{S}\leftarrow |S_j|$. % <-- changed
+        
+        % \State Set $\beta_{c_j}^{S} \leftarrow K_{c_j}^{S}/K$. % <-- changed
+        \State Set $\beta_{c_j}^{S} 1.0$. % <-- changed
+        \State $\displaystyle
+        \bar Z_{c_j}^{S}
+        \leftarrow
+        1 + \frac{1}{K_{c_j}^{S}}\sum_{k\in S_j} \Delta_{j,k}$. % <-- changed
+
+        \For{$k\in S_j$} % <-- changed: only selected samples enter the buffer
+            \State $W(\mathbf{x}_{0}^{j,k},c_j) \leftarrow 1+\Delta_{j,k}$.
+            \State Add $(c_j, \mathbf{x}_{0}^{j,k}, W, \bar Z_{c_j}^{S}, \beta_{c_j}^{S})$ to $\mathcal{D}^{S}$.
+        \EndFor
+    \EndFor
+
+    \For{each minibatch
+    $\{(c_i,\mathbf{x}_i^0,t_i,W_i,\bar Z_{c_i}^{S},\beta_{c_i}^{S})\}_{i=1}^{B}\sim\mathcal{D}^{S}$} % <-- changed: sample only from selected subset
+        \State Sample $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$
+        and set $\mathbf{x}_i^{t_i}\leftarrow (1-t_i)\mathbf{x}_i^0 + t_i\boldsymbol{\epsilon}_i$.
+        \State $\mathbf{v}_i \leftarrow \boldsymbol{\epsilon}_i - \mathbf{x}_i^0$.
+        \State $\mathbf{v}_i^{\theta}\leftarrow \mathbf{v}_{\theta}(\mathbf{x}_i^{t_i},c_i,t_i)$.
+        \State $\mathbf{v}_i^{\mathrm{old}}\leftarrow \mathbf{v}_{\theta_{\mathrm{old}}}(\mathbf{x}_i^{t_i},c_i,t_i)$.
+        \State $\mathbf{v}_i^{\mathrm{ref}}\leftarrow \mathbf{v}_{\theta_{\mathrm{ref}}}(\mathbf{x}_i^{t_i},c_i,t_i)$.
+
+        \State $\widetilde{\alpha}_i\leftarrow \frac{1}{\mathtt{sg}[\operatorname{mean}|\mathbf v_i-\mathbf v_i^{\theta}|]+\epsilon_{\mathrm{alg}}}$.
+        \State $\alpha_i\leftarrow \frac{\widetilde{\alpha}_i}{B^{-1}\sum_{j=1}^{B}\widetilde{\alpha}_j}$.
+
+        \State $\mathbf{v}_{i}^{target}
+        \leftarrow
+        \mathbf{v}_i^{\mathrm{old}}
+        +
+        \beta_{c_i}^{S}
+        \left(
+        \frac{W_i}{\bar Z_{c_i}^{S}} - 1
+        \right)
+        \alpha_i
+        (\mathbf{v}_i - \mathbf{v}_i^{\mathrm{old}})$. % <-- changed: use subset-specific β and Z
+
+        \State $\mathcal{L}_{\mathrm{target}}
+        \leftarrow
+        \frac{1}{B}\sum_{i=1}^{B} t_i
+        \|\mathbf{v}_i^{\theta} - \mathbf{v}_{i}^{target}\|_2^2$.
+
+        \State $\mathcal{L}_{\mathrm{ref}}
+        \leftarrow
+        \frac{1}{B}\sum_{i=1}^{B}
+        \|\mathbf{v}_i^{\theta} - \mathbf{v}_i^{\mathrm{ref}}\|_2^2$.
+
+        \State $\mathcal{L}
+        \leftarrow
+        \frac{1}{N_{acc}}(\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{target}}
+        + \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})$.
+
+        \State Backpropagate $\mathcal{L}$ and accumulate gradients without updating $\theta$.
+    \EndFor
+
+    \State Update $\theta$ once using the accumulated gradients.
+    \State $\theta_{\mathrm{old}}\leftarrow \eta\theta_{\mathrm{old}}+(1-\eta)\theta$.
+\EndFor
+\end{algorithmic}
+\end{algorithm}
 
 
 \subsubsection{Asymmetric Scaling for Positive and Negative Mass Shifts}
@@ -1800,6 +2439,7 @@ global reward mean and population standard deviation be
 }
 +\epsilon_R.
 \end{align}
+
 The same $\sigma_R$ is shared by every prompt group in the iteration, while
 each reward is centered by its prompt-group mean
 $\bar R_{c_j}=K^{-1}\sum_{k=1}^{K}R_{j,k}$.
@@ -1838,56 +2478,72 @@ is
 \end{cases}
 \end{equation}
 
-We consider the following candidate values for the scaling factor:
+We evaluate the following values of the scaling factor:
 
 \begin{equation}
 c \in
-\left{
-\frac{1}{2},
+\left\{
 \frac{1}{\sqrt{2}},
-1,
-\sqrt{2},
-2
-\right}.
+0.9,
+1.0,
+1.11,
+\sqrt{2}
+\right\}.
 \end{equation}
 
 Here, $c=1$ exactly recovers the symmetric mass-shift construction under the
 same prompt centering and global reward scale. Values $c>1$ emphasize negative
 mass shifts, whereas values $c<1$ emphasize positive mass shifts.
 
-\paragraph{Motivation and hypothesis.}
-Positive and negative mass shifts need not be equally reliable: a positive
-sample provides a concrete direction toward a successful mode, whereas pushing
-away from a negative sample is less specific because the sample may fail in
-many different ways. Excessive negative scaling may therefore introduce noisy
-updates or suppress useful modes. We consequently expect moderate positive
-emphasis to be more robust, with $c=1/\sqrt{2}$ the most promising candidate;
-$c=1/2$ may amplify and clip positive shifts too aggressively, while $c>1$ may
-be preferable only when failures are systematic and need stronger removal.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1.0\linewidth]{imgs/ablation-mass-shift-sacling.png}
+    \caption{
+    Ablation results for asymmetric scaling of positive and negative mass
+    shifts. The curves for
+    $c=\frac{1}{\sqrt{2}}, 0.9, 1.0, 1.11,$ and $\sqrt{2}$
+    are shown in purple, green, black, orange, and blue, respectively.
+    }
+    \label{fig:asymmetric_mass_shift_ablation}
+\end{figure}
 
 
 
 
 \begin{figure}[H]
     \centering
-    \fbox{
-        \parbox[c][4cm][c]{0.9\linewidth}{
-            \centering
-            \textit{Experimental results to be updated.}
-        }
-    }
-    \caption{Ablation results for asymmetric scaling of positive and negative mass shifts with different values of $c$.}
-    \label{fig:asymmetric_mass_shift_ablation}
+    \includegraphics[width=1\linewidth]{imgs/assymmetric-sclineg-fixshift.png}
+    \caption{ Ablation results for asymmetric scaling of positive and negative mass
+    shifts. The curves for
+    $c=0.5, \frac{1}{\sqrt{2}}, 1.0, \sqrt{2}$ and $2.0$
+    are shown in blue, orange, black, green, and yellow, respectively, and red line is scale both side with $\Delta_i * 2.0$.}
+    \label{fig:assymmetric-sclineg-fixshift}
 \end{figure}
 
 
 
-\subsubsection{Per prompt reward distribution observation}
+
+% \subsubsection{Per prompt reward distribution observation}
 
 
 
+% \begin{figure}[h]
+%     \centering
+%     \includegraphics[width=0.75\linewidth]{imgs/prompt_mean_distribution.png}
+%     \caption{Distribution of mean GenEval rewards across training steps. Each point shows the average reward of 24 samples for one prompt.
+%   The boxes contain the middle 50\% of prompts, the red lines show the median, and the whiskers extend to the most extreme values within
+%   1.5 times the box length.}
+%     \label{fig:prompt_mean_distribution}
+% \end{figure}
 
-
+% \begin{figure}[h]
+%     \centering
+%     \includegraphics[width=1.0\linewidth]{imgs/steps_random_5_prompt_geneval_distributions.png}
+%     \caption{Per-sample GenEval reward distributions for five randomly selected prompt groups at ten uniformly spaced training steps (0–
+%   36). Each prompt group contains 24 samples; dots show individual rewards, boxes indicate the interquartile range, orange lines mark
+%   medians, and red diamonds denote means.}
+%     \label{fig:steps_random_5_prompt_geneval_distributions}
+% \end{figure}
 
 
 \section{Conclusion}
@@ -2040,154 +2696,442 @@ AWM use MSE regularization with reference model prediction.
 \subsubsection{Flow-GRPO}
 \label{sec:flow_grpo}
 
-Flow-GRPO starts from an policy-gradient objective over stochastic
-denoising transitions. For one transition from timestep $t$ to $s$, the
-sample-level objective (the following derivation corresponds to the first term in Eq.~\ref{eq:unified_form}) can be written as
-\begin{equation}
-\ell_i^{\mathrm{FG}}(\theta)
-=
--
-A_i
-\rho_i(\theta),
-\qquad
-\rho_i(\theta)
-=
-\frac{
-p_{\theta}(\mathbf{x}_i^s\mid \mathbf{x}_i^t,c_i)
-}{
-p_{\theta_{\mathrm{old}}}(\mathbf{x}_i^s\mid \mathbf{x}_i^t,c_i)
-},
-\end{equation}
-where $A_i$ is the trajectory-level advantage. Assume that the reverse
-transition is modeled as a Gaussian policy with shared covariance:
-\begin{equation}
-p_{\theta}(\mathbf{x}^{s}_{i}\mid \mathbf{x}^{t}_{i},c_i)
-=
-\mathcal{N}
-\left(
-\mathbf{x}^{s}_{i};
-a_t\mathbf{x}^{t}_{i}+b_t\mathbf{v}_i^\theta,
-\eta_t^2 I
-\right)
-\end{equation}
-For a fixed sampled transition $(\mathbf{x}_i^t,\mathbf{x}_i^s)$, this Gaussian
-mean induces a pseudo target:
-\begin{equation}
-\label{eq:flow_grpo_pseudo_target_short}
-\mathbf{\tau}_i^{\mathrm{FG}}
-=
-\frac{\mathbf{x}^{s}_{i}-a_t\mathbf{x}^{t}_{i}}{b_t}
-\end{equation}
-Since
-\begin{equation}
-\mathbf{x}^{s}_{i}
-=
-a_t\mathbf{x}^{t}_{i}
-+
-b_t\mathbf{v}_i^{\mathrm{old}}
-+
-\eta_t\boldsymbol{\epsilon}_i,
-\end{equation}
-the pseudo target can also be written as
-\begin{equation}
-\label{eq:flow_grpo_target_short}
-\mathbf{\tau}_i^{\mathrm{FG}}
-=
-\mathbf{v}_i^{\mathrm{old}}
-+
-\frac{\eta_t}{b_t}
-\boldsymbol{\epsilon}_i .
-\end{equation}
-Thus, the Flow-GRPO target is a stochastic noise add velocity target induced by the sampled old-policy
-transition.
+% Flow-GRPO starts from an policy-gradient objective over stochastic
+% denoising transitions. For one transition from timestep $t$ to $s$, the
+% sample-level objective (the following derivation corresponds to the first term in Eq.~\ref{eq:unified_form}) can be written as
+% \begin{equation}
+% \ell_i^{\mathrm{FG}}(\theta)
+% =
+% -
+% A_i
+% \rho_i(\theta),
+% \qquad
+% \rho_i(\theta)
+% =
+% \frac{
+% p_{\theta}(\mathbf{x}_i^s\mid \mathbf{x}_i^t,c_i)
+% }{
+% p_{\theta_{\mathrm{old}}}(\mathbf{x}_i^s\mid \mathbf{x}_i^t,c_i)
+% },
+% \end{equation}
+% where $A_i$ is the trajectory-level advantage. Assume that the reverse
+% transition is modeled as a Gaussian policy with shared covariance:
+% \begin{equation}
+% p_{\theta}(\mathbf{x}^{s}_{i}\mid \mathbf{x}^{t}_{i},c_i)
+% =
+% \mathcal{N}
+% \left(
+% \mathbf{x}^{s}_{i};
+% a_t\mathbf{x}^{t}_{i}+b_t\mathbf{v}_i^\theta,
+% \eta_t^2 I
+% \right)
+% \end{equation}
+% For a fixed sampled transition $(\mathbf{x}_i^t,\mathbf{x}_i^s)$, this Gaussian
+% mean induces a pseudo target:
+% \begin{equation}
+% \label{eq:flow_grpo_pseudo_target_short}
+% \mathbf{\tau}_i^{\mathrm{FG}}
+% =
+% \frac{\mathbf{x}^{s}_{i}-a_t\mathbf{x}^{t}_{i}}{b_t}
+% \end{equation}
+% Since
+% \begin{equation}
+% \mathbf{x}^{s}_{i}
+% =
+% a_t\mathbf{x}^{t}_{i}
+% +
+% b_t\mathbf{v}_i^{\mathrm{old}}
+% +
+% \eta_t\boldsymbol{\epsilon}_i,
+% \end{equation}
+% the pseudo target can also be written as
+% \begin{equation}
+% \label{eq:flow_grpo_target_short}
+% \mathbf{\tau}_i^{\mathrm{FG}}
+% =
+% \mathbf{v}_i^{\mathrm{old}}
+% +
+% \frac{\eta_t}{b_t}
+% \boldsymbol{\epsilon}_i .
+% \end{equation}
+% Thus, the Flow-GRPO target is a stochastic noise add velocity target induced by the sampled old-policy
+% transition.
 
-Substituting Eq.~\ref{eq:flow_grpo_pseudo_target_short} into the Gaussian
-likelihood gives
+% Substituting Eq.~\ref{eq:flow_grpo_pseudo_target_short} into the Gaussian
+% likelihood gives
+% \begin{equation}
+% \rho_i(\theta)
+% =
+% C_i
+% \exp
+% \left[
+% -
+% \frac{b_t^2}{2\eta_t^2}
+% \left\|
+% \mathbf{v}_i^\theta
+% -
+% \mathbf{\tau}_i^{\mathrm{FG}}
+% \right\|^2
+% \right],
+% \end{equation}
+% where
+% \begin{equation}
+% C_i
+% =
+% \exp
+% \left[
+% \frac{b_t^2}{2\eta_t^2}
+% \left\|
+% \mathbf{v}_i^{\mathrm{old}}
+% -
+% \mathbf{\tau}_i^{\mathrm{FG}}
+% \right\|^2
+% \right]
+% \end{equation}
+% is independent of $\theta$. Therefore, the Flow-GRPO objective can be
+% viewed as an advantage-weighted function of the squared distance between
+% $\mathbf{v}_i^\theta$ and the transition-induced target
+% $\mathbf{\tau}_i^{\mathrm{FG}}$.
+
+% To connect it with the unified target-matching form, consider the gradient of
+% the sample objective with respect to the velocity prediction:
+% \begin{equation}
+% \nabla_{\mathbf{v}_i^\theta}
+% \ell_i^{\mathrm{FG}}(\theta)
+% =
+% 2
+% \left(
+% A_i
+% \frac{b_t^2}{2\eta_t^2}
+% \rho_i(\theta)
+% \right)
+% \left(
+% \mathbf{v}_i^\theta
+% -
+% \mathbf{\tau}_i^{\mathrm{FG}}
+% \right).
+% \end{equation}
+% This has the same local gradient direction as a weighted squared-error objective
+% \begin{equation}
+% \kappa_i
+% \left\|
+% \mathbf{v}_i^\theta
+% -
+% \mathbf{\tau}_i^{\mathrm{FG}}
+% \right\|^2.
+% \end{equation}
+
+
+% In this sense, Flow-GRPO fits the unified form in
+% Eq.~\ref{eq:unified_form} with
+% \begin{equation}
+% \mathbf{\tau}_i
+% =
+% \mathbf{v}_i^{\mathrm{old}}
+% +
+% \frac{\eta_t}{b_t}
+% \boldsymbol{\epsilon}_i ,
+% \qquad
+% \kappa_i
+% =
+% A_i
+% \frac{b_t^2}{2\eta_t^2} \rho_i(\theta).
+% \end{equation}
+% The sign of $A_i$ determines whether the model is pulled toward or pushed away
+% from the pseudo target. A positive advantage makes gradient descent move
+% $\mathbf{v}_i^\theta$ toward the sampled transition-level target, whereas a
+% negative advantage reverses this direction. The main distinction from clean
+% flow-matching objectives is that this target contains transition noise through
+% $\frac{\eta_t}{b_t}\boldsymbol{\epsilon}_i$, rather than being defined by the
+% clean residual $\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}$.
+
+We now recast Flow-GRPO in the unified velocity-target form of
+Eq.~\eqref{eq:unified_form}. We keep the sample index $i$ and timestep $t$
+fixed and temporarily omit the group average over $i$ and the time average
+over $t$, which are constant with respect to the local loss decomposition.
+
+
+Flow-GRPO optimizes
 \begin{equation}
-\rho_i(\theta)
+\label{eq:flowgrpo_per_sample_obj}
+\mathcal{J}_i(\theta)
 =
-C_i
-\exp
-\left[
+\min\bigl(r^i_t(\theta),
+\operatorname{clip}(r^i_t(\theta),1-\varepsilon,1+\varepsilon)\bigr)
+\hat{A}^i_t
 -
-\frac{b_t^2}{2\eta_t^2}
-\left\|
-\mathbf{v}_i^\theta
--
-\mathbf{\tau}_i^{\mathrm{FG}}
-\right\|^2
-\right],
+\beta\,
+D_{\mathrm{KL}}\bigl(\pi_\theta(\cdot\mid \vx^i_t,\vc)
+\,\|\,
+\pi_{\mathrm{ref}}(\cdot\mid \vx^i_t,\vc)\bigr),
 \end{equation}
 where
 \begin{equation}
-C_i
+r^i_t(\theta)
 =
-\exp
+\frac{p_\theta(\vx^i_{t-1}\mid \vx^i_t,\vc)}
+{p_{\theta_{\mathrm{old}}}(\vx^i_{t-1}\mid \vx^i_t,\vc)} .
+\end{equation}
+In the unclipped region, the first term reduces to
+$r^i_t(\theta)\,\hat{A}^i_t$. The following derivation is based on this
+local approximation, which is exact for the gradient when the ratio lies
+inside $[1-\varepsilon,1+\varepsilon]$.
+
+
+Flow-GRPO replaces the deterministic flow ODE with the reverse SDE
+\begin{equation}
+\dd \vx_t
+=
 \left[
-\frac{b_t^2}{2\eta_t^2}
-\left\|
-\mathbf{v}_i^{\mathrm{old}}
+\vv_t(\vx_t)
 -
-\mathbf{\tau}_i^{\mathrm{FG}}
-\right\|^2
-\right]
+\frac{\sigma_t^2}{2}\nabla\log p_t(\vx_t)
+\right]\dd t
++
+\sigma_t\,\dd \vw .
 \end{equation}
-is independent of $\theta$. Therefore, the Flow-GRPO objective can be
-viewed as an advantage-weighted function of the squared distance between
-$\mathbf{v}_i^\theta$ and the transition-induced target
-$\mathbf{\tau}_i^{\mathrm{FG}}$.
-
-To connect it with the unified target-matching form, consider the gradient of
-the sample objective with respect to the velocity prediction:
+For rectified flow, this becomes
 \begin{equation}
-\nabla_{\mathbf{v}_i^\theta}
-\ell_i^{\mathrm{FG}}(\theta)
+\dd \vx_t
 =
-2
-\left(
-A_i
-\frac{b_t^2}{2\eta_t^2}
-\rho_i(\theta)
-\right)
-\left(
-\mathbf{v}_i^\theta
--
-\mathbf{\tau}_i^{\mathrm{FG}}
-\right).
+\left[
+\vv_t(\vx_t)
++
+\frac{\sigma_t^2}{2t}\bigl(\vx_t+(1-t)\vv_t(\vx_t)\bigr)
+\right]\dd t
++
+\sigma_t\,\dd \vw .
 \end{equation}
-This has the same local gradient direction as a weighted squared-error objective
+Using the Euler--Maruyama discretization with step size $\Delta t$, the
+policy is an isotropic Gaussian:
 \begin{equation}
-\kappa_i
+\label{eq:flowgrpo_update_rule}
+\vx_{t+\Delta t}
+=
+\vx_t
++
+\Delta t
+\left[
+\frac{\sigma_t^2}{2t}\vx_t
++
+\left(1+\frac{\sigma_t^2(1-t)}{2t}\right)\vv_\theta(\vx_t,t,\vc)
+\right]
++
+\sigma_t\sqrt{\Delta t}\,\epsilon,
+\qquad
+\epsilon\sim\mathcal N(0,I).
+\end{equation}
+Define
+\begin{equation}
+c_t
+=
+1+\frac{\sigma_t^2(1-t)}{2t},
+\qquad
+d_t
+=
+\frac{\sigma_t^2}{2t}.
+\end{equation}
+Then the conditional mean is
+\begin{equation}
+\bar{\vx}_{t+\Delta t,\theta}
+=
+\vx_t
++
+\Delta t\bigl(d_t\vx_t+c_t\vv_\theta\bigr),
+\end{equation}
+and the policy is
+\begin{equation}
+\pi_\theta(\vx_{t-1}\mid \vx_t,\vc)
+=
+\mathcal N\bigl(\vx_{t-1};\,
+\bar{\vx}_{t+\Delta t,\theta},\,
+\sigma_t^2\Delta t\,I\bigr).
+\end{equation}
+
+The log-ratio is
+\begin{equation}
+\log r^i_t(\theta)
+=
+-\frac{1}{2\sigma_t^2\Delta t}
+\left[
+\left\|\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}\right\|^2
+-
+\left\|\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta_{\mathrm{old}}}\right\|^2
+\right].
+\end{equation}
+Since $\vx_{t-1}$ and the old mean are independent of $\theta$,
+\begin{equation}
+\nabla_\theta\!\left[\hat{A}^i_t\log r^i_t(\theta)\right]
+=
+-\frac{\hat{A}^i_t}{2\sigma_t^2\Delta t}
+\nabla_\theta
+\left\|\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}\right\|^2 .
+\end{equation}
+Therefore, up to a constant gradient term, the policy-gradient part of
+Eq.~\eqref{eq:flowgrpo_per_sample_obj} is equivalent to
+\begin{equation}
+\ell_i^{\mathrm{ratio}}(\theta)
+=
+\frac{\hat{A}^i_t}{2\sigma_t^2\Delta t}
+\left\|\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}\right\|^2 .
+\end{equation}
+
+Substitute the expression for $\bar{\vx}_{t+\Delta t,\theta}$:
+\begin{equation}
+\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}
+=
+\vx_{t-1}-\vx_t-\Delta t\,d_t\vx_t-\Delta t\,c_t\vv_\theta .
+\end{equation}
+Factoring out $-\Delta t\,c_t$ gives
+\begin{equation}
+\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}
+=
+-\Delta t\,c_t
+\left[
+\vv_\theta
++
+\frac{\vx_t-\vx_{t-1}+\Delta t\,d_t\vx_t}{\Delta t\,c_t}
+\right].
+\end{equation}
+Hence
+\begin{equation}
+\left\|\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}\right\|^2
+=
+(\Delta t\,c_t)^2
 \left\|
-\mathbf{v}_i^\theta
+\vv_\theta
 -
-\mathbf{\tau}_i^{\mathrm{FG}}
-\right\|^2.
+\bm{\tau}_i
+\right\|^2,
 \end{equation}
-
-
-In this sense, Flow-GRPO fits the unified form in
-Eq.~\ref{eq:unified_form} with
+where the pseudo-target is
 \begin{equation}
-\mathbf{\tau}_i
+\bm{\tau}_i
+=
+-\frac{\vx_t-\vx_{t-1}+\Delta t\,d_t\vx_t}{\Delta t\,c_t}
+=
+\frac{\vx_{t-1}-\vx_t-\Delta t\,d_t\vx_t}{\Delta t\,c_t}.
+\end{equation}
+Using the sampling relation
+\begin{equation}
+\vx_{t-1}-\vx_t
+=
+\Delta t\bigl(d_t\vx_t+c_t\vv_{\theta_{\mathrm{old}}}\bigr)
++
+\sigma_t\sqrt{\Delta t}\,\epsilon,
+\end{equation}
+we obtain
+\begin{equation}
+\label{eq:flowgrpo_pseudo_target}
+\bm{\tau}_i^{\mathrm{Flow-GRPO}}
 =
 \mathbf{v}_i^{\mathrm{old}}
 +
-\frac{\eta_t}{b_t}
-\boldsymbol{\epsilon}_i ,
-\qquad
-\kappa_i
-=
-A_i
-\frac{b_t^2}{2\eta_t^2} \rho_i(\theta).
+\frac{\sigma_t}{\sqrt{\Delta t}\,c_t}\,\epsilon_i .
 \end{equation}
-The sign of $A_i$ determines whether the model is pulled toward or pushed away
-from the pseudo target. A positive advantage makes gradient descent move
-$\mathbf{v}_i^\theta$ toward the sampled transition-level target, whereas a
-negative advantage reverses this direction. The main distinction from clean
-flow-matching objectives is that this target contains transition noise through
-$\frac{\eta_t}{b_t}\boldsymbol{\epsilon}_i$, rather than being defined by the
-clean residual $\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}$.
+Thus the pseudo-target is the old velocity prediction displaced by a stochastic
+term proportional to the exploration noise.
+
+Substituting the squared-norm factor into the ratio loss gives
+\begin{equation}
+\ell_i^{\mathrm{ratio}}(\theta)
+=
+\hat{A}^i_t\,
+\frac{\Delta t\,c_t^2}{2\sigma_t^2}
+\left\|
+\mathbf{v}_i^\theta-\bm{\tau}_i^{\mathrm{Flow-GRPO}}
+\right\|^2,
+\end{equation}
+where $\mathbf{v}_i^\theta=\vv_\theta(\vx^i_t,t,\vc_i)$. Therefore
+\begin{equation}
+\label{eq:flowgrpo_weight}
+\kappa_i^{\mathrm{Flow-GRPO}}
+=
+\hat{A}^i_t\,
+\frac{\Delta t\,c_t^2}{2\sigma_t^2},
+\qquad
+c_t=1+\frac{\sigma_t^2(1-t)}{2t}.
+\end{equation}
+
+\paragraph{KL regularization.}
+The KL divergence between the Gaussian policies
+$\pi_\theta$ and $\pi_{\mathrm{ref}}$ has the closed form
+\begin{equation}
+D_{\mathrm{KL}}\bigl(\pi_\theta\|\pi_{\mathrm{ref}}\bigr)
+=
+\frac{\Delta t}{2}
+\left(
+\frac{\sigma_t(1-t)}{2t}
++
+\frac{1}{\sigma_t}
+\right)^2
+\left\|
+\vv_\theta(\vx_t,t,\vc)
+-
+\vv_{\mathrm{ref}}(\vx_t,t,\vc)
+\right\|^2 .
+\end{equation}
+Defining
+\begin{equation}
+\lambda_t
+=
+\frac{\Delta t}{2}
+\left(
+\frac{\sigma_t(1-t)}{2t}
++
+\frac{1}{\sigma_t}
+\right)^2,
+\end{equation}
+the regularization term in the unified form is
+\begin{equation}
+\mathcal{R}_i^{\mathrm{Flow-GRPO}}(\theta)
+=
+\beta\,\lambda_t
+\left\|
+\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}
+\right\|^2,
+\end{equation}
+with $\mathbf{v}_i^{\mathrm{ref}}=\vv_{\mathrm{ref}}(\vx^i_t,t,\vc_i)$.
+
+\paragraph{Unified form.}
+Combining the above pieces, the local per-sample objective of Flow-GRPO
+fits Eq.~\eqref{eq:unified_form} with
+\begin{equation}
+\boxed{
+\begin{aligned}
+\kappa_i^{\mathrm{Flow-GRPO}}
+&=
+\hat{A}^i_t\,
+\frac{\Delta t\,c_t^2}{2\sigma_t^2},
+\qquad
+c_t=1+\frac{\sigma_t^2(1-t)}{2t},
+\\
+\bm{\tau}_i^{\mathrm{Flow-GRPO}}
+&=
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{\sigma_t}{\sqrt{\Delta t}\,c_t}\,\epsilon_i,
+\\
+\mathcal{R}_i^{\mathrm{Flow-GRPO}}(\theta)
+&=
+\beta\,
+\frac{\Delta t}{2}
+\left(
+\frac{\sigma_t(1-t)}{2t}
++
+\frac{1}{\sigma_t}
+\right)^2
+\left\|
+\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}
+\right\|^2 .
+\end{aligned}
+}
+\end{equation}
+This explicitly shows that Flow-GRPO pseudo-target is the old velocity
+prediction perturbed by the exploration noise. The reward enters only through
+the advantage-scaled weight $\hat{A}^i_t$, and the sign of the advantage
+determines whether the squared loss attracts or repels the current velocity
+from the noisy target.
 
 
 
@@ -3012,15 +3956,17 @@ Flow-GRPO
 \[
 \mathbf{v}_i^{\mathrm{old}}
 +
-\frac{\eta_t}{b_t}
+\frac{\sigma_t}{\sqrt{\Delta t}\,c_t}
 \boldsymbol{\epsilon}_i
 \]
 &
 \[
-A_i \frac{b_t^2}{2\eta_t^2} \rho_i(\theta)
+A_i\,
+\frac{\Delta t\,c_t^2}{2\sigma_t^2}
 \]
 &
-Matches or avoids a stochastic target induced by an old-policy transition.
+Matches or avoids a stochastic target induced by the old-policy SDE transition;
+$A_i=\hat A^i_t$, $c_t=1+\frac{\sigma_t^2(1-t)}{2t}$.
 \\
 
 \midrule
@@ -3062,5 +4008,1265 @@ Uses the clean flow-matching target and lets the signed advantage weight the mat
 \end{tabularx}
 \end{table}
 
+\section{Differences to Investigate Between Ours and NFT}
+
+\subsection*{Hyperparameter Settings}
+\begin{itemize}
+    \item Timestep fraction $= 1.0$
+    \item lr $= 3\times10^{-4}$
+    \item $\beta = 1$
+    \item $\lambda_{\mathrm{KL}} = 1\times10^{-4}$
+    \item $\Delta_{\mathrm{clip}} = 5$
+\end{itemize}
+The hyperparameter selection is consistent with the optimal DiffusionNFT.
+
+\begin{equation}
+\mathcal{L}(\theta) = \Delta_{\mathrm{clip}} \mathcal{L}_{\mathrm{policy}} + \lambda_{\mathrm{KL}}\,\mathcal{L}_{\mathrm{KL}}
+\end{equation}
+
+\begin{equation}
+w=1+\frac{\Delta}{\Delta_{\mathrm{clip}}}
+\end{equation}
+
+\subsection{Verify the Single Target Form (Combining Two Loss Terms into One) and the Non-Equivalent Alternative of the Adaptive Weight Factor}
+
+\textbf{Original DiffusionNFT Loss:}
+
+\begin{align}
+\hat{\mathbf{x}}_0^\theta &= \mathbf{x}_t - t\,\mathbf{v}_\theta \\
+\hat{\mathbf{x}}_0^{\mathrm{old}} &= \mathbf{x}_t - t\,\mathbf{v}_{\mathrm{old}} \\
+\hat{\mathbf{x}}_0^+ &= \beta\,\hat{\mathbf{x}}_0^\theta + (1-\beta)\,\hat{\mathbf{x}}_0^{\mathrm{old}} \\
+\hat{\mathbf{x}}_0^- &= (1+\beta)\,\hat{\mathbf{x}}_0^{\mathrm{old}} - \beta\,\hat{\mathbf{x}}_0^\theta \\
+W^+ &= \operatorname{mean}\!\left(\left|\hat{\mathbf{x}}_0^+ - \mathbf{x}_0\right|\right) \\
+W^- &= \operatorname{mean}\!\left(\left|\hat{\mathbf{x}}_0^- - \mathbf{x}_0\right|\right),
+\end{align}
+
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}} = \frac{1}{\beta}\ \operatorname{mean}_{\mathrm{batch}}\!\left[ \frac{w}{2}\,\frac{\left\|\hat{\mathbf{x}}_0^+ - \mathbf{x}_0\right\|^2}{W^{+}} + \left(1-\frac{w}{2}\right)\,\frac{\left\|\hat{\mathbf{x}}_0^- - \mathbf{x}_0\right\|^2}{W^{-}} \right]
+\end{equation}
+
+\begin{equation}
+\mathcal{L}_{\mathrm{KL}} = \operatorname{mean}\!\left((\mathbf{v}_\theta - \mathbf{v}_{\mathrm{ref}})^2\right)
+\end{equation}
+
+\textbf{Our Single Target Form:}
+
+\begin{equation}
+\hat{\mathbf{x}}_0^{\mathrm{target}} = \hat{\mathbf{x}}_0^{\mathrm{old}} + \beta\,(w-1)\left(\mathbf{x}_0 - \hat{\mathbf{x}}_0^{\mathrm{old}}\right)
+\end{equation}
+
+Two candidate choices for the weight factor $\alpha$:
+
+\begin{equation}
+\alpha_{\theta} = \frac{1}{\operatorname{sg}\!\left[\operatorname{mean}\!\left(\left|\mathbf{x}_0 - \hat{\mathbf{x}}_0^\theta\right|\right)\right]}
+\end{equation}
+
+\begin{equation}
+\alpha_{old} = \frac{1}{\operatorname{sg}\!\left[\operatorname{mean}\!\left(\left|\mathbf{x}_0 - \hat{\mathbf{x}}_0^{\mathrm{old}}\right|\right)\right]}
+\end{equation}
+
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}} = \operatorname{mean}_{\mathrm{batch}}\!\left[ \alpha \cdot \left\|\hat{\mathbf{x}}_{0}^{\theta}-\hat{\mathbf{x}}_{0}^{\mathrm{target}}\right\|^2 \right]
+\end{equation}
+
+\begin{equation}
+\mathcal{L}_{\mathrm{KL}} = \operatorname{mean}\!\left((\mathbf{v}_\theta - \mathbf{v}_{\mathrm{ref}})^2\right)
+\end{equation}
+
+
+\textbf{Experiment results compare with NFT baseline:}
+
+
+
+\begin{table}[H]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{1.1}
+\caption{
+Comparison of the NFT baseline and single-loss variants on GenEval at different training steps.
+The repeated runs are included to evaluate the stability of the single-loss formulations.
+The repeated $\alpha_{\theta}$ run terminates at Step 470 with a GenEval score of 0.9511 because of OOM.
+}
+
+\resizebox{\linewidth}{!}{
+\begin{tabular}{l c c c c c c c c c c}
+\hline\hline
+Method 
+& Step 100 & Step 200 & Step 300 & Step 400 
+& Step 500 & Step 600 & Step 700 & Step 800
+& Step 900 & Step 950 \\
+\hline
+
+NFT Baseline
+& 0.9198 & 0.9465 & 0.9622 & 0.9680
+& 0.9722 & 0.9789 & 0.9761 & 0.9779
+& 0.9808 & 0.9771 \\
+
+NFT Baseline, Repeat
+& 0.9311 & 0.9539 & 0.9614 & 0.9642
+& 0.9727 & 0.9749 & 0.9743 & 0.9775
+& 0.9760 & 0.9750 \\
+
+Single Loss ($\alpha_{\text{old}}$)
+& 0.9083 & 0.9287 & 0.9513 & 0.9561
+& 0.9608 & 0.9607 & 0.9650 & --
+& -- & -- \\
+
+Single Loss ($\alpha_{\theta}$)
+& 0.9127 & 0.9248 & 0.9362 & 0.9469
+& 0.9440 & 0.9460 & 0.9499 & --
+& -- & -- \\
+
+Single Loss ($\alpha_{\text{old}}$), Repeat
+& 0.9349 & 0.9492 & 0.9473 & 0.9613
+& 0.9608 & 0.9656 & 0.9727 & 0.9779
+& 0.9791 & 0.9711 \\
+
+Single Loss ($\alpha_{\theta}$), Repeat
+& 0.9242 & 0.9478 & 0.9560 & 0.9547
+& -- & -- & -- & --
+& -- & -- \\
+
+\hline\hline
+\end{tabular}
+}
+\label{tab:single_loss_geneval}
+\end{table}
+
+
+\begin{table}[H]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{1.1}
+\caption{
+Comparison of the NFT baseline and single-loss variants on PickScore.
+}
+\begin{tabular}{l c c c c c}
+\hline\hline
+Method 
+& Step 500 & Step 1000 & Step 1500 & Step 2000 & Step 2200 \\
+\hline
+
+NFT Baseline
+& 0.8984 & 0.9046 & 0.9095 & 0.9130 & 0.9154 \\
+
+Single Loss ($\alpha_{\text{old}}$)
+& 0.8992 & 0.9055 & 0.9118 & 0.9152 & 0.9163 \\
+
+Single Loss ($\alpha_{\theta}$)
+& 0.8996 & 0.9057 & 0.9113 & 0.9161 & 0.9175 \\
+
+\hline\hline
+\end{tabular}
+\label{tab:single_loss_pickscore}
+\end{table}
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1.0\linewidth]{imgs/ablation-1-singleloss-alpha-geneval.png}
+    \caption{Ablation for GenEval single reward with different adaptive weight factor design on single target loss. Black for DiffusionNFT Baseline, blue for Repeated Baseline and orange for $\alpha_{old}$ }
+    \label{fig:ablation-1-singleloss-alpha-geneval}
+\end{figure}
+
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{imgs/ablation-1-singleloss-alpha-pickscore.png}
+    \caption{Ablation for Pickscore single reward with different adaptive weight factor design on single target loss. Black for DiffusionNFT Baseline, red for $\alpha_{old}$ and blue for $\alpha_{\theta}$ }
+    \label{fig:ablation-1-singleloss-alpha-pickscore}
+\end{figure}
+
+
+The NFT baselines on both GenEval and PickScore successfully reproduce the single-reward performance reported in DiffusionNFT. The goal is to reach the NFT Single Reward baseline result. 
+
+On GenEval, the single-target variants remain approximately 0.01 below the NFT baseline until 400 training steps, with $\alpha_{\mathrm{old}}$ showing consistently better performance than $\alpha_{\theta}$. On PickScore, the two $\alpha$ designs perform almost identically, and both closely match the NFT baseline while slightly exceeding it at the evaluated checkpoints.
+
+At the same time, 
+the repeated GenEval experiments show some run-to-run randomness. Both single-loss variants perform noticeably better in the repeated runs at the same training steps. 
+
+
+
+
+\textbf{Repeated experiment results:}
+
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{imgs/ablation-1-singleloss-alpha-geneval-repeated.png}
+    \caption{Repeating experiment for GenEval single reward, \textit{top} is repeated DiffusionNFT baseline, \textit{middle} is repeated single target with $\alpha_{old}$ and \textit{bottom} is repeated single target with $\alpha_{\theta}$.}
+    \label{fig:ablation-1-singleloss-alpha-geneval-repeated}
+\end{figure}
+
+
+The repeated DiffusionNFT baseline shows noticeable run-to-run variation before 400 training steps, while the gap gradually decreases afterward. Similar variation is also observed for both single-target variants within the first 400 steps, suggesting that these differences are mainly due to early-stage training variance like rather than the specific formulation.
+
+
+
+
+
+\textbf{Original DiffusionNFT Loss without Adaptive Normalization:}
+
+% \begin{align}
+% \hat{\mathbf{x}}_0^\theta
+% &= \mathbf{x}_t - t\,\mathbf{v}_\theta, \\
+% \hat{\mathbf{x}}_0^{\mathrm{old}}
+% &= \mathbf{x}_t - t\,\mathbf{v}_{\mathrm{old}}, \\
+% \hat{\mathbf{x}}_0^+
+% &= \beta\,\hat{\mathbf{x}}_0^\theta
+% + (1-\beta)\,\hat{\mathbf{x}}_0^{\mathrm{old}}, \\
+% \hat{\mathbf{x}}_0^-
+% &= (1+\beta)\,\hat{\mathbf{x}}_0^{\mathrm{old}}
+% - \beta\,\hat{\mathbf{x}}_0^\theta.
+% \end{align}
+
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}}
+=
+\frac{1}{\beta}
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+\frac{1}{t^2}
+\left(
+\frac{w}{2}
+||\hat{\mathbf{x}}_0^+ - \mathbf{x}_0||^2
++
+\left(1-\frac{w}{2}\right)
+||\hat{\mathbf{x}}_0^- - \mathbf{x}_0||^2
+\right)
+\right].
+\end{equation}
+
+\begin{align}
+\Delta
+&=
+\frac{1}{\Delta_{\mathrm{clip}}}
+\operatorname{clip}
+\left(
+\frac{R_{j,k}-\bar R_{c_j}}{\sigma_R},
+-\Delta_{\mathrm{clip}},
+\Delta_{\mathrm{clip}}
+\right),\\
+W_{j,k}&=1+\Delta_{j,k}.
+\end{align}
+
+
+Define the corresponding velocity target as
+
+\begin{equation}
+\mathbf{v}
+=
+\frac{\mathbf{x}_t-\mathbf{x}_0}{t},
+\end{equation}
+
+and
+
+\begin{align}
+\mathbf{v}^+
+&=
+\beta\mathbf{v}_\theta
++
+(1-\beta)\mathbf{v}_{\mathrm{old}}, \\
+\mathbf{v}^-
+&=
+(1+\beta)\mathbf{v}_{\mathrm{old}}
+-
+\beta\mathbf{v}_\theta.
+\end{align}
+
+Since
+
+\begin{equation}
+\hat{\mathbf{x}}_0^\pm-\mathbf{x}_0
+=
+-t\left(\mathbf{v}^\pm-\mathbf{v}\right),
+\end{equation}
+
+we have
+
+\begin{equation}
+\frac{1}{t^2}
+||
+\hat{\mathbf{x}}_0^\pm-\mathbf{x}_0
+||^2
+=
+||
+\mathbf{v}^\pm-\mathbf{v}
+||^2.
+\end{equation}
+
+Therefore, under the $v$-prediction formulation, the policy loss is equivalently
+
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}}
+=
+\frac{1}{\beta}
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+\frac{w}{2}
+||\mathbf{v}^+ - \mathbf{v}||^2
++
+\left(1-\frac{w}{2}\right)
+||\mathbf{v}^- - \mathbf{v}||^2
+\right],
+\end{equation}
+
+i.e., no additional timestep-dependent factor is required in the $v$-prediction space.
+
+\begin{equation}
+\mathcal{L}_{\mathrm{KL}}
+=
+\operatorname{mean}
+\left(
+(\mathbf{v}_\theta-\mathbf{v}_{\mathrm{ref}})^2
+\right).
+\end{equation}
+
+
+
+
+
+\subsection{Rollout Policy with $v_{\theta}$}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{imgs/ablation-rollout-theta.png}
+    \caption{Ablation for Rollout policy with $v_{\theta}$. Black for NFT baseline, Yellow for rollout with $v_{\theta}$.}
+    \label{fig:placeholder}
+\end{figure}
+
+
+We keep the NFT original code, and only use $v_{\theta}$ as the rollout policy. The result is consistent with baseline until 0.8k steps. (0.9779 for NFT baseline, 0.9747 for ablation at 800 steps.
+
+
+
+
+\subsection{Position of $\alpha_i$}
+
+
+\textbf{X-prediction $\rightarrow$ V-prediction}
+
+\begin{equation}
+\alpha = \frac{1}{\operatorname{sg}\!\left[\operatorname{mean}\left|\mathbf{v}-\mathbf{v}^{\mathrm{old}}\right|\right]}
+\end{equation}
+
+\begin{equation}
+\mathbf{v}^{\mathrm{target}} = \mathbf{v}^{\mathrm{old}} + \beta (w - 1)\left(\mathbf{v}-\mathbf{v}^{\mathrm{old}}\right)
+\end{equation}
+
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}} = \operatorname{mean}_{\mathrm{batch}}\!\left[ t \alpha \cdot \left\|\mathbf{v}^{\theta}-\mathbf{v}^{\mathrm{target}}\right\|^2 \right]
+\end{equation}
+
+
+\textbf{Implementation of our formulation:}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{imgs/ablation-3-alpha-in-target-recordalpha.png}
+    \caption{The batch mean of $\alpha_{old}$ in B.1 experiment.}
+    \label{fig:placeholder}
+\end{figure}
+
+
+According to our theoretical derivation, $\alpha_t(\mathbf{x}_t,\mathbf{z})$ is a conditional-to-marginal density ratio  $\frac{ p_t(\mathbf{x}_t|\mathbf{z}) }{ p_t(\mathbf{x}_t) }$ satisfying
+$\mathbb{E}_{\mathbf z\sim\pi}[\alpha_t(\mathbf{x}_t,\mathbf z)]=1$.
+However, the adaptive factor used in our current implementation is not numerically normalized in this way. Empirically, $\alpha_{\mathrm{old}}$ typically has a batch mean around $20$--$30$, with values ranging approximately from $2$to$100$.
+
+We therefore first compute the original adaptive factor
+
+\begin{equation}
+\alpha_{\mathrm{old}}
+=\frac{1}{
+\operatorname{sg}\left[
+\operatorname{mean}
+\left|
+\mathbf{v}-\mathbf{v}^{\mathrm{old}}
+\right|
+\right]
+},
+\end{equation}
+
+and normalize it within each batch as
+
+\begin{equation}
+\bar{\alpha}_{\mathrm{old}}
+=\frac{
+\alpha_{\mathrm{old}}
+}{
+\operatorname{mean}_{\mathrm{batch}}
+\left(\alpha_{\mathrm{old}}\right)
+}.
+\end{equation}
+
+Thus,
+$\operatorname{mean}_{\mathrm{batch}}(\bar{\alpha}_{\mathrm{old}})=1$,
+making $\bar{\alpha}_{\mathrm{old}}$ a more appropriate empirical approximation of the theoretically derived posterior correction factor. We insert this normalized factor into the velocity correction:
+
+\begin{equation}
+\mathbf{v}^{\mathrm{target}}
+=\mathbf{v}^{\mathrm{old}}
++
+\beta (w-1)
+\bar{\alpha}_{\mathrm{old}}
+\left(
+\mathbf{v}-\mathbf{v}^{\mathrm{old}}
+\right).
+\end{equation}
+
+\noindent\textbf{Why retaining $\alpha_{\mathrm{old}}$ outside the MSE.}
+
+For the previous verified single-target formulation in B.1,
+
+\begin{equation}
+\mathbf v^{\mathrm{target}}
+=
+\mathbf v^{\mathrm{old}}
++
+\beta(w-1)
+\left(
+\mathbf v-\mathbf v^{\mathrm{old}}
+\right),
+\end{equation}
+
+\begin{equation}
+\mathcal L_{\mathrm{policy}}
+=
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+t\alpha_{\mathrm{old}}
+\left\|
+\mathbf v^\theta-\mathbf v^{\mathrm{target}}
+\right\|^2
+\right].
+\end{equation}
+
+Its per-sample gradient is proportional to
+
+\begin{equation}
+2t\alpha_{\mathrm{old}}
+\left[
+\mathbf v^\theta-\mathbf v^{\mathrm{old}}
+-
+\beta(w-1)
+\left(
+\mathbf v-\mathbf v^{\mathrm{old}}
+\right)
+\right].
+\end{equation}
+
+In our formulation, the normalized $\bar{\alpha}_{\mathrm{old}}$ is introduced into the velocity correction:
+
+\begin{equation}
+\mathbf v^{\mathrm{target}}
+=
+\mathbf v^{\mathrm{old}}
++
+\beta(w-1)
+\bar{\alpha}_{\mathrm{old}}
+\left(
+\mathbf v-\mathbf v^{\mathrm{old}}
+\right).
+\end{equation}
+
+And the outer $\alpha_{\mathrm{old}}$ is removed, the gradient becomes proportional to
+
+\begin{equation}
+2t
+\left[
+\mathbf v^\theta-\mathbf v^{\mathrm{old}}
+-
+\beta(w-1)
+\bar{\alpha}_{\mathrm{old}}
+\left(
+\mathbf v-\mathbf v^{\mathrm{old}}
+\right)
+\right].
+\end{equation}
+
+Since $\bar{\alpha}_{\mathrm{old}}$ has batch mean $1$, it only controls the relative strength of the velocity correction and does not influence the overall gradient scale. 
+
+Because the empirical mean of $\alpha_{\mathrm{old}}$ is around $20$--$30$, removing it would substantially reduce the overall gradient magnitude compared with the previous single-target formulation in B.1. And it will change the relationship between $L_{policy}$ and $L_{ref}$. Therefore, we retain $\alpha_{\mathrm{old}}$ outside the MSE:
+
+\begin{equation}
+\mathcal L_{\mathrm{policy}}
+=
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+t\alpha_{\mathrm{old}}
+\left\|
+\mathbf v^\theta-\mathbf v^{\mathrm{target}}
+\right\|^2
+\right].
+\end{equation}
+
+\begin{equation}
+\mathbf v^{\mathrm{target}}
+=
+\mathbf v^{\mathrm{old}}
++
+\beta(w-1)
+\bar{\alpha}_{\mathrm{old}}
+\left(
+\mathbf v-\mathbf v^{\mathrm{old}}
+\right).
+\end{equation}
+
+The normalized $\bar{\alpha}_{\mathrm{old}}$ inside the target introduces the theoretically motivated posterior correction, while the original $\alpha_{\mathrm{old}}$ outside the MSE preserves approximately the gradient scale of the previous single-target objective.
+
+
+
+\begin{table}[H]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{1.1}
+\caption{
+Comparison of the NFT baseline and single-loss variants with normalized $\alpha_{old}$ in $v_{target}$ on GenEval.
+}
+\begin{tabular}{l c c c c c}
+\hline\hline
+Method 
+& Step 50 & Step 100 & Step 150 & Step 200 & Step 250 \\
+\hline
+
+NFT Baseline
+& 0.8723 & 0.9198 & 0.9320 & - & - \\
+NFT Baseline Repeat
+& 0.8910 & 0.9311 & 0.9540 & - & - \\
+
+Single Loss (normalized $\alpha_{old}$ in $v_{target}$) 
+& 0.8840 & 0.9157 & 0.9300 & - & - \\
+\hline\hline
+\end{tabular}
+\label{tab:single loss with normalied alpha}
+\end{table}
+
+
+\subsection{The Effect of $\Delta_{\mathrm{clip}}$ in the Loss Function}
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}}
+=
+\frac{1}{\beta}
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+\frac{w}{2}
+\frac{
+\left\|
+\hat{\mathbf{x}}_0^+-\mathbf{x}_0
+\right\|^2
+}{W^+}
++
+\left(1-\frac{w}{2}\right)
+\frac{
+\left\|
+\hat{\mathbf{x}}_0^--\mathbf{x}_0
+\right\|^2
+}{W^-}
+\right],
+\end{equation}
+
+
+\begin{align}
+\Delta
+&=
+\operatorname{clip}
+\left(
+\frac{R-\bar R}{\sigma_R},
+-\Delta_{\mathrm{clip}},
+\Delta_{\mathrm{clip}}
+\right),\\
+w&=1+\frac{\Delta}{\Delta_{\mathrm{clip}}}.
+\end{align}
+
+\begin{align}
+\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{policy}}
+=\frac{1}{\beta}
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+\frac{\Delta_{\mathrm{clip}}}{2}(
+\frac{
+\left\|
+\hat{\mathbf{x}}_0^+-\mathbf{x}_0
+\right\|^2
+}{W^+}
++\frac{
+\left\|
+\hat{\mathbf{x}}_0^--\mathbf{x}_0
+\right\|^2
+}{W^-}
+)
+\\
+\quad+
+\frac{\Delta}{2}(
+\frac{
+\left\|
+\hat{\mathbf{x}}_0^+-\mathbf{x}_0
+\right\|^2
+}{W^+}
+-\frac{
+\left\|
+\hat{\mathbf{x}}_0^--\mathbf{x}_0
+\right\|^2
+}{W^-}
+)
+\right],
+\end{align}
+
+
+The original objective is
+
+\begin{equation}
+\mathcal{L}_{\mathrm{old}}
+=
+\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{policy}}
++
+\lambda_{\mathrm{KL}}\mathcal{L}_{\mathrm{KL}}.
+\end{equation}
+
+We instead consider
+
+\begin{equation}
+\mathcal{L}_{\mathrm{new}}
+=
+\mathcal{L}_{\mathrm{policy}}
++
+\frac{\lambda_{\mathrm{KL}}}{\Delta_{\mathrm{clip}}}
+\mathcal{L}_{\mathrm{KL}}
+=
+\frac{1}{\Delta_{\mathrm{clip}}}
+\mathcal{L}_{\mathrm{old}}.
+\end{equation}
+
+Therefore, this modification does not change the relative weighting between the policy loss and the KL regularization. It only globally rescales the loss by $1/\Delta_{\mathrm{clip}}$.
+
+\paragraph{Gradient scaling.}
+
+Since $\Delta_{\mathrm{clip}}$ is independent of $\theta$,
+
+\begin{equation}
+g_{\mathrm{new}}
+=
+\nabla_\theta \mathcal{L}_{\mathrm{new}}
+=
+\frac{1}{\Delta_{\mathrm{clip}}}
+g_{\mathrm{old}}.
+\end{equation}
+
+Thus, before gradient clipping, the two objectives differ only by a constant gradient scale.
+
+\paragraph{Interaction with gradient clipping.}
+
+For global gradient clipping,
+
+\begin{equation}
+\operatorname{Clip}(g,C)
+=
+g\min\left(1,\frac{C}{\|g\|_2}\right),
+\end{equation}
+
+using the same threshold $C$ may break the scaling equivalence: $g_{\mathrm{old}}$ may be clipped while $g_{\mathrm{new}}$ remains unclipped.
+
+To preserve identical clipping behavior, the threshold should be scaled accordingly:
+
+\begin{equation}
+C_{\mathrm{new}}
+=
+\frac{C_{\mathrm{old}}}{\Delta_{\mathrm{clip}}}.
+\end{equation}
+
+Then
+
+\begin{equation}
+\operatorname{Clip}
+\left(
+\frac{g_{\mathrm{old}}}{\Delta_{\mathrm{clip}}},
+\frac{C_{\mathrm{old}}}{\Delta_{\mathrm{clip}}}
+\right)
+=
+\frac{1}{\Delta_{\mathrm{clip}}}
+\operatorname{Clip}
+\left(
+g_{\mathrm{old}},
+C_{\mathrm{old}}
+\right).
+\end{equation}
+
+For $\Delta_{\mathrm{clip}}=5$ and $C_{\mathrm{old}}=1.0$, the corresponding threshold is $C_{\mathrm{new}}=0.2$.
+
+\paragraph{Impact on AdamW.}
+
+If all gradients are uniformly scaled by $1/\Delta_{\mathrm{clip}}$, AdamW's first and second moments scale as
+
+\begin{equation}
+m_t^{\mathrm{new}}
+=
+\frac{1}{\Delta_{\mathrm{clip}}}m_t^{\mathrm{old}},
+\qquad
+v_t^{\mathrm{new}}
+=
+\frac{1}{\Delta_{\mathrm{clip}}^2}v_t^{\mathrm{old}}.
+\end{equation}
+
+Therefore, the normalized AdamW update is almost unchanged, except for the numerical stability term $\epsilon$:
+
+\begin{equation}
+\frac{\hat m_t^{\mathrm{new}}}
+{\sqrt{\hat v_t^{\mathrm{new}}}+\epsilon}
+=
+\frac{\hat m_t^{\mathrm{old}}}
+{\sqrt{\hat v_t^{\mathrm{old}}}
++
+\Delta_{\mathrm{clip}}\epsilon}.
+\end{equation}
+
+Hence, loss scaling is approximately equivalent to replacing
+
+\begin{equation}
+\epsilon
+\rightarrow
+\Delta_{\mathrm{clip}}\epsilon.
+\end{equation}
+
+Since $\epsilon$ is typically very small, this effect is expected to be negligible. The main practical difference therefore comes from gradient clipping rather than AdamW itself.
+
+
+\begin{table}[H]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{1.1}
+\caption{
+Comparison of the NFT baseline and the loss scaled by $1/\Delta_{\mathrm{clip}}$ on GenEval.
+}
+\begin{tabular}{l c c c c c c c c}
+\hline\hline
+Method 
+& Step 50 & Step 100 & Step 200 & Step 300 
+& Step 350 & Step 400 & Step 450 & Step 500 \\
+\hline
+
+NFT Baseline (H)
+& 0.8723 & 0.9198 & 0.9465 & 0.9622
+& 0.9704 & 0.9680 & 0.9692 & 0.9722 \\
+
+NFT Baseline Repeat (A6000)
+& 0.8910 & 0.9311 & 0.9539 & 0.9614
+& 0.9607 & 0.9642 & 0.9687 & 0.9727 \\
+
+Scaled by $1/\Delta_{\mathrm{clip}}$ (H)
+& 0.8792 & 0.8797 & 0.9090 & 0.9094
+& - & - & - & - \\
+
+\makecell[l]{Scaled by $1/\Delta_{\mathrm{clip}}$,
+$C_{\max}\leftarrow 0.2$ (4090)}
+& 0.8644 & 0.8931 & 0.8920 & 0.9190
+& - & - & - & - \\
+
+\makecell[l]{Scaled by $2$,
+$C_{\max}\leftarrow 1.0$ (H)}
+& 0.8829 & 0.9119 & 0.9317 & 0.9403
+& 0.9427 & 0.9489 & 0.9521 & - \\
+
+\makecell[l]{Scaled by $1$,
+$C_{\max}\leftarrow 1.0$ (4090)}
+& 0.8787 & 0.9068 & 0.9330 & 0.9460
+& 0.9451 & 0.9234 & - & - \\
+
+\makecell[l]{Scaled by $1$,
+$C_{\max}\leftarrow 1.0$ (4090) repeat}
+& 0.8716 & 0.9050 & 0.9218 & 0.9470
+& 0.9443 & 0.9461 & - & - \\
+
+\makecell[l]{Scaled by $1$,
+$C_{\max}\leftarrow 1.0$ (H)}
+& 0.8552 & 0.9092 & 0.9434 & 0.9533
+& 0.9507 & 0.9585 & 0.9609 & 0.9675 \\
+
+\hline\hline
+\end{tabular}
+\label{tab:loss-scaled}
+\end{table}
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{imgs/ablation-geneval-baseline-compare.png}
+    \caption{
+Training curves corresponding to Table~7.
+The four subplots report the average evaluation reward, average training reward, policy loss, and KL-divergence loss, respectively.
+}
+    \label{fig:placeholder}
+\end{figure}
+
+
+The results show several observations:
+\begin{itemize}
+    \item From the evaluation reward curves, the \textit{Scaled by 1} baseline on the H GPU (Black curve) can  reproduce the two previous baseline results (Blue and Yellow curve).
+
+    \item The two 4090 baseline runs (Red and Orange curves) have clearly higher policy loss and KL loss than the runs on the H GPU, showing a clear difference across GPU types. In addition, one 4090 run shows a sharp loss increase and reward drop, indicating randomness and instability across repeated runs.
+
+    \item The checkpoint-resume function needs further checking. The green curve resumes training at Step 240. At this point, the policy loss suddenly drops and the reward also decreases, then slowly recovers. This suggests that resuming training may cause a temporary performance drop and may affect the final result.
+
+    \item For the \textit{Scaled by 2.0} run, it is still unclear whether the checkpoint resume at Step 240 caused the later performance gap. At Step 450, the gap is still about 0.01. We can continue the run, or fix the resume issue and restart from the Step-240 checkpoint. We expect the \textit{Scaled by 2.0} run to eventually approach the NFT baseline.
+
+    % \item Together with the previous $1/\Delta_{\mathrm{clip}}$ scaling experiment, the results suggest that scaling the whole loss should not by itself cause a large change. The real problem comes from FP16 precision for the KL term. The minimum KL loss in each batch is around $0.01$ as statisticed. After multiplying by $10^{-4}$ and dividing by the effective gradient accumulation steps ($160$), its value can be around
+    % \[
+    % \frac{0.01\times10^{-4}}{160}
+    % =6.25\times10^{-9},
+    % \]
+    % which is below both the minimum normal FP16 value ($6.1\times10^{-5}$) and the minimum subnormal value ($5.96\times10^{-8}$). Therefore, some KL-loss values may already lose precision or become zero before gradient scaling is applied. Dividing the loss by another factor of $5$ can further increase this numerical error and lead to worse training results.
+\end{itemize}
+
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{imgs/ablation-delta-influence.png}
+    \caption{ GenEval performance of the NFT baseline and its loss-scaled variants.
+  The blue and yellow curves denote two independent runs of the NFT baseline;
+  the orange curve scales the loss by $1/\Delta_{\mathrm{clip}}$;
+  and the black curve additionally scales the gradient-clipping threshold as
+  $C_{\max}\leftarrow C_{\max}/\Delta_{\mathrm{clip}}$.}
+    \label{fig:placeholder}
+\end{figure}
+
+
+
+
+\section{Derivation of the Combined Form from the DiffusionNFT Loss}
+
+
+The complete training objective is
+
+\begin{equation}
+\mathcal{L}_{\mathrm{total}}
+=
+\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{policy}}
++
+\lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}},
+\end{equation}
+
+where
+
+\begin{equation}
+\mathcal{L}_{\mathrm{ref}}
+=
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+\left\|
+\mathbf{v}_{\theta}
+-
+\mathbf{v}_{\mathrm{ref}}
+\right\|^2
+\right].
+\end{equation}
+
+
+\subsection{Without the Adaptive Weight Factor}
+
+The policy loss is
+
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}}
+=
+\frac{1}{\beta}
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+\frac{w}{2}
+\left\|
+\hat{\mathbf{x}}_0^+-\mathbf{x}_0
+\right\|^2
++
+\left(1-\frac{w}{2}\right)
+\left\|
+\hat{\mathbf{x}}_0^--\mathbf{x}_0
+\right\|^2
+\right].
+\end{equation}
+
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}}
+=
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+\beta
+\left\|
+\hat{\mathbf{x}}_0^\theta
+-
+\hat{\mathbf{x}}_0^{\mathrm{target}}
+\right\|^2
+\right],
+\end{equation}
+
+where
+
+\begin{equation}
+\hat{\mathbf{x}}_0^{\mathrm{target}}
+=
+\hat{\mathbf{x}}_0^{\mathrm{old}}
++
+\frac{w-1}{\beta}
+\left(
+\mathbf{x}_0-\hat{\mathbf{x}}_0^{\mathrm{old}}
+\right).
+\end{equation}
+
+Using
+$\hat{\mathbf{x}}_0^\theta=\mathbf{x}_t-t\mathbf{v}_\theta$,
+the policy gradient can be written in velocity space as
+
+\begin{equation}
+\nabla_\theta\mathcal{L}_{\mathrm{policy}}
+=
+2t^2\mathbf{J}_{\theta}^\top
+\left[
+\beta
+\left(
+\mathbf{v}_\theta-\mathbf{v}_{\mathrm{old}}
+\right)
+-
+(w-1)
+\left(
+\mathbf{v}_0-\mathbf{v}_{\mathrm{old}}
+\right)
+\right].
+\end{equation}
+
+The reference gradient is
+
+\begin{equation}
+\nabla_\theta\mathcal{L}_{\mathrm{ref}}
+=
+2\mathbf{J}_{\theta}^\top
+\left(
+\mathbf{v}_\theta-\mathbf{v}_{\mathrm{ref}}
+\right).
+\end{equation}
+
+The total gradient is
+
+\begin{align}
+\nabla_\theta\mathcal{L}_{\mathrm{total}}
+=
+2\mathbf{J}_{\theta}^\top
+\Big[
+&
+\Delta_{\mathrm{clip}}t^2
+\left(
+\beta(\mathbf{v}_\theta-\mathbf{v}_{\mathrm{old}})
+-
+(w-1)(\mathbf{v}_0-\mathbf{v}_{\mathrm{old}})
+\right)
+\nonumber\\
+&+
+\lambda_{\mathrm{ref}}
+(\mathbf{v}_\theta-\mathbf{v}_{\mathrm{ref}})
+\Big].
+\end{align}
+
+
+\subsection{With the Adaptive Weight Factor}
+
+With $W^+$ and $W^-$, the policy loss is
+
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}}
+=
+\frac{1}{\beta}
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+\frac{w}{2W^+}
+\left\|
+\hat{\mathbf{x}}_0^+-\mathbf{x}_0
+\right\|^2
++
+\frac{2-w}{2W^-}
+\left\|
+\hat{\mathbf{x}}_0^--\mathbf{x}_0
+\right\|^2
+\right].
+\end{equation}
+
+
+\begin{equation}
+\mathcal{L}_{\mathrm{policy}}
+=
+\operatorname{mean}_{\mathrm{batch}}
+\left[
+\alpha_{\mathrm{NFT}}
+\left\|
+\hat{\mathbf{x}}_0^\theta
+-
+\hat{\mathbf{x}}_0^{\mathrm{target}}
+\right\|^2
+\right],
+\end{equation}
+
+where
+
+\begin{equation}
+\alpha_{\mathrm{NFT}}
+=
+\beta
+\left(
+\frac{w/2}{W^+}
++
+\frac{1-w/2}{W^-}
+\right),
+\end{equation}
+
+
+\begin{equation}
+\hat{\mathbf{x}}_0^{\mathrm{target}}
+=
+\hat{\mathbf{x}}_0^{\mathrm{old}}
++
+\frac{1}{\beta}
+\frac{
+wW^--(2-w)W^+
+}{
+wW^-+(2-w)W^+
+}
+\left(
+\mathbf{x}_0-\hat{\mathbf{x}}_0^{\mathrm{old}}
+\right).
+\end{equation}
+
+
+The policy gradient:
+
+\begin{equation}
+\nabla_\theta\mathcal{L}_{\mathrm{policy}}
+=
+2t^2\mathbf{J}_{\theta}^\top
+\beta
+\left(
+\frac{w/2}{W^+}
++
+\frac{1-w/2}{W^-}
+\right)
+\left[
+\left(
+\mathbf{v}_\theta-\mathbf{v}_{\mathrm{old}}
+\right)
+-
+\frac{1}{\beta}
+\frac{
+wW^--(2-w)W^+
+}{
+wW^-+(2-w)W^+
+}
+\left(
+\mathbf{v}_0-\mathbf{v}_{\mathrm{old}}
+\right)
+\right].
+\end{equation}
+
+The total gradient is
+
+\begin{align}
+\nabla_\theta\mathcal{L}_{\mathrm{total}}
+=
+2\mathbf{J}_{\theta}^\top
+\Bigg[
+&
+\Delta_{\mathrm{clip}}t^2
+\left(
+\frac{w/2}{W^+}
++
+\frac{1-w/2}{W^-}
+\right)
+\left(
+\beta
+(
+\mathbf{v}_\theta-\mathbf{v}_{\mathrm{old}}
+)
++
+\frac{
+(1-w/2)W^+-wW^-
+}{
+(1-w/2)W^+ + wW^-
+}
+(\mathbf{v}_0-\mathbf{v}_{\mathrm{old}})
+\right)
+\nonumber\\
+&+
+\lambda_{\mathrm{ref}}
+\left(
+\mathbf{v}_\theta-\mathbf{v}_{\mathrm{ref}}
+\right)
+\Bigg].
+\end{align}
+
+
+
+if we turn $W^+, W^-$ as v-prediction:
+\begin{align}
+W'^+ &= \operatorname{mean}\!\left(\left|\hat{\mathbf{v}}_0^+ - \mathbf{v}_0\right|\right) \\
+W'^- &= \operatorname{mean}\!\left(\left|\hat{\mathbf{v}}_0^- - \mathbf{v}_0\right|\right),
+\end{align}
+
+
+We have:
+
+\begin{align}
+\nabla_\theta\mathcal{L}_{\mathrm{total}}
+=
+2\mathbf{J}_{\theta}^\top
+\Bigg[
+&
+\Delta_{\mathrm{clip}}t
+\left(
+\frac{w/2}{W'^+}
++
+\frac{1-w/2}{W'^-}
+\right)
+\beta
+\left(
+\mathbf{v}_\theta-\mathbf{v}_{\mathrm{old}}
+\right)
+\nonumber\\
+&+
+\Delta_{\mathrm{clip}}t
+\left(
+\frac{w/2}{W'^+}
++
+\frac{1-w/2}{W'^-}
+\right)
+\frac{
+(1-w/2)W'^+-wW'^-
+}{
+(1-w/2)W'^+ + wW'^-
+}
+\left(
+\mathbf{v}_0-\mathbf{v}_{\mathrm{old}}
+\right)
+\nonumber\\
+&+
+\lambda_{\mathrm{ref}}
+\left(
+\mathbf{v}_\theta-\mathbf{v}_{\mathrm{ref}}
+\right)
+\Bigg].
+\end{align}
+
+
+
+
+
+\section{Possible Acceleration Strategies}
+Without changing any algorithms, list some possible engineering strategies that could speed up training and test them out.
+
+In each epoch, sampling uses \(48\) prompts \(\times\) \(24\) images \(=\) \(1152\) images, i.e., \(144\) images per GPU across \(16\) sampling iterations. Reward computation runs the full GenEval pipeline, including Mask2Former detection and CLIP color classification, on all \(1152\) images. Training uses \(16\) micro-batches \(\times\) \(72\) images \(\times\) \(9\) timesteps, with \(3\) Transformer forward passes and \(1\) backward pass per timestep, corresponding to the old policy, the default trainable policy, and the reference model without LoRA.
+
+Sampling requires about \(16 \times 10 \times 9 = 1440\) forward units. Training requires about \(16 \times 9 \times 3 \times 72 = 31104\) forward units and \(10368\) backward units. Thus training is more than \(20\times\) the cost of sampling.
+
+\subsection{Compiling the Transformer with \texttt{torch.compile} (estimated total speedup 20--35\%)}
+The training phase performs \(27\) forward passes per \(72\)-image batch, and the sampling phase uses small batches over \(10\) steps, both of which incur substantial kernel-launch overhead. Applying \texttt{torch.compile} to \texttt{transformer\_ddp.module}, with \texttt{dynamic=True} or separate compilation for the sampling and training shapes because batch sizes change, can accelerate both phases. Since PEFT's \texttt{set\_adapter("old"/"default")} and \texttt{disable\_adapter()} only replace weights and do not alter graph structure, compiled graphs can typically be reused.
+
+\subsection{Fixing DataLoader Overhead in GenEval Color Classification (estimated reward-phase speedup \(5\)--\(20\times\), total speedup 8--20\%)}
+The most obvious engineering inefficiency is in the color classification routine at \texttt{flow\_grpo/gen\_eval.py:126}: it creates a new \texttt{DataLoader(..., num\_workers=4)} for every image and every color class. This results in hundreds of \texttt{DataLoader} instantiations and worker-process spawns per epoch per GPU even though each call classifies only a dozen crops. Without changing the scoring logic, one can collect all color crops of the entire image batch and run a single CLIP forward pass with the same model, templates, and argmax logic, yielding essentially identical scores.
+
+\section{Geneval Train--Test Overlap Analysis}
+
+The Geneval dataset contains images paired with structured metadata describing the objects present, their attributes (e.g., color, count, position), and the prompt used to generate the image. Table~\ref{tab:overlap-summary} reports overlap between training and test sets for representations ranging from object classes to complete sample descriptions and prompt text. A value of 0\% means no test item has a counterpart in the training set, while 100\% means full overlap.
+
+\begin{table}[t]
+\centering
+\caption{Overlap between training and test sets at different representation levels, ordered from coarse to fine. Examples illustrate what each level describes.}
+\label{tab:overlap-summary}
+\begin{tabular}{p{7.2cm}cccc}
+\toprule
+\textbf{Representation level (with example)} & \textbf{Train} & \textbf{Test} & \textbf{Overlap} & \textbf{Overlap / Test} \\
+\midrule
+Object classes (e.g., ``dog'', ``bus'') & 80 & 80 & 80 & 100.00\% \\
+Attribute values: color (e.g., ``red'', ``blue'') & 10 & 10 & 10 & 100.00\% \\
+Attribute values: count (e.g., ``1'', ``2'') & 4 & 4 & 4 & 100.00\% \\
+Attribute values: position (e.g., ``left of'', ``right of'') & 4 & 4 & 4 & 100.00\% \\
+Single object with all attributes (e.g., ``yellow bus'') & 1{,}350 & 490 & 410 & 83.67\% \\
+Pair of object classes in one scene (e.g., ``bus + handbag'') & 3{,}160 & 286 & 286 & 100.00\% \\
+Pair of fully described objects in one scene (e.g., ``yellow bus + orange handbag'') & 31{,}557 & 299 & 1 & 0.33\% \\
+Whole scene with all objects described (e.g., ``yellow bus + orange handbag + blue bird'') & 32{,}403 & 553 & 1 & 0.18\% \\
+Text prompt (exact string match) & 33{,}199 & 553 & 0 & 0.00\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Compositional statistics of the test set. A test sample is categorized by whether all its individual objects have been seen in training and whether all its pairwise object combinations have been seen.}
+\label{tab:comp-generalization}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Test sample category} & \textbf{Number} & \textbf{\% of test set} \\
+\midrule
+Total test samples & 2{,}212 & 100.00\% \\
+All individual objects seen in training & 1{,}892 & 85.53\% \\
+All pairwise object interactions seen in training & 1{,}020 & 46.11\% \\
+Known objects + known interactions & 700 & 31.65\% \\
+Known objects + novel interactions & 1{,}192 & 53.89\% \\
+At least one novel object & 320 & 14.47\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The overlap analysis reveals that the test split is a compositional generalization benchmark. At the level of object classes, attribute values, and even individual entities with all attributes, the overlap is high: all 80 object classes and all attribute values (colors, counts, positions) appear in both splits, and 83.67\% of individual test entities exist in the training set. However, when considering complete combinations---either pairwise entity interactions or whole-sample compositions---the overlap drops dramatically to $0.33\%$ and $0.18\%$, respectively. Moreover, the prompt exact-match overlap is $0\%$, confirming that no textual description is reused.
+
+The compositional breakdown further supports this interpretation: although 85.53\% of test samples consist entirely of entities that were seen during training, only 46.11\% have all pairwise interactions previously observed. 53.89\% of test samples combine known entities into novel interactions, which is the core challenge of compositional generalization. Additionally, 14.47\% of test samples contain at least one individual entity not present in the training set, primarily due to the \texttt{counting} subtask, where all $(\text{class}, \text{count})$ pairs are disjoint between the splits, and the \texttt{single\_object} subtask, which has no training samples at all.
+
+
+
+
+\newpage
+
+
+
+
+
+\section{Currently Running Experiments}
+
+\subsection{Delta-Equality Baseline on 16 4090 (pause)}
+\textbf{Launcher:} \path{scripts/baseline_exps/run_sd3_4090_16gpu_nft-baseline-Aequality.sh}.\par
+\textbf{Training script:} \path{scripts/train_nft_sd3_origin-Aequality.py}.\par
+\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=1.0$.\par
+\textbf{Purpose:} establish the  adv-clip-equality baseline, where the outer \texttt{adv\_clip\_max} factor is removed from the policy loss and the KL coefficient is divided by the same factor.
+
+\subsection{Delta-Equality with Matched Gradient Clipping on 8 H200 (pause)}
+\textbf{Launcher:} \path{scripts/baseline_exps/run_sd3_geneval_h200_8gpu_nft-baseline-Aequality-fix-gradclip.sh}.\par
+\textbf{Training script:} \path{scripts/train_nft_sd3_origin-Aequality.py}.\par
+\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=0.2$.\par
+
+\textbf{Purpose:} test whether scaling the gradient clipping threshold by $1/\texttt{adv\_clip\_max}=1/5$.
+
+
+
+\subsection{Delta-Equality with Matched Gradient Clipping and Multiply loss by extra 2 on 8 H200 (runing)}
+\textbf{Launcher:} \path{scripts/baseline_exps/run_sd3_geneval_h200_8gpu_nft-baseline-Aequality*2.sh}.\par
+\textbf{Training script:} \path{scripts/train_nft_sd3_origin-Aequality-multiply2.py}.\par
+\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=1.0$. And multiply the loss (policy+kl) by 2.\par
+\textbf{Purpose:} test whether the inequivalence with NFT baseline is because of Numerical underflow under Float16 training.
+
+
+
+\subsection{Delta-Equality Baseline (scaled by 1) on 8 H200 (runing)}
+\textbf{Launcher:} \path{scripts/baseline_exps/run_sd3_geneval_h200_8gpu_nft-baseline-Aequality*2-RemoveBackToBaseline.sh}.\par
+\textbf{Training script:} \path{scripts/train_nft_sd3_origin-Aequality-multiply2-RemoveBackToBaseline.py}.\par
+\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=1.0$. And multiply the loss (policy+kl) by 1.\par
+\textbf{Purpose:} test the stability of NFT baseline on H200.
+
+
+\subsection{Delta-Equality Baseline (scaled by 1) on 16 4090 (runing)}
+\textbf{Launcher:} \path{scripts/run_sd3_4090_16gpu_nft-baseline.sh}.\par
+\textbf{Training script:} \path{scripts/train_nft_sd3_origin.py}.\par
+\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=1.0$. And multiply the loss (policy+kl) by 1.\par
+\textbf{Purpose:} test the stability of NFT baseline on 4090.
+\end{document}
 
 \end{document}
+
+

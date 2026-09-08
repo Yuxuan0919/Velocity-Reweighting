@@ -15,7 +15,6 @@
 
 from collections import defaultdict
 import os
-import re
 import datetime
 from concurrent import futures
 import time
@@ -32,9 +31,11 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 from functools import partial
 import tqdm
+import tempfile
+from PIL import Image
 from peft import LoraConfig, get_peft_model, PeftModel
 import random
 from torch.utils.data import Dataset, DataLoader, Sampler
@@ -66,108 +67,6 @@ def cleanup_distributed():
 
 def is_main_process(rank):
     return rank == 0
-
-
-_CHECKPOINT_PATTERN = re.compile(r"^checkpoint-(\d+)$")
-
-
-def _has_saved_adapter(adapter_dir):
-    if not os.path.isdir(adapter_dir):
-        return False
-    config_path = os.path.join(adapter_dir, "adapter_config.json")
-    weight_paths = (
-        os.path.join(adapter_dir, "adapter_model.safetensors"),
-        os.path.join(adapter_dir, "adapter_model.bin"),
-    )
-    return os.path.isfile(config_path) and any(
-        os.path.isfile(path) and os.path.getsize(path) > 0 for path in weight_paths
-    )
-
-
-def _is_resumable_checkpoint(checkpoint_dir, config):
-    default_adapter_dir = os.path.join(checkpoint_dir, "lora_default")
-    legacy_adapter_dir = os.path.join(checkpoint_dir, "lora")
-    if not (_has_saved_adapter(default_adapter_dir) or _has_saved_adapter(legacy_adapter_dir)):
-        return False
-
-    required_files = [
-        os.path.join(checkpoint_dir, "optimizer.pt"),
-        os.path.join(checkpoint_dir, "training_state.pt"),
-    ]
-    if config.train.ema:
-        required_files.append(os.path.join(checkpoint_dir, "ema_state.pt"))
-    if config.per_prompt_stat_tracking:
-        required_files.append(os.path.join(checkpoint_dir, "stat_tracker.pt"))
-
-    return all(os.path.isfile(path) and os.path.getsize(path) > 0 for path in required_files)
-
-
-def _find_latest_checkpoint(search_dir, config):
-    if not search_dir:
-        return ""
-    search_dir = os.path.abspath(os.path.expanduser(search_dir))
-    exact_match = _CHECKPOINT_PATTERN.fullmatch(os.path.basename(search_dir))
-    if exact_match:
-        return search_dir if _is_resumable_checkpoint(search_dir, config) else ""
-
-    nested_checkpoint_dir = os.path.join(search_dir, "checkpoints")
-    checkpoint_root = nested_checkpoint_dir if os.path.isdir(nested_checkpoint_dir) else search_dir
-    if not os.path.isdir(checkpoint_root):
-        return ""
-
-    candidates = []
-    for entry in os.scandir(checkpoint_root):
-        match = _CHECKPOINT_PATTERN.fullmatch(entry.name)
-        if entry.is_dir() and match:
-            candidates.append((int(match.group(1)), entry.path))
-
-    uses_completion_markers = any(
-        os.path.isfile(os.path.join(checkpoint_dir, "_SUCCESS"))
-        for _, checkpoint_dir in candidates
-    )
-    for _, checkpoint_dir in sorted(candidates, reverse=True):
-        if uses_completion_markers and not os.path.isfile(os.path.join(checkpoint_dir, "_SUCCESS")):
-            logger.warning("Ignoring checkpoint without completion marker: %s", checkpoint_dir)
-            continue
-        if _is_resumable_checkpoint(checkpoint_dir, config):
-            return checkpoint_dir
-        logger.warning("Ignoring incomplete checkpoint: %s", checkpoint_dir)
-    return ""
-
-
-def resolve_resume_checkpoint(config, rank):
-    requested_path = str(config.resume_from).strip()
-    search_dir = requested_path or config.save_dir
-    resolution = {"path": "", "error": ""}
-
-    if is_main_process(rank):
-        try:
-            checkpoint_path = _find_latest_checkpoint(search_dir, config)
-            if requested_path and not checkpoint_path:
-                resolution["error"] = f"No complete checkpoint found at or under: {requested_path}"
-            else:
-                resolution["path"] = checkpoint_path
-        except Exception as error:
-            resolution["error"] = f"Failed to resolve resume checkpoint from {search_dir}: {error}"
-
-    payload = [resolution]
-    dist.broadcast_object_list(
-        payload,
-        src=0,
-        device=torch.device("cuda", torch.cuda.current_device()),
-    )
-    resolution = payload[0]
-    if resolution["error"]:
-        raise FileNotFoundError(resolution["error"])
-
-    checkpoint_path = resolution["path"]
-    if is_main_process(rank):
-        if checkpoint_path:
-            mode = "explicit" if requested_path else "automatic"
-            logger.info("Using %s resume checkpoint: %s", mode, checkpoint_path)
-        else:
-            logger.info("No checkpoint found in %s; starting a new training run.", search_dir)
-    return checkpoint_path
 
 
 def set_seed(seed: int, rank: int = 0):
@@ -302,20 +201,6 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
     return zero_std_ratio, prompt_std_devs.mean()
 
 
-def log_scalars(writer, scalars, step):
-    if writer is None:
-        return
-    for key, value in scalars.items():
-        if isinstance(value, torch.Tensor):
-            value = value.detach().float().mean().item()
-        elif isinstance(value, np.ndarray):
-            value = float(np.mean(value))
-        elif isinstance(value, np.generic):
-            value = value.item()
-        if isinstance(value, (int, float)):
-            writer.add_scalar(key, value, step)
-
-
 def eval_fn(
     pipeline,
     test_dataloader,
@@ -331,7 +216,6 @@ def eval_fn(
     mixed_precision_dtype,
     ema,
     transformer_trainable_parameters,
-    writer,
 ):
     if config.train.ema and ema is not None:
         ema.copy_ema_to(transformer_trainable_parameters, store_temp=True)
@@ -408,11 +292,35 @@ def eval_fn(
 
     if is_main_process(rank):
         final_rewards = {key: np.concatenate(value_list) for key, value_list in all_rewards.items()}
-        log_scalars(
-            writer,
-            {f"eval_reward/{key}": np.mean(value[value != -10]) for key, value in final_rewards.items()},
-            global_step,
-        )
+
+        images_to_log = images.cpu()
+        prompts_to_log = prompts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            num_samples_to_log = min(15, len(images_to_log))
+            for idx in range(num_samples_to_log):
+                image = images_to_log[idx].float()
+                pil = Image.fromarray((image.numpy().transpose(1, 2, 0) * 255).astype(np.uint8))
+                pil = pil.resize((config.resolution, config.resolution))
+                pil.save(os.path.join(tmpdir, f"{idx}.jpg"))
+
+            sampled_prompts_log = [prompts_to_log[i] for i in range(num_samples_to_log)]
+            sampled_rewards_log = [{k: final_rewards[k][i] for k in final_rewards} for i in range(num_samples_to_log)]
+
+            wandb.log(
+                {
+                    "eval_images": [
+                        wandb.Image(
+                            os.path.join(tmpdir, f"{idx}.jpg"),
+                            caption=f"{prompt:.1000} | "
+                            + " | ".join(f"{k}: {v:.2f}" for k, v in reward.items() if v != -10),
+                        )
+                        for idx, (prompt, reward) in enumerate(zip(sampled_prompts_log, sampled_rewards_log))
+                    ],
+                    **{f"eval_reward_{key}": np.mean(value[value != -10]) for key, value in final_rewards.items()},
+                },
+                step=global_step,
+            )
 
     if config.train.ema and ema is not None:
         ema.copy_temp_to(transformer_trainable_parameters)
@@ -422,62 +330,26 @@ def eval_fn(
 
 
 def save_ckpt(
-    save_dir, transformer_ddp, global_step, rank, ema, transformer_trainable_parameters, config, optimizer, scaler, epoch, stat_tracker=None
+    save_dir, transformer_ddp, global_step, rank, ema, transformer_trainable_parameters, config, optimizer, scaler
 ):
     if is_main_process(rank):
         save_root = os.path.join(save_dir, "checkpoints", f"checkpoint-{global_step}")
-        save_root_lora_default = os.path.join(save_root, "lora_default")
-        save_root_lora_old = os.path.join(save_root, "lora_old")
-        completion_marker = os.path.join(save_root, "_SUCCESS")
-        os.makedirs(save_root_lora_default, exist_ok=True)
-        os.makedirs(save_root_lora_old, exist_ok=True)
-        if os.path.exists(completion_marker):
-            os.remove(completion_marker)
+        save_root_lora = os.path.join(save_root, "lora")
+        os.makedirs(save_root_lora, exist_ok=True)
 
-        model = transformer_ddp.module
+        model_to_save = transformer_ddp.module
 
         if config.train.ema and ema is not None:
             ema.copy_ema_to(transformer_trainable_parameters, store_temp=True)
 
-        # 保存 default 适配器
-        model.set_adapter("default")
-        model.save_pretrained(save_root_lora_default, selected_adapters=["default"])
+        model_to_save.save_pretrained(save_root_lora)  # For LoRA/PEFT models
 
-        # 保存 old 适配器
-        model.set_adapter("old")
-        model.save_pretrained(save_root_lora_old, selected_adapters=["old"])
-
-        model.set_adapter("default")  # 恢复为 default
-
-        # 保存优化器、scaler
         torch.save(optimizer.state_dict(), os.path.join(save_root, "optimizer.pt"))
         if scaler is not None:
             torch.save(scaler.state_dict(), os.path.join(save_root, "scaler.pt"))
 
-        # 保存 epoch 和 global_step 等元信息
-        training_state = {
-            "epoch": epoch,
-            "global_step": global_step,
-        }
-        torch.save(training_state, os.path.join(save_root, "training_state.pt"))
-
         if config.train.ema and ema is not None:
             ema.copy_temp_to(transformer_trainable_parameters)
-        
-        # 保存 EMA 影子参数
-        if config.train.ema and ema is not None:
-            ema_state_path = os.path.join(save_root, "ema_state.pt")
-            torch.save(ema.state_dict(), ema_state_path)
-            
-        # 保存 PerPromptStatTracker 状态（仅在启用时）
-        if config.per_prompt_stat_tracking and stat_tracker is not None:
-            stat_tracker_path = os.path.join(save_root, "stat_tracker.pt")
-            torch.save(stat_tracker.state_dict(), stat_tracker_path)
-
-        marker_tmp = f"{completion_marker}.tmp"
-        with open(marker_tmp, "w", encoding="utf-8") as marker_file:
-            marker_file.write(f"global_step={global_step}\nepoch={epoch}\n")
-        os.replace(marker_tmp, completion_marker)
         logger.info(f"Saved checkpoint to {save_root}")
 
 
@@ -490,7 +362,6 @@ def main(_):
     local_rank = int(os.environ["LOCAL_RANK"])
 
     setup_distributed(rank, local_rank, world_size)
-    config.resume_from = resolve_resume_checkpoint(config, rank)
     device = torch.device(f"cuda:{local_rank}")
 
     unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
@@ -499,12 +370,11 @@ def main(_):
     else:
         config.run_name += "_" + unique_id
 
-    writer = None
+    # --- WandB Init (only on main process) ---
     if is_main_process(rank):
         log_dir = os.path.join(config.logdir, config.run_name)
         os.makedirs(log_dir, exist_ok=True)
-        writer = SummaryWriter(log_dir=log_dir)
-        writer.add_text("config", f"```text\n{config}\n```", 0)
+        wandb.init(project="flow-grpo", name=config.run_name, config=config.to_dict(), dir=log_dir)
     logger.info(f"\n{config}")
 
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
@@ -658,97 +528,43 @@ def main(_):
 
     reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
     eval_reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
-    
-    ema = None
-    if config.train.ema:
-        ema = EMAModuleWrapper(transformer_trainable_parameters, decay=0.9, update_step_interval=1, device=device)
 
     # --- Resume from checkpoint ---
     first_epoch = 0
     global_step = 0
     if config.resume_from:
         logger.info(f"Resuming from {config.resume_from}")
-        # 加载 default 适配器
-        lora_default_path = os.path.join(config.resume_from, "lora_default")
-        if os.path.exists(lora_default_path):
-            default_adapter_path = lora_default_path
-        else:
-            # 向后兼容旧格式
-            lora_path = os.path.join(config.resume_from, "lora")
-            if os.path.exists(lora_path):
-                default_adapter_path = lora_path
-            else:
-                raise FileNotFoundError(f"No default LoRA adapter found in {config.resume_from}")
-        transformer_ddp.module.load_adapter(default_adapter_path, adapter_name="default", is_trainable=True)
+        # Assuming checkpoint dir contains lora, optimizer.pt, scaler.pt
+        lora_path = os.path.join(config.resume_from, "lora")
+        if os.path.exists(lora_path):  # Check if it's a PEFT model save
+            transformer_ddp.module.load_adapter(lora_path, adapter_name="default", is_trainable=True)
+            transformer_ddp.module.load_adapter(lora_path, adapter_name="old", is_trainable=False)
+        else:  # Try loading full state dict if it's not a PEFT save structure
+            model_ckpt_path = os.path.join(config.resume_from, "transformer_model.pt")  # Or specific name
+            if os.path.exists(model_ckpt_path):
+                transformer_ddp.module.load_state_dict(torch.load(model_ckpt_path, map_location=device))
 
-        # 加载 old 适配器
-        lora_old_path = os.path.join(config.resume_from, "lora_old")
-        old_adapter_candidates = [
-            os.path.join(lora_old_path, "old"),
-            lora_old_path,
-            os.path.join(lora_default_path, "old"),
-        ]
-        old_adapter_path = next(
-            (path for path in old_adapter_candidates if _has_saved_adapter(path)),
-            "",
-        )
-        if old_adapter_path:
-            transformer_ddp.module.load_adapter(old_adapter_path, adapter_name="old", is_trainable=False)
-        else:
-            # 如果没有 old，则复制 default 作为起点（但会丢失旧策略信息）
-            logger.warning("No 'old' adapter found in checkpoint. Cloning 'default' as 'old'.")
-            # 需要先确保 default 已加载，然后拷贝
-            # 因为 PeftModel 没有直接的克隆方法，可采用以下方式：
-            # 重新加载 default 的权重并作为 old（简单方案：直接 load_adapter 同路径）
-            transformer_ddp.module.load_adapter(default_adapter_path, adapter_name="old", is_trainable=False)
-
-        # 确保适配器名称正确
-        transformer_ddp.module.set_adapter("default")
-
-        # 加载优化器
         opt_path = os.path.join(config.resume_from, "optimizer.pt")
         if os.path.exists(opt_path):
             optimizer.load_state_dict(torch.load(opt_path, map_location=device))
 
-        # 加载 scaler
         scaler_path = os.path.join(config.resume_from, "scaler.pt")
         if os.path.exists(scaler_path) and enable_amp:
             scaler.load_state_dict(torch.load(scaler_path, map_location=device))
 
-        # 加载训练状态（epoch 和 global_step）
-        training_state_path = os.path.join(config.resume_from, "training_state.pt")
-        if os.path.exists(training_state_path):
-            training_state = torch.load(training_state_path, map_location=device)
-            # Checkpoints are saved before sampling/training the recorded epoch.
-            first_epoch = training_state.get("epoch", 0)
-            global_step = training_state.get("global_step", 0)
-            logger.info(f"Resuming from epoch={first_epoch}, global_step={global_step}")
-        else:
-            # 尝试从 checkpoint 目录名解析 global_step
-            try:
-                global_step = int(os.path.basename(config.resume_from).split("-")[-1])
-                logger.info(f"Parsed global_step from dirname: {global_step}")
-            except ValueError:
-                logger.warning(f"Could not parse global_step from dirname: {config.resume_from}. Starting from 0.")
-                global_step = 0
-                
-        # 恢复 EMA 影子参数
-        if config.train.ema and ema is not None:
-            ema_state_path = os.path.join(config.resume_from, "ema_state.pt")
-            if os.path.exists(ema_state_path):
-                ema_state = torch.load(ema_state_path, map_location=device)
-                ema.load_state_dict(ema_state, device=device)
-                logger.info("EMA shadow parameters restored from checkpoint.")
-            else:
-                logger.warning("EMA was enabled but no ema_state.pt found in checkpoint. EMA will start fresh.")
-        # 恢复 PerPromptStatTracker 状态
-        if config.per_prompt_stat_tracking:
-            stat_tracker_path = os.path.join(config.resume_from, "stat_tracker.pt")
-            if os.path.exists(stat_tracker_path):
-                stat_tracker.load_state_dict(torch.load(stat_tracker_path, map_location=device))
-                logger.info("PerPromptStatTracker state restored.")
-            else:
-                logger.info("No stat_tracker.pt found, starting fresh.")
+        # Extract epoch and step from checkpoint name, e.g., "checkpoint-1000" -> global_step = 1000
+        try:
+            global_step = int(os.path.basename(config.resume_from).split("-")[-1])
+            logger.info(f"Resumed global_step to {global_step}. Epoch estimation might be needed.")
+        except ValueError:
+            logger.warning(
+                f"Could not parse global_step from checkpoint name: {config.resume_from}. Starting global_step from 0."
+            )
+            global_step = 0
+
+    ema = None
+    if config.train.ema:
+        ema = EMAModuleWrapper(transformer_trainable_parameters, decay=0.9, update_step_interval=1, device=device)
 
     num_train_timesteps = int(config.sample.num_steps * config.train.timestep_fraction)
 
@@ -757,21 +573,11 @@ def main(_):
     train_iter = iter(train_dataloader)
     optimizer.zero_grad()
 
-    # 只在首次训练时同步 old 适配器
-    if not config.resume_from:
-        for src_param, tgt_param in zip(
-            transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True
-        ):
-            tgt_param.data.copy_(src_param.detach().data)
-            assert src_param is not tgt_param
-    else:
-        # 确保 old 适配器参数不会被意外覆盖，保持 checkpoint 加载的状态
-        logger.info("Skipping old adapter initialization (resuming from checkpoint).")
-        # 顺手验证一下 old 是否真正与 default 不同（如果是不同步的，说明加载正确）
-        for src_param, tgt_param in zip(
-            transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True
-        ):
-            assert src_param is not tgt_param
+    for src_param, tgt_param in zip(
+        transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True
+    ):
+        tgt_param.data.copy_(src_param.detach().data)
+        assert src_param is not tgt_param
 
     for epoch in range(first_epoch, config.num_epochs):
         if hasattr(train_sampler, "set_epoch"):
@@ -816,16 +622,9 @@ def main(_):
                     mixed_precision_dtype,
                     ema,
                     transformer_trainable_parameters,
-                    writer,
                 )
 
-            if (
-                i == 0
-                and epoch % config.save_freq == 0
-                and is_main_process(rank)
-                and not config.debug
-                and not (config.resume_from and epoch == first_epoch)
-            ):
+            if i == 0 and epoch % config.save_freq == 0 and is_main_process(rank) and not config.debug:
                 save_ckpt(
                     config.save_dir,
                     transformer_ddp,
@@ -836,8 +635,6 @@ def main(_):
                     config,
                     optimizer,
                     scaler,
-                    epoch,  # 新增参数
-                    stat_tracker=stat_tracker if config.per_prompt_stat_tracking else None,
                 )
 
             transformer_ddp.module.set_adapter("old")
@@ -896,6 +693,32 @@ def main(_):
             for k in samples_data_list[0].keys()
         }
 
+        # Logging images (main process)
+        if epoch % 10 == 0 and is_main_process(rank):
+            images_to_log = images.cpu()  # from last sampling batch on this rank
+            prompts_to_log = prompts  # from last sampling batch on this rank
+            rewards_to_log = collated_samples["rewards"]["avg"][-len(images_to_log) :].cpu()
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                num_to_log = min(15, len(images_to_log))
+                for idx in range(num_to_log):  # log first N
+                    img_data = images_to_log[idx]
+                    pil = Image.fromarray((img_data.numpy().transpose(1, 2, 0) * 255).astype(np.uint8))
+                    pil = pil.resize((config.resolution, config.resolution))
+                    pil.save(os.path.join(tmpdir, f"{idx}.jpg"))
+
+                wandb.log(
+                    {
+                        "images": [
+                            wandb.Image(
+                                os.path.join(tmpdir, f"{idx}.jpg"),
+                                caption=f"{prompts_to_log[idx]:.100} | avg: {rewards_to_log[idx]:.2f}",
+                            )
+                            for idx in range(num_to_log)
+                        ],
+                    },
+                    step=global_step,
+                )
         collated_samples["rewards"]["avg"] = (
             collated_samples["rewards"]["avg"].unsqueeze(1).repeat(1, num_train_timesteps)
         )
@@ -906,17 +729,16 @@ def main(_):
             gathered_rewards_dict[key] = gather_tensor_to_all(value_tensor, world_size).numpy()
 
         if is_main_process(rank):  # logging
-            log_scalars(
-                writer,
+            wandb.log(
                 {
                     "epoch": epoch,
                     **{
-                        f"reward/{k}": v.mean()
+                        f"reward_{k}": v.mean()
                         for k, v in gathered_rewards_dict.items()
                         if "_strict_accuracy" not in k and "_accuracy" not in k
                     },
                 },
-                global_step,
+                step=global_step,
             )
 
         if config.per_prompt_stat_tracking:
@@ -930,20 +752,19 @@ def main(_):
             if is_main_process(rank):
                 group_size, trained_prompt_num = stat_tracker.get_stats()
                 zero_std_ratio, reward_std_mean = calculate_zero_std_ratio(prompts_all_decoded, gathered_rewards_dict)
-                log_scalars(
-                    writer,
+                wandb.log(
                     {
-                        "stats/group_size": group_size,
-                        "stats/trained_prompt_num": trained_prompt_num,
-                        "stats/zero_std_ratio": zero_std_ratio,
-                        "stats/reward_std_mean": reward_std_mean,
-                        "stats/mean_reward_100": stat_tracker.get_mean_of_top_rewards(100),
-                        "stats/mean_reward_75": stat_tracker.get_mean_of_top_rewards(75),
-                        "stats/mean_reward_50": stat_tracker.get_mean_of_top_rewards(50),
-                        "stats/mean_reward_25": stat_tracker.get_mean_of_top_rewards(25),
-                        "stats/mean_reward_10": stat_tracker.get_mean_of_top_rewards(10),
+                        "group_size": group_size,
+                        "trained_prompt_num": trained_prompt_num,
+                        "zero_std_ratio": zero_std_ratio,
+                        "reward_std_mean": reward_std_mean,
+                        "mean_reward_100": stat_tracker.get_mean_of_top_rewards(100),
+                        "mean_reward_75": stat_tracker.get_mean_of_top_rewards(75),
+                        "mean_reward_50": stat_tracker.get_mean_of_top_rewards(50),
+                        "mean_reward_25": stat_tracker.get_mean_of_top_rewards(25),
+                        "mean_reward_10": stat_tracker.get_mean_of_top_rewards(10),
                     },
-                    global_step,
+                    step=global_step,
                 )
             stat_tracker.clear()
         else:
@@ -1110,62 +931,43 @@ def main(_):
                     loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
                     loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
-
                     positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
                     implicit_negative_prediction = (
                         1.0 + config.beta
                     ) * old_prediction.detach() - config.beta * forward_prediction
 
+                    # adaptive weighting
                     x0_prediction = xt - t_expanded * positive_prediction
-
-                    # Official adaptive normalization (kept for reference):
                     with torch.no_grad():
                         weight_factor = (
                             torch.abs(x0_prediction.double() - x0.double())
                             .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
                             .clip(min=0.00001)
                         )
-                    # with torch.no_grad():
-                        # weight_factor = t_expanded.square().clip(min=1e-8)
-                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(
-                        dim=tuple(range(1, x0.ndim))
-                    )
-
+                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(dim=tuple(range(1, x0.ndim)))
                     negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
-
-                    # Official adaptive normalization (kept for reference):
                     with torch.no_grad():
                         negative_weight_factor = (
                             torch.abs(negative_x0_prediction.double() - x0.double())
                             .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
                             .clip(min=0.00001)
                         )
-                    # with torch.no_grad():
-                    #     negative_weight_factor = t_expanded.square().clip(min=1e-8)
                     negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
                     ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
-                    policy_loss = ori_policy_loss.mean()
+                    policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
                     loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
-                    # log weight factor
-                    loss_terms["positive_weight_factor"] = weight_factor.mean().detach()
-                    loss_terms["positive_weight_factor_max"] = weight_factor.max().detach()
-                    loss_terms["positive_weight_factor_min"] = weight_factor.min().detach()
-                    loss_terms["negative_weight_factor"] = negative_weight_factor.mean().detach()
-                    loss_terms["negative_weight_factor_max"] = negative_weight_factor.max().detach()
-                    loss_terms["negative_weight_factor_min"] = negative_weight_factor.min().detach()
-
 
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    loss += config.train.beta / config.train.adv_clip_max * torch.mean(kl_div_loss)
+                    loss += config.train.beta * torch.mean(kl_div_loss)
                     kl_div_loss = torch.mean(kl_div_loss)
                     loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach()
                     loss_terms["kl_div"] = torch.mean(
@@ -1206,16 +1008,14 @@ def main(_):
                         dist.all_reduce(info_tensor, op=dist.ReduceOp.AVG)
                         reduced_log_info = {k: info_tensor[ki].item() for ki, k in enumerate(sorted(log_info.keys()))}
                         if is_main_process(rank):
-                            log_scalars(
-                                writer,
+                            wandb.log(
                                 {
                                     "step": global_step,
                                     "gradient_update_times": gradient_update_times,
                                     "epoch": epoch,
                                     "inner_epoch": inner_epoch,
                                     **reduced_log_info,
-                                },
-                                global_step,
+                                }
                             )
 
                         global_step += 1  # gradient step
@@ -1239,8 +1039,7 @@ def main(_):
                 tgt_param.data.copy_(tgt_param.detach().data * decay + src_param.detach().clone().data * (1.0 - decay))
 
     if is_main_process(rank):
-        writer.flush()
-        writer.close()
+        wandb.finish()
     cleanup_distributed()
 
 
