@@ -361,27 +361,67 @@ positive strong tail.
 
 The selected mass is approximately a fraction $\rho$ of the corresponding
 base mass.  Dividing the retained signal by $\rho$ therefore approximately
-preserves the total mass of the base scheme while reallocating it from
-borderline samples to strong samples.  In Scheme C, the negative side is not
+preserves the total mass while reallocating it from
+borderline samples to strong signal samples.  In Scheme C, the negative side is not
 selected and is consequently not divided by $\rho$.
 
-When $\rho=1$, no nonzero sample is removed and both schemes satisfy
-$w_{j,k}-1=\Delta_{j,k}$, so they reduce exactly to the base scheme under the
-same training hyperparameters.  When $\rho<1$, the retained samples receive
-$1/\rho$ times their base signal and the discarded samples receive zero; the
-total mass is only approximately preserved because the selection boundary
+When $\rho=1$, no sample is removed and both schemes reduce exactly to the base scheme under the
+same training hyperparameters.  When $\rho<1$, the
+total mass is approximately preserved because the selection boundary
 must fall between discrete samples.  Thus these schemes mainly test the
-effect of concentrating the base training signal on stronger samples, although
-a small $\rho$ may produce large individual target shifts.
+effect of concentrating the base training signal on stronger samples.
 
 
-\subsection{Mass-Shift Experiment Matrix}
+
+
+% When $\rho=1$, both schemes reduce to
+% \[
+%     s_{j,k}=\Delta_{j,k}
+%     =
+%     \operatorname{clip}\!\left(
+%         \frac{R_{j,k}-b_j}{\sigma_R},
+%         -\Delta_{\mathrm{clip}},
+%         \Delta_{\mathrm{clip}}
+%     \right).
+% \]
+
+% For the same clipped reward signal, the base method uses
+% \[
+%     w_{j,k}^{\mathrm{base}}-1
+%     =
+%     \frac{1}{\Delta_{\mathrm{clip}}}
+%     \operatorname{clip}\!\left(
+%         \frac{R_{j,k}-b_j}{\sigma_R},
+%         -\Delta_{\mathrm{clip}},
+%         \Delta_{\mathrm{clip}}
+%     \right),
+% \]
+% whereas Schemes B/C use
+% \[
+%     w_{j,k}^{\mathrm{B/C}}-1
+%     =
+%     \begin{cases}
+%         \Delta_{j,k}/m_j^-, & \Delta_{j,k}<0,\\
+%         0,                  & \Delta_{j,k}=0,\\
+%         \Delta_{j,k}/m_j^+, & \Delta_{j,k}>0.
+%     \end{cases}
+% \]
+% Thus Schemes B/C additionally rescale every sample by
+% $\Delta_{\mathrm{clip}}/m_j^-$ or
+% $\Delta_{\mathrm{clip}}/m_j^+$ relative to the base scheme.  
+
+
+% To make Schemes B/C at $\rho=1$ approximate the base scheme with $\beta=1$,
+% one can first monitor the empirical averages of $m_j^+$ and $m_j^-$ over
+% prompt groups and training iterations.  If these averages are relatively
+% stable, set $\beta_{\mathrm{B/C}} = 
+% \bar m/\Delta_{\mathrm{clip}}$, where $\bar m$ denotes overall average value of $m_j^+$ and $m_j^-$.
 
 
 
 \begin{table}[H]
     \centering
-    \caption{Settings for the nineteen mass-shift experiments.  The launcher
+    \caption{Settings for the mass-shift experiments.  The launcher
     names below share the prefix
     \texttt{run\_sd3\_4090\_16gpu\_nft-ours-4.selection-}.}
     \label{tab:mass-shift-hard-selection-sweep}
@@ -392,7 +432,7 @@ a small $\rho$ may produce large individual target shifts.
         \toprule
         Experiment group & Scheme & $\rho$ & $\beta$ & Runs \\
         \midrule
-        Equivalence baseline & B ($=$ C) & $1$ & $1.0$ & $1$ \\
+        Equivalence baseline & B & $1$ & $1.0$ & $1$ \\
         \midrule
         Symmetric hard selection & B
         & $\{1/3,1/2,2/3\}$ & $\{0.2,1.0,5.0\}$ & $9$ \\
@@ -402,17 +442,6 @@ a small $\rho$ may produce large individual target shifts.
         \bottomrule
     \end{tabularx}
 
-    \vspace{0.4em}
-    \begin{minipage}{0.98\textwidth}
-        \footnotesize
-        The baseline launcher suffix is
-        \texttt{baseline-rho1-beta1.0.sh}.  For B and C, each listed
-        $\rho$ is crossed with all three $\beta$ values.  The $\beta=1.0$
-        launchers retain their existing suffixes, for example
-        \texttt{b-rho-1of3.sh}; the added launchers append
-        \texttt{-beta0.2} or \texttt{-beta5.0}, for example
-        \texttt{b-rho-1of3-beta0.2.sh}.
-    \end{minipage}
 
     \vspace{0.6em}
     \begin{tabularx}{\textwidth}{@{}>{\bfseries}l X@{}}
@@ -427,7 +456,7 @@ a small $\rho$ may produce large individual target shifts.
           iteration, 10 deterministic DPM2 sampling steps, guidance scale
           $1.0$. \\
         Compute and batch
-        & 16 RTX 4090 GPUs ($2$ nodes $\times$ $8$ GPUs), per-device batch
+        & 16 RTX GPUs ($2$ nodes $\times$ $8$ GPUs), per-device batch
           size $6$, global micro-batch $96$, gradient accumulation $12$, and
           effective batch size $1152$. \\
         Objective
@@ -446,28 +475,53 @@ a small $\rho$ may produce large individual target shifts.
 
 \paragraph{Baseline equivalence check.}
 The run with $\rho=1$ and $\beta=1$ verifies that the selection
-implementation reduces to the base scheme: no nonzero sample is discarded,
-the $1/\rho$ rescaling is the identity, and hence
-$w_{j,k}-1=\Delta_{j,k}$.  The expected result is that its learning curve and
-final metrics match the base scheme up to ordinary run-to-run variation.
+implementation reduces to the base scheme: no sample is discarded, hence
+$w_{j,k}-1=\Delta_{j,k}$.  The expected result is that its learning curve and final metrics match the base scheme.
 
-\paragraph{Scheme B: symmetric hard selection.}
-The $3\times3$ sweep separates the effect of retained mass $\rho$ from the
-overall shift strength $\beta$.  Comparisons at fixed $\beta$ test whether
+\paragraph{Scheme B: symmetric selection.}
+ Comparisons between different $\rho$ at fixed $\beta$ test whether
 concentrating both positive and negative signals on strong-tail samples is
-better than retaining borderline samples; comparisons at fixed $\rho$ test
+better than retaining borderline samples; comparisons between different $\beta$ at fixed $\rho$ test
 the required target-shift magnitude.  The intended conclusion is whether a
-moderate $\rho<1$ and a compatible $\beta$ improve reward, convergence, or
+moderate $\rho$ and a compatible $\beta$ improve convergence or
 stability over the base scheme, and whether aggressive selection must be
-paired with a smaller $\beta$ to avoid excessively large per-sample shifts.
+paired with a smaller $\beta$.
 
-\paragraph{Scheme C: asymmetric hard selection.}
-The matched $3\times3$ sweep tests whether positive samples require stricter
-confidence filtering while negative samples benefit from full coverage.
-Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better
-and equally stable results from C would support keeping all negative samples
-and filtering only borderline positive samples; better results from B would
-favor symmetric filtering, while a best result at $\rho=1$ would indicate no
-benefit from hard selection.  Sweeping $\beta$ also determines whether any
-such conclusion is robust to the overall shift strength rather than an
-artifact of the original $\beta=1$ setting.
+\paragraph{Scheme C: asymmetric selection.}
+Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better and equally stable results from C would support keeping all negative samples and filtering only borderline positive samples; better results from B would favor symmetric selection, while a best result at $\rho=1$ would indicate no benefit from hard selection.
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{imgs/selection.png}
+    \caption{Current Experimental Results}
+    \label{fig:selection}
+\end{figure}
+
+
+\subsection{Tie-Aware Boundary Allocation}
+
+\paragraph{Tie-group issue.}
+The original implementation sorts and selects individual samples.  If the
+selection boundary falls among several samples with the same $\Delta_i$, it
+may keep some of them and discard the others according only to their input
+order.  Thus equally strong samples can receive different weights.  The
+discrete boundary also means that the retained mass is generally only close
+to, rather than exactly, $\rho\sum_i|\Delta_i|$.
+
+\paragraph{Tie-aware correction.}
+The implementation in
+\texttt{scripts/train\_nft\_sd3\_ours-4.singleloss-alpha-selection-tie-aware.py}
+first groups samples with exactly equal $|\Delta_i|$.  Starting from the
+strongest groups, it keeps complete groups until the next group would exceed
+the target mass $\rho\sum_i|\Delta_i|$.  Every sample in this boundary group
+then receives the same fractional multiplier, chosen so that the remaining
+required mass is shared equally across the group.  Weaker groups receive zero.
+After the existing division by $\rho$, equal signals therefore have equal
+weights and the total mass matches the original mass up to floating-point
+roundoff.  Scheme B applies this procedure to both sides, whereas Scheme C
+keeps all negative samples and applies it only to the positive side.  At
+$\rho=1$, both schemes still give $w_i-1=\Delta_i$.  Only the boundary group
+can receive a fractional value; this is necessary to treat tied samples
+equally while matching the target mass exactly.  Numerically close but unequal
+values are not treated as a tie.
