@@ -7,7 +7,7 @@ CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 
 OPENCLIP_CKPT="${REPO_DIR}/reward_ckpts/geneval/openclip/ViT-L-14-state_dict.pt"
-TRAIN_SCRIPT="scripts/train_nft_sd3_ours-4.singleloss-alpha-selection.py"
+TRAIN_SCRIPT="scripts/train_nft_sd3_ours-4.singleloss-alpha-selection-tie-aware.py"
 
 MASS_SHIFT_SCHEME="${MASS_SHIFT_SCHEME:-B}"
 MASS_SHIFT_RHO="${MASS_SHIFT_RHO:-1.0}"
@@ -91,8 +91,8 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
   exit 2
 fi
 
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/weight_exps/sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-4selection-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
-RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-4selection-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/weight_exps/sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-4selection-tie-aware-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
+RUN_NAME="${RUN_NAME:-sd35_geneval_4090_${WORLD_SIZE}gpu_nft_ours-4selection-tie-aware-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 

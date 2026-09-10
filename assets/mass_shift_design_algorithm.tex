@@ -499,9 +499,7 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
 \end{figure}
 
 
-\subsection{Tie-Aware Boundary Allocation}
-
-\paragraph{Tie-group issue.}
+\paragraph{Problem with equal values.}
 The original implementation sorts and selects individual samples.  If the
 selection boundary falls among several samples with the same $\Delta_i$, it
 may keep some of them and discard the others according only to their input
@@ -509,19 +507,45 @@ order.  Thus equally strong samples can receive different weights.  The
 discrete boundary also means that the retained mass is generally only close
 to, rather than exactly, $\rho\sum_i|\Delta_i|$.
 
-\paragraph{Tie-aware correction.}
-The implementation in
-\texttt{scripts/train\_nft\_sd3\_ours-4.singleloss-alpha-selection-tie-aware.py}
-first groups samples with exactly equal $|\Delta_i|$.  Starting from the
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{imgs/reward-distribution-geneval.jpg}
+    \caption{ GenEval reward distribution of one prompt across different training steps.}
+    \label{fig:placeholder}
+\end{figure}
+\paragraph{Equal-value correction.}
+The correction implementation first groups samples with exactly equal $|\Delta_i|$.  Starting from the
 strongest groups, it keeps complete groups until the next group would exceed
 the target mass $\rho\sum_i|\Delta_i|$.  Every sample in this boundary group
 then receives the same fractional multiplier, chosen so that the remaining
-required mass is shared equally across the group.  Weaker groups receive zero.
-After the existing division by $\rho$, equal signals therefore have equal
-weights and the total mass matches the original mass up to floating-point
-roundoff.  Scheme B applies this procedure to both sides, whereas Scheme C
-keeps all negative samples and applies it only to the positive side.  At
-$\rho=1$, both schemes still give $w_i-1=\Delta_i$.  Only the boundary group
-can receive a fractional value; this is necessary to treat tied samples
-equally while matching the target mass exactly.  Numerically close but unequal
-values are not treated as a tie.
+required mass is shared equally across the group.  
+
+For example, consider the
+positive signals $\{1.0,0.5,0.5,0.5,0.25,0.25\}$ with $\rho=1/2$.  Their total
+mass is $3.0$, so the target retained mass is $1.5$.  The strongest group
+$\{1.0\}$ is completely retained, leaving $0.5$ mass to allocate.  The next
+equal-value group is $\{0.5,0.5,0.5\}$, so this remaining mass is shared equally: each
+sample receives the pre-rescaling signal $0.5/3=1/6$.  The weakest group
+$\{0.25,0.25\}$ is completely discarded.  Thus the pre-rescaling signals are
+$\{1.0,1/6,1/6,1/6,0,0\}$, whose mass is exactly $1.5$.  After division by
+$\rho=1/2$, the final $w_i-1$ values are
+$\{2.0,1/3,1/3,1/3,0,0\}$, whose total mass returns exactly to $3.0$.
+Scheme B applies this procedure to both sides, whereas Scheme C
+keeps all negative samples and applies it only to the positive side. 
+
+
+\paragraph{Equal-value validation experiments.}
+We evaluate the effect of equal-value groups with two sets of single-reward
+experiments:
+
+First, using the original implementation, we run both Schemes B
+and C on PickScore with $\beta=1.0$ and
+$\rho\in\{1/3,1/2,2/3\}$.  PickScore produces continuous rewards, so exactly
+equal rewards are much rarer than with GenEval; these runs measure hard
+selection when its result is largely unaffected by input-order selection
+among equal values.  
+
+Second, using the equal-value implementation, we run Schemes B and C on GenEval with $\beta=1.0$ and
+$\rho=1/2$.  Comparing these runs with the corresponding original GenEval
+runs at the same $(\rho,\beta)$ isolates the effect of treating equal-reward
+samples consistently and preserving the selected mass exactly.
