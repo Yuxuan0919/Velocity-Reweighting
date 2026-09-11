@@ -9,7 +9,7 @@ SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
 TRAIN_SCRIPT="scripts/train_nft_sd3_ours-4.singleloss-alpha-selection-soft-record.py"
 
-MASS_SHIFT_SCHEME="${MASS_SHIFT_SCHEME:-B}"
+MASS_SHIFT_SCHEME="${MASS_SHIFT_SCHEME:-C}"
 MASS_SHIFT_RHO="${MASS_SHIFT_RHO:-1.0}"
 EXPERIMENT_TAG="${EXPERIMENT_TAG:-scheme-${MASS_SHIFT_SCHEME}-rho-${MASS_SHIFT_RHO}}"
 EXPERIMENT_BETA="${EXPERIMENT_BETA:-1.0}"

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export MASS_SHIFT_SCHEME="B"
+export MASS_SHIFT_SCHEME="C"
 export MASS_SHIFT_RHO="1.0"
 export EXPERIMENT_TAG="baseline-rho1"
 export EXPERIMENT_BETA="1.0"
