@@ -94,6 +94,152 @@
     \setlength{\abovedisplayskip}{1pt}
     \setlength{\belowdisplayskip}{1pt}
     \renewcommand{\arraystretch}{0.9}
+    \caption{Scheme B: Symmetric Soft Selection}
+    \label{alg:x-prediction-symmetric-soft-selection}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$,
+    prompt distribution $p(c)$, $C$
+    prompts per iteration, $K$ samples per prompt, $D=CK$, batch size $B$,
+    retained ratio $\rho$, shift strength $\beta$, mass-shift clip
+    $\Delta_{\mathrm{clip}}$, reference regularization $\lambda_{\mathrm{ref}}$,
+    EMA rate $\eta$, accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:}
+    $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}\leftarrow\theta_0$,
+    $\mathcal{D}\leftarrow\emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+                \State Sample $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$
+                conditioned on $c_j$ and set
+                $R_{j,k}\leftarrow R(\mathbf{x}_0^{j,k},c_j)$.
+            \EndFor
+
+            \State Compute global reward mean
+            $\bar{R}\leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k}$.
+            \State Compute global reward scale
+            $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2}$.
+
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+                \State Set the mass-shift center to the prompt-group mean:
+                $b_j\leftarrow K^{-1}\sum_{k=1}^{K}R_{j,k}$.
+                \State Within this prompt group, compute
+                \[
+                    \Delta_{j,k}\leftarrow
+                    \frac{1}{\Delta_{\mathrm{clip}}}
+                    \operatorname{clip}\!\left(
+                        \frac{R_{j,k}-b_j}{\sigma_R},
+                        -\Delta_{\mathrm{clip}},
+                        \Delta_{\mathrm{clip}}
+                    \right),
+                    \qquad k=1,\dots,K.
+                \]
+                \State Initialize $s_{j,k}\leftarrow0$ for $k=1,\dots,K$.
+
+                \For{\text{each side $\tau\in\{-,+\}$}}
+                    \State Define
+                    $I_j^-\leftarrow\{k:\Delta_{j,k}<0\}$ and
+                    $I_j^+\leftarrow\{k:\Delta_{j,k}>0\}$; use $I_j^\tau$.
+                    \If{$I_j^\tau\neq\emptyset$}
+                        \State Partition $I_j^\tau$ into exact equal-magnitude groups
+                        $G_{j,1}^\tau,\dots,G_{j,m_j^\tau}^\tau$ such that
+                        \[
+                            G_{j,r}^\tau
+                            =\{k\in I_j^\tau:|\Delta_{j,k}|=a_{j,r}^\tau\},
+                            \qquad
+                            a_{j,1}^\tau>\cdots>a_{j,m_j^\tau}^\tau>0.
+                        \]
+                        \State Compute group masses and the target retained mass:
+                        \[
+                            m_{j,r}^\tau\leftarrow
+                            \sum_{k\in G_{j,r}^\tau}|\Delta_{j,k}|,
+                            \qquad
+                            T_j^\tau\leftarrow
+                            \rho\sum_{r=1}^{m_j^\tau}m_{j,r}^\tau.
+                        \]
+                        \State Find the boundary group and mass before it:
+                        \[
+                            r_{j,\rho}^\tau\leftarrow
+                            \min\left\{r:
+                            \sum_{u=1}^{r}m_{j,u}^\tau\ge T_j^\tau\right\},
+                            \qquad
+                            P_j^\tau\leftarrow
+                            \sum_{u=1}^{r_{j,\rho}^\tau-1}m_{j,u}^\tau.
+                        \]
+                        \State Assign one shared fraction to the complete boundary group:
+                        \[
+                            f_j^\tau\leftarrow
+                            \frac{T_j^\tau-P_j^\tau}
+                            {m_{j,r_{j,\rho}^\tau}^\tau}.
+                        \]
+                        \State Allocate the strong-tail mass without splitting a tie:
+                        \[
+                            s_{j,k}\leftarrow
+                            \begin{cases}
+                                \Delta_{j,k},
+                                &k\in G_{j,r}^\tau,\ r<r_{j,\rho}^\tau,\\
+                                f_j^\tau\Delta_{j,k},
+                                &k\in G_{j,r_{j,\rho}^\tau}^\tau,\\
+                                0,
+                                &k\in G_{j,r}^\tau,\ r>r_{j,\rho}^\tau.
+                            \end{cases}
+                        \]
+                    \EndIf
+                \EndFor
+
+                \State Rescale the allocated mass:
+                \[
+                    w_{j,k}-1\leftarrow s_{j,k}/\rho,
+                    \qquad k=1,\dots,K.
+                \]
+                \State Store
+                $\mathcal{D}\leftarrow\mathcal{D}\cup
+                \{(c_j,\mathbf{x}_0^{j,k},w_{j,k})\}_{k=1}^{K}$.
+            \EndFor
+
+            \For{\text{each mini batch }
+            $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
+                \State Sample $t_i\sim\mathcal{U}(0,1)$,
+                $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$;
+                set $\mathbf{x}_i^{t_i}\leftarrow
+                (1-t_i)\mathbf{x}_i^0+t_i\boldsymbol{\epsilon}_i$.
+                \State Predict $\mathbf{x}_i^\theta$,
+                $\mathbf{x}_i^{\mathrm{old}}$, and $\mathbf{x}_i^{\mathrm{ref}}$
+                from $(\mathbf{x}_i^{t_i},c_i,t_i)$ with
+                $\theta$, $\theta_{\mathrm{old}}$, and $\theta_{\mathrm{ref}}$.
+                \State $\mathbf{x}_i^{\mathrm{target}}\leftarrow
+                \mathbf{x}_i^{\mathrm{old}}+
+                \beta(w_i-1)(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}})$.
+                \State Compute
+                \[
+                    \begin{aligned}
+                    \mathcal{L}_{\mathrm{policy}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \frac{\|\mathbf{x}_i^\theta-\mathbf{x}_i^{\mathrm{target}}\|_2^2}
+                    {\operatorname{sg}[\operatorname{mean}
+                    |\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}|]},\\
+                    \mathcal{L}_{\mathrm{ref}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \|\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}\|_2^2.
+                    \end{aligned}
+                \]
+                \State Backpropagate
+                $(\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{policy}}+
+                \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})/N_{\mathrm{acc}}$.
+            \EndFor
+            \State Update $\theta$; set
+            $\theta_{\mathrm{old}}\leftarrow
+            \eta\theta_{\mathrm{old}}+(1-\eta)\theta$ and
+            $\mathcal{D}\leftarrow\emptyset$.
+        \EndFor
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{x}_\theta$
+\end{algorithm}
+
+
+\begin{algorithm}[H]
+    \scriptsize
+    \setlength{\abovedisplayskip}{1pt}
+    \setlength{\belowdisplayskip}{1pt}
+    \renewcommand{\arraystretch}{0.9}
     \caption{Scheme B: Symmetric Hard Selection}
     \label{alg:x-prediction-symmetric-hard-selection}
     \textbf{Require:} Initial model $\theta_0$, reward function $R$,
