@@ -2318,13 +2318,13 @@ effect of concentrating the base training signal on stronger samples.
         \toprule
         Experiment group & Scheme & $\rho$ & $\beta$ & Runs \\
         \midrule
-        Equivalence baseline & B & $1$ & $\{0.2,1.0,2.0\}$ & $3$ \\
+        Equivalence baseline & B & $1$ & $\{0.5,1.0,2.0,5.0\}$ & $4$ \\
         \midrule
         Symmetric hard selection & B
-        & $\{1/3,2/3\}$ & $\{0.2,1.0,2.0\}$ & $6$ \\
+        & $\{1/3,2/3\}$ & $\{0.5,1.0,2.0,5.0\}$ & $8$ \\
         \midrule
         Asymmetric hard selection & C
-        & $\{1/3,2/3\}$ & $\{0.5,1.0,2.0\}$ & $6$ \\
+        & $\{1/3,2/3\}$ & $\{0.5,1.0,2.0,5.0\}$ & $8$ \\
         \bottomrule
     \end{tabularx}
 
@@ -2381,7 +2381,7 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
 
 \begin{table}[H]
     \centering
-    \caption{PickScore evaluation for the soft-selection runs. Each $\beta$ block compares Scheme C at $\rho\in\{1/3,2/3\}$ with the $\rho=1$ baseline at selected checkpoints. Bold marks the highest displayed score after initialization at fixed $\beta$ and step (including ties). Dashes indicate that a three-way comparison is unavailable.}
+    \caption{PickScore evaluation for the soft-selection runs. Each $\beta$ block compares Scheme C at $\rho\in\{1/3,2/3\}$ with the $\rho=1$ baseline at selected checkpoints. Bold marks the highest displayed score after initialization at fixed $\beta$ and step.}
     \label{tab:pickscore-soft-selection-rho-comparison}
     \scriptsize
     \setlength{\tabcolsep}{2pt}
@@ -2429,26 +2429,32 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
 
 \begin{table}[H]
     \centering
-    \caption{PickScore experiment status. The $\rho=1$ baseline is shared by both schemes at each $\beta$.}
+    \caption{PickScore experiment status.}
     \label{tab:pickscore-current-running-sweep}
     \footnotesize
     \setlength{\tabcolsep}{5pt}
     \renewcommand{\arraystretch}{0.95}
-    \begin{tabular}{@{}c c c c c@{}}
+    \begin{tabular}{@{}c c c c c c@{}}
         \toprule
-        $\beta$ & Scheme & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$ (baseline) \\
+        $\beta$ & Scheme & $\rho=1/3$ & $\rho=1/2$ & $\rho=2/3$ & $\rho=1$ (baseline) \\
         \midrule
-        \multirow{2}{*}{$0.5$} & B & - & - & \multirow{2}{*}{$\bullet$} \\
-                                  & C & $\bullet$ & $\bullet$ & \\
+        \multirow{2}{*}{$0.5$} & B & - & - & - & \multirow{2}{*}{$\bullet$} \\
+                                  & C & $\bullet$ & - & $\bullet$ & \\
         \midrule
-        \multirow{2}{*}{$1.0$} & B & - & - & \multirow{2}{*}{$\checkmark$} \\
-                                  & C & $\checkmark$ & $\checkmark$ & \\
+        \multirow{2}{*}{$1.0$} & B & - & - & - & \multirow{2}{*}{$\bullet$} \\
+                                  & C & $\bullet$ & - & $\bullet$ & \\
         \midrule
-        \multirow{2}{*}{$2.0$} & B & - & - & \multirow{2}{*}{$\checkmark$} \\
-                                  & C & $\checkmark$ & $\checkmark$ & \\
+        \multirow{2}{*}{$2.0$} & B & - & - & - & \multirow{2}{*}{$\bullet$} \\
+                                  & C & $\bullet$ & - & $\bullet$ & \\
         \midrule
-        \multirow{2}{*}{$5.0$} & B & - & - & \multirow{2}{*}{$\checkmark$} \\
-                                  & C & $\checkmark$ & $\checkmark$ & \\
+        \multirow{2}{*}{$5.0$} & B & $\bullet$ & - & $\bullet$ & \multirow{2}{*}{$\bullet$} \\
+                                  & C & $\bullet$ & - & $\bullet$ & \\
+        \midrule
+        \multirow{2}{*}{$8.0$} & B & - & - & - & \multirow{2}{*}{-} \\
+                                  & C & - & - & - & \\
+        \midrule
+        \multirow{2}{*}{$10.0$} & B & $\bullet$ & - & $\bullet$ & \multirow{2}{*}{$\bullet$} \\
+                                  & C & $\bullet$ & - & $\bullet$ & \\
         \bottomrule
     \end{tabular}
 
@@ -2457,7 +2463,37 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
     $\checkmark$ running\qquad - waiting\qquad $\bullet$ finished
 \end{table}
 
+\begin{table}[H]
+    \centering
+    \caption{OCR, GenEval, and HPSv2 experiment status at $\beta=5.0$. Each task has two running experiments, at $\rho=2/3$ and $\rho=1$, for six experiments in total.}
+    \label{tab:other-reward-current-running-sweep}
+    \footnotesize
+    \setlength{\tabcolsep}{5pt}
+    \renewcommand{\arraystretch}{0.95}
+    \begin{tabular}{@{}c c c c@{}}
+        \toprule
+        $\beta$ & Task & $\rho=2/3$ & $\rho=1$ (baseline) \\
+        \midrule
+        \multirow{3}{*}{$5.0$}
+            & OCR     & $\checkmark$ & $\checkmark$ \\
+            & GenEval & $\checkmark$ & $\checkmark$ \\
+            & HPSv2   & $\checkmark$ & $\checkmark$ \\
+        \bottomrule
+    \end{tabular}
 
+    \vspace{0.3em}
+    \scriptsize
+    $\checkmark$ running
+\end{table}
+
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{imgs/ablation-selection-setting-search-for-schemeC.png}
+    \caption{Ablation for selection SchemeC on Pickscore.}
+    \label{fig:placeholder}
+\end{figure}
 
 
 
@@ -5972,18 +6008,5 @@ The compositional breakdown further supports this interpretation: although 85.53
 
 
 
-\newpage
 
-
-
-
-
-\section{Currently Running Experiments}
-
-\subsection{Delta-Equality Baseline (scaled by 1) on 8 H200 (runing)}
-\textbf{Launcher:} \path{scripts/baseline_exps/run_sd3_geneval_h200_8gpu_nft-baseline-Aequality*2-RemoveBackToBaseline.sh}.\par
-\textbf{Training script:} \path{scripts/train_nft_sd3_origin-Aequality-multiply2-RemoveBackToBaseline.py}.\par
-\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=1.0$. And multiply the loss (policy+kl) by 1.\par
-\textbf{Purpose:} test the stability of NFT baseline on H200.
 \end{document}
-
