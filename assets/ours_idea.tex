@@ -29,6 +29,8 @@
 \definecolor{indomgray}{gray}{0.9}
 \newcommand{\cellgray}{\cellcolor{indomgray}}
 \newcolumntype{Y}{>{\centering\arraybackslash}X}
+\newcommand{\dd}{\mathrm{d}}
+\def\v\epsilon{{\bm{\epsilon}}}
 
 
 \title{Reinforced Flow Matching}
@@ -1777,7 +1779,7 @@ it becomes uniform, all are $1$.
 
 
 
-\begin{algorithm}[t]
+\begin{algorithm}[H]
     \caption{Reinforced Flow Matching}
     \label{alg:velocity-add-delete}
     \textbf{Require:} Initial model $\theta_0$, reward function $R$, prompt distribution $p(c)$, number of prompts per iteration $C$, rollout size per prompt $K$, batch size $B$, total samples per iteration $D = KC$, rollout coverage coefficient $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference regularization $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, reward-scale constant $\epsilon_R$, numerical constant $\epsilon_{\mathrm{alg}}$, gradient accumulation steps $N_{\mathrm{acc}}$.\\
@@ -1881,6 +1883,643 @@ it becomes uniform, all are $1$.
 
 
 \newpage            
+
+
+
+
+
+\subsection{Reweighting Design Exploration}
+
+
+
+
+
+
+\begin{algorithm}[H]
+    \caption{Single Target Loss Base Scheme }
+    \label{alg:velocity-add-delete}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$, prompt distribution $p(c)$, number of prompts per iteration $C$, rollout size per prompt $K$, batch size $B$, total samples per iteration $D = KC$, rollout coverage coefficient $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference regularization $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, reward-scale constant $\epsilon_R$, numerical constant $\epsilon_{\mathrm{alg}}$, gradient accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:} Training policy $\theta \leftarrow \theta_0$, old policy $\theta_{\mathrm{old}} \leftarrow \theta_0$, reference policy $\theta_{\mathrm{ref}} \leftarrow \theta_0$, data buffer $\mathcal{D} \leftarrow \emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j \sim p(c)$, $j = 1, \dots, C$}} \Comment{Rollout Step, Data Collection}
+                \State Sample $K$ clean images $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$ conditioned on $c_j$.
+                \State Evaluate rewards $R_{j,k} \leftarrow R(\mathbf{x}_0^{j,k}, c_j)$ for $k = 1, \dots, K$.
+            \EndFor
+
+            \State Compute prompt-wise reward means
+            $\bar{R}_{c_j} \leftarrow \frac{1}{K}\sum_{k=1}^{K} R_{j,k}$ for $j = 1, \dots, C$.
+
+            \State Compute global reward mean
+            $\bar{R} \leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K} R_{j,k}$.
+
+            \State Compute global reward scale
+            $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2}.$
+
+            \For{\text{each prompt $c_j$, $j = 1, \dots, C$}}
+                \State Compute normalized weights
+                \[
+                    \Delta_{j,k} \leftarrow \frac{1}{\Delta_{\mathrm{clip}}}
+                    \operatorname{clip}\!\left(
+                        \frac{R_{j,k} - \bar{R}_{c_j}}{\sigma_R},
+                        -\Delta_{\mathrm{clip}},
+                        \Delta_{\mathrm{clip}}
+                    \right),
+                    \quad
+                    w_{j,k}-1\leftarrow \Delta_{j,k},
+                    \quad k = 1, \dots, K.
+                \]
+
+                \State Store
+                $\mathcal{D}\leftarrow\mathcal{D}\cup
+                \{(c_j,\mathbf{x}_0^{j,k},w_{j,k})\}_{k=1}^{K}$.
+            \EndFor
+
+            \For{\text{each mini batch }
+            $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
+                \State Sample $t_i\sim\mathcal{U}(0,1)$,
+                $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$;
+                set $\mathbf{x}_i^{t_i}\leftarrow
+                (1-t_i)\mathbf{x}_i^0+t_i\boldsymbol{\epsilon}_i$.
+                \State Predict $\mathbf{x}_i^\theta$,
+                $\mathbf{x}_i^{\mathrm{old}}$, and $\mathbf{x}_i^{\mathrm{ref}}$
+                from $(\mathbf{x}_i^{t_i},c_i,t_i)$ with
+                $\theta$, $\theta_{\mathrm{old}}$, and $\theta_{\mathrm{ref}}$.
+                \State $\mathbf{x}_i^{\mathrm{target}}\leftarrow
+                \mathbf{x}_i^{\mathrm{old}}+
+                \beta(w_i-1)(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}})$.
+                \State Compute
+                \[
+                    \begin{aligned}
+                    \mathcal{L}_{\mathrm{policy}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \frac{\|\mathbf{x}_i^\theta-\mathbf{x}_i^{\mathrm{target}}\|_2^2}
+                    {\operatorname{sg}[\operatorname{mean}
+                    |\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}|]},\\
+                    \mathcal{L}_{\mathrm{ref}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \|\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}\|_2^2.
+                    \end{aligned}
+                \]
+                \State Backpropagate
+                $(\Delta_{clip}\mathcal{L}_{\mathrm{policy}}+
+                \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})/N_{\mathrm{acc}}$.
+            \EndFor
+            \State Update $\theta$; set
+            $\theta_{\mathrm{old}}\leftarrow
+            \eta\theta_{\mathrm{old}}+(1-\eta)\theta$ and
+            $\mathcal{D}\leftarrow\emptyset$.
+        \EndFor
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{v}_\theta$
+\end{algorithm}
+
+
+\begin{algorithm}[H]
+    \scriptsize
+    \setlength{\abovedisplayskip}{1pt}
+    \setlength{\belowdisplayskip}{1pt}
+    \renewcommand{\arraystretch}{0.9}
+    \caption{Scheme B: Symmetric Hard Selection}
+    \label{alg:x-prediction-symmetric-hard-selection}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$,
+    prompt distribution $p(c)$, $C$
+    prompts per iteration, $K$ samples per prompt, $D=CK$, batch size $B$,
+    retained ratio $\rho$, shift strength $\beta$, mass-shift clip
+    $\Delta_{\mathrm{clip}}$, reference regularization $\lambda_{\mathrm{ref}}$,
+    EMA rate $\eta$, accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:}
+    $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}\leftarrow\theta_0$,
+    $\mathcal{D}\leftarrow\emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+                \State Sample $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$
+                conditioned on $c_j$ and set
+                $R_{j,k}\leftarrow R(\mathbf{x}_0^{j,k},c_j)$.
+
+            \EndFor
+            \State Compute global reward mean
+            $\bar{R}\leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k}$.
+            \State Compute global reward scale
+            $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2}.$
+
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+
+                \State Set the mass-shift center to the prompt-group mean:
+                $b_j\leftarrow K^{-1}\sum_{k=1}^{K}R_{j,k}$.
+                \State Within this prompt group, compute
+                \[
+                    % a_j^-\leftarrow\max_{R_{j,k}<b_j}|R_{j,k}-b_j|,
+                    % \quad
+                    % a_j^+\leftarrow\max_{R_{j,k}>b_j}|R_{j,k}-b_j|,
+                    % \quad
+                    \Delta_{j,k}\leftarrow
+                    \frac{1}{\Delta_{\mathrm{clip}}}
+                    \operatorname{clip}\!\left(
+                        \frac{R_{j,k}-b_j}{\sigma_R},
+                        -\Delta_{\mathrm{clip}},
+                        \Delta_{\mathrm{clip}}
+                    \right)
+                \]
+                \State Sort the $K$ samples so that
+                $\Delta_{j,1}\le\cdots\le\Delta_{j,q_j}\le0
+                \le\Delta_{j,q_j+1}\le\cdots\le\Delta_{j,K}$, and set
+                \[
+                    M_j^-\leftarrow\left|\sum_{k=1}^{q_j}\Delta_{j,k}\right|,
+                    \qquad
+                    M_j^+\leftarrow\sum_{k=q_j+1}^{K}\Delta_{j,k}.
+                \]
+                \State Select the two strong-tail boundaries:
+                \[
+                    \begin{aligned}
+                        l_{j,\rho}&\leftarrow
+                        \arg\min_{1\le l\le q_j}
+                        \left|\left|\sum_{k=1}^{l}\Delta_{j,k}\right|
+                        -\rho M_j^-\right|,\\
+                        h_{j,\rho}&\leftarrow
+                        \arg\min_{q_j+1\le h\le K}
+                        \left|\sum_{k=h}^{K}\Delta_{j,k}
+                        -\rho M_j^+\right|.
+                    \end{aligned}
+                \]
+                \State Conduct selection for both sides:
+                \[
+                    s_{j,k}\leftarrow
+                    \begin{cases}
+                        \Delta_{j,k},&k\le l_{j,\rho},\\
+                        0,&l_{j,\rho}<k<h_{j,\rho},\\
+                        \Delta_{j,k},&k\ge h_{j,\rho}.
+                    \end{cases}
+                \]
+                \State Normalize the selected mass within this prompt group:
+                \[
+                    % m_j^-\leftarrow\sum_{s_{j,k}<0}(-s_{j,k}),\quad
+                    % m_j^+\leftarrow\sum_{s_{j,k}>0}s_{j,k},\quad
+                    % w_{j,k}-1\leftarrow
+                    % \begin{cases}
+                    %     s_{j,k}/m_j^-,&s_{j,k}<0,\\
+                    %     0,&s_{j,k}=0,\\
+                    %     s_{j,k}/m_j^+,&s_{j,k}>0.
+                    % \end{cases}
+                    w_{j,k}-1\leftarrow s_{j,k}/\rho
+                \]
+                \State Store
+                $\mathcal{D}\leftarrow\mathcal{D}\cup
+                \{(c_j,\mathbf{x}_0^{j,k},w_{j,k})\}_{k=1}^{K}$.
+            \EndFor
+
+            \For{\text{each mini batch }
+            $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
+                \State Sample $t_i\sim\mathcal{U}(0,1)$,
+                $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$;
+                set $\mathbf{x}_i^{t_i}\leftarrow
+                (1-t_i)\mathbf{x}_i^0+t_i\boldsymbol{\epsilon}_i$.
+                \State Predict $\mathbf{x}_i^\theta$,
+                $\mathbf{x}_i^{\mathrm{old}}$, and $\mathbf{x}_i^{\mathrm{ref}}$
+                from $(\mathbf{x}_i^{t_i},c_i,t_i)$ with
+                $\theta$, $\theta_{\mathrm{old}}$, and $\theta_{\mathrm{ref}}$.
+                \State $\mathbf{x}_i^{\mathrm{target}}\leftarrow
+                \mathbf{x}_i^{\mathrm{old}}+
+                \beta(w_i-1)(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}})$.
+                \State Compute
+                \[
+                    \begin{aligned}
+                    \mathcal{L}_{\mathrm{policy}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \frac{\|\mathbf{x}_i^\theta-\mathbf{x}_i^{\mathrm{target}}\|_2^2}
+                    {\operatorname{sg}[\operatorname{mean}
+                    |\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}|]},\\
+                    \mathcal{L}_{\mathrm{ref}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \|\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}\|_2^2.
+                    \end{aligned}
+                \]
+                \State Backpropagate
+                $(\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{policy}}+
+                \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})/N_{\mathrm{acc}}$.
+            \EndFor
+            \State Update $\theta$; set
+            $\theta_{\mathrm{old}}\leftarrow
+            \eta\theta_{\mathrm{old}}+(1-\eta)\theta$ and
+            $\mathcal{D}\leftarrow\emptyset$.
+        \EndFor
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{x}_\theta$
+\end{algorithm}
+
+
+\begin{algorithm}[H]
+    \scriptsize
+    \setlength{\abovedisplayskip}{1pt}
+    \setlength{\belowdisplayskip}{1pt}
+    \renewcommand{\arraystretch}{0.9}
+    \caption{Scheme C: Asymmetric Hard Selection}
+    \label{alg:x-prediction-asymmetric-hard-selection}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$,
+    prompt distribution $p(c)$, $C$ prompts per iteration, $K$ samples per
+    prompt, $D=CK$, batch size $B$, retained ratio $\rho$, shift strength
+    $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference coefficient
+    $\lambda_{\mathrm{ref}}$, EMA rate $\eta$,
+    accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:}
+    $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}\leftarrow\theta_0$,
+    $\mathcal{D}\leftarrow\emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+                \State Sample $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$
+                conditioned on $c_j$ and set
+                $R_{j,k}\leftarrow R(\mathbf{x}_0^{j,k},c_j)$.
+
+            \EndFor
+
+            \State Compute global reward mean
+            $\bar{R}\leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k}$.
+            \State Compute global reward scale
+            $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2}.$
+
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+
+                \State Set the mass-shift center to the prompt-group mean:
+                $b_j\leftarrow K^{-1}\sum_{k=1}^{K}R_{j,k}$.
+                \State Within this prompt group, compute
+                \[
+                    % a_j^-\leftarrow\max_{R_{j,k}<b_j}|R_{j,k}-b_j|,
+                    % \quad
+                    % a_j^+\leftarrow\max_{R_{j,k}>b_j}|R_{j,k}-b_j|,
+                    % \quad
+                    \Delta_{j,k}\leftarrow
+                    \frac{1}{\Delta_{\mathrm{clip}}}
+                    \operatorname{clip}\!\left(
+                        \frac{R_{j,k}-b_j}{\sigma_R},
+                        -\Delta_{\mathrm{clip}},
+                        \Delta_{\mathrm{clip}}
+                    \right)
+                \]
+                \State Sort the $K$ samples so that
+                $\Delta_{j,1}\le\cdots\le\Delta_{j,q_j}\le0
+                \le\Delta_{j,q_j+1}\le\cdots\le\Delta_{j,K}$.
+                \State Select the positive strong-tail boundary:
+                \[
+                    M_j^+\leftarrow\sum_{k=q_j+1}^{K}\Delta_{j,k},
+                    \qquad
+                    h_{j,\rho}\leftarrow
+                    \arg\min_{q_j+1\le h\le K}
+                    \left|\sum_{k=h}^{K}\Delta_{j,k}-\rho M_j^+\right|.
+                \]
+                \State Keep all negative samples and the positive strong signal samples:
+                \[
+                    s_{j,k}\leftarrow
+                    \begin{cases}
+                        \Delta_{j,k},&k\le q_j,\\
+                        0,&q_j<k<h_{j,\rho},\\
+                        \Delta_{j,k},&k\ge h_{j,\rho}.
+                    \end{cases}
+                \]
+                \State Normalize the selected mass within this prompt group:
+                \[
+                    % m_j^-\leftarrow\sum_{s_{j,k}<0}(-s_{j,k}),\quad
+                    % m_j^+\leftarrow\sum_{s_{j,k}>0}s_{j,k},\quad
+                    % w_{j,k}-1\leftarrow
+                    % \begin{cases}
+                    %     s_{j,k}/m_j^-,&s_{j,k}<0,\\
+                    %     0,&s_{j,k}=0,\\
+                    %     s_{j,k}/m_j^+,&s_{j,k}>0.
+                    % \end{cases}
+                    w_{j,k}-1\leftarrow
+                    \begin{cases}
+                        s_{j,k},&s_{j,k}<0,\\
+                        0,&s_{j,k}=0,\\
+                        s_{j,k}/\rho,&s_{j,k}>0.
+                    \end{cases}                    
+                \]
+                \State Store
+                $\mathcal{D}\leftarrow\mathcal{D}\cup
+                \{(c_j,\mathbf{x}_0^{j,k},w_{j,k})\}_{k=1}^{K}$.
+            \EndFor
+
+            \For{\text{each mini batch }
+            $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
+                \State Sample $t_i\sim\mathcal{U}(0,1)$,
+                $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$;
+                set $\mathbf{x}_i^{t_i}\leftarrow
+                (1-t_i)\mathbf{x}_i^0+t_i\boldsymbol{\epsilon}_i$.
+                \State Predict $\mathbf{x}_i^\theta$,
+                $\mathbf{x}_i^{\mathrm{old}}$, and $\mathbf{x}_i^{\mathrm{ref}}$
+                from $(\mathbf{x}_i^{t_i},c_i,t_i)$ with
+                $\theta$, $\theta_{\mathrm{old}}$, and $\theta_{\mathrm{ref}}$.
+                \State $\mathbf{x}_i^{\mathrm{target}}\leftarrow
+                \mathbf{x}_i^{\mathrm{old}}+
+                \beta(w_i-1)(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}})$.
+                \State Compute
+                \[
+                    \begin{aligned}
+                    \mathcal{L}_{\mathrm{policy}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \frac{\|\mathbf{x}_i^\theta-\mathbf{x}_i^{\mathrm{target}}\|_2^2}
+                    {\operatorname{sg}[\operatorname{mean}
+                    |\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}|]},\\
+                    \mathcal{L}_{\mathrm{ref}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \|\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}\|_2^2.
+                    \end{aligned}
+                \]
+                \State Backpropagate
+                $(\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{policy}}+
+                \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})/N_{\mathrm{acc}}$.
+            \EndFor
+            \State Update $\theta$; set
+            $\theta_{\mathrm{old}}\leftarrow
+            \eta\theta_{\mathrm{old}}+(1-\eta)\theta$ and
+            $\mathcal{D}\leftarrow\emptyset$.
+        \EndFor
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{x}_\theta$
+\end{algorithm}
+
+
+
+Schemes B and C use the same normalized and clipped signal
+$\Delta_{j,k}$ as the base scheme.  Scheme B selects strong-tail samples on
+both sides, whereas Scheme C keeps all negative samples and selects only the
+positive strong tail.
+
+The selected mass is approximately a fraction $\rho$ of the corresponding
+base mass.  Dividing the retained signal by $\rho$ therefore approximately
+preserves the total mass while reallocating it from
+borderline samples to strong signal samples.  In Scheme C, the negative side is not
+selected and is consequently not divided by $\rho$.
+
+When $\rho=1$, no sample is removed and both schemes reduce exactly to the base scheme under the
+same training hyperparameters.  When $\rho<1$, the
+total mass is approximately preserved because the selection boundary
+must fall between discrete samples.  Thus these schemes mainly test the
+effect of concentrating the base training signal on stronger samples.
+
+
+
+
+% When $\rho=1$, both schemes reduce to
+% \[
+%     s_{j,k}=\Delta_{j,k}
+%     =
+%     \operatorname{clip}\!\left(
+%         \frac{R_{j,k}-b_j}{\sigma_R},
+%         -\Delta_{\mathrm{clip}},
+%         \Delta_{\mathrm{clip}}
+%     \right).
+% \]
+
+% For the same clipped reward signal, the base method uses
+% \[
+%     w_{j,k}^{\mathrm{base}}-1
+%     =
+%     \frac{1}{\Delta_{\mathrm{clip}}}
+%     \operatorname{clip}\!\left(
+%         \frac{R_{j,k}-b_j}{\sigma_R},
+%         -\Delta_{\mathrm{clip}},
+%         \Delta_{\mathrm{clip}}
+%     \right),
+% \]
+% whereas Schemes B/C use
+% \[
+%     w_{j,k}^{\mathrm{B/C}}-1
+%     =
+%     \begin{cases}
+%         \Delta_{j,k}/m_j^-, & \Delta_{j,k}<0,\\
+%         0,                  & \Delta_{j,k}=0,\\
+%         \Delta_{j,k}/m_j^+, & \Delta_{j,k}>0.
+%     \end{cases}
+% \]
+% Thus Schemes B/C additionally rescale every sample by
+% $\Delta_{\mathrm{clip}}/m_j^-$ or
+% $\Delta_{\mathrm{clip}}/m_j^+$ relative to the base scheme.  
+
+
+% To make Schemes B/C at $\rho=1$ approximate the base scheme with $\beta=1$,
+% one can first monitor the empirical averages of $m_j^+$ and $m_j^-$ over
+% prompt groups and training iterations.  If these averages are relatively
+% stable, set $\beta_{\mathrm{B/C}} = 
+% \bar m/\Delta_{\mathrm{clip}}$, where $\bar m$ denotes overall average value of $m_j^+$ and $m_j^-$.
+
+
+
+\begin{table}[H]
+    \centering
+    \caption{Settings for the mass-shift experiments.  The launcher
+    names below share the prefix
+    \texttt{run\_sd3\_4090\_16gpu\_nft-ours-4.selection-}.}
+    \label{tab:mass-shift-hard-selection-sweep}
+    \small
+    \setlength{\tabcolsep}{4pt}
+    \renewcommand{\arraystretch}{1.15}
+    \begin{tabularx}{\textwidth}{@{}X c c c c@{}}
+        \toprule
+        Experiment group & Scheme & $\rho$ & $\beta$ & Runs \\
+        \midrule
+        Equivalence baseline & B & $1$ & $\{0.2,1.0,2.0\}$ & $3$ \\
+        \midrule
+        Symmetric hard selection & B
+        & $\{1/3,2/3\}$ & $\{0.2,1.0,2.0\}$ & $6$ \\
+        \midrule
+        Asymmetric hard selection & C
+        & $\{1/3,2/3\}$ & $\{0.5,1.0,2.0\}$ & $6$ \\
+        \bottomrule
+    \end{tabularx}
+
+
+    \vspace{0.6em}
+    \begin{tabularx}{\textwidth}{@{}>{\bfseries}l X@{}}
+        \toprule
+        Shared item & Setting used by all nineteen experiments \\
+        \midrule
+        Model and task
+        & SD 3.5 Medium, GenEval reward evaluated with
+          OpenCLIP, $512\times512$ resolution. \\
+        Rollout
+        & $K=24$ images per prompt, 48 prompt groups (1152 images) per
+          iteration, 10 deterministic DPM2 sampling steps, guidance scale
+          $1.0$. \\
+        Compute and batch
+        & 16 RTX GPUs ($2$ nodes $\times$ $8$ GPUs), per-device batch
+          size $6$, global micro-batch $96$, gradient accumulation $12$, and
+          effective batch size $1152$. \\
+        Objective
+        & Advantage clip $\Delta_{\mathrm{clip}}=5$,
+          $\beta=\texttt{config.beta}$ as listed in each row,
+          and reference/KL
+          coefficient $\lambda_{\mathrm{ref}}=\texttt{config.train.beta}=10^{-4}$. \\
+        Training
+        & Full-timestep training
+          (\texttt{timestep\_fraction}$=1.0$),
+          \texttt{trajectory\_alpha\_prediction=old\_prediction}, learning rate $3\times10^{-4}$, and maximum gradient norm
+          $1.0$. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\paragraph{Baseline equivalence check.}
+The run with $\rho=1$ and $\beta=1$ verifies that the selection
+implementation reduces to the base scheme: no sample is discarded, hence
+$w_{j,k}-1=\Delta_{j,k}$.  The expected result is that its learning curve and final metrics match the base scheme.
+
+\paragraph{Scheme B: symmetric selection.}
+ Comparisons between different $\rho$ at fixed $\beta$ test whether
+concentrating both positive and negative signals on strong-tail samples is
+better than retaining borderline samples; comparisons between different $\beta$ at fixed $\rho$ test
+the required target-shift magnitude.  The intended conclusion is whether a
+moderate $\rho$ and a compatible $\beta$ improve convergence or
+stability over the base scheme, and whether aggressive selection must be
+paired with a smaller $\beta$.
+
+\paragraph{Scheme C: asymmetric selection.}
+Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better and equally stable results from C would support keeping all negative samples and filtering only borderline positive samples; better results from B would favor symmetric selection, while a best result at $\rho=1$ would indicate no benefit from hard selection.
+
+
+
+
+\begin{table}[H]
+    \centering
+    \caption{PickScore evaluation for the soft-selection runs. Each $\beta$ block compares Scheme C at $\rho\in\{1/3,2/3\}$ with the $\rho=1$ baseline at selected checkpoints. Bold marks the highest displayed score after initialization at fixed $\beta$ and step (including ties). Dashes indicate that a three-way comparison is unavailable.}
+    \label{tab:pickscore-soft-selection-rho-comparison}
+    \scriptsize
+    \setlength{\tabcolsep}{2pt}
+    \renewcommand{\arraystretch}{1.08}
+    \resizebox{\linewidth}{!}{%
+    \begin{tabular}{@{}c*{12}{r}@{}}
+        \toprule
+        & \multicolumn{3}{c}{$\beta=0.5$}
+        & \multicolumn{3}{c}{$\beta=1.0$}
+        & \multicolumn{3}{c}{$\beta=2.0$}
+        & \multicolumn{3}{c}{$\beta=5.0$} \\
+        \cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}\cmidrule(l){11-13}
+        Step & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$
+             & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$
+             & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$
+             & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$ \\
+        \midrule
+          0 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 \\
+         20 & 0.8563 & 0.8600 & \textbf{0.8618} & 0.8606 & \textbf{0.8656} & 0.8637 & 0.8618 & 0.8644 & \textbf{0.8658} & 0.8612 & 0.8647 & \textbf{0.8652} \\
+         40 & 0.8653 & 0.8692 & \textbf{0.8701} & 0.8719 & \textbf{0.8756} & 0.8743 & 0.8702 & \textbf{0.8776} & 0.8772 & 0.8743 & \textbf{0.8780} & 0.8757 \\
+         60 & 0.8719 & 0.8752 & \textbf{0.8756} & 0.8789 & \textbf{0.8803} & 0.8787 & 0.8787 & \textbf{0.8847} & 0.8836 & 0.8811 & \textbf{0.8857} & 0.8834 \\
+         80 & 0.8737 & \textbf{0.8778} & 0.8774 & 0.8815 & \textbf{0.8831} & 0.8809 & 0.8846 & \textbf{0.8867} & 0.8863 & 0.8869 & \textbf{0.8903} & 0.8865 \\
+        100 & 0.8769 & \textbf{0.8801} & 0.8789 & 0.8853 & \textbf{0.8857} & 0.8837 & 0.8891 & \textbf{0.8898} & 0.8895 & 0.8920 & \textbf{0.8946} & 0.8906 \\
+        120 & 0.8782 & \textbf{0.8813} & 0.8803 & \textbf{0.8866} & 0.8863 & 0.8849 & 0.8921 & \textbf{0.8922} & 0.8914 & 0.8953 & \textbf{0.8979} & 0.8936 \\
+        140 & -- & -- & -- & \textbf{0.8892} & 0.8874 & 0.8868 & 0.8937 & \textbf{0.8939} & 0.8930 & 0.8970 & \textbf{0.9002} & 0.8952 \\
+        160 & -- & -- & -- & \textbf{0.8906} & 0.8890 & 0.8882 & 0.8953 & \textbf{0.8959} & 0.8946 & 0.8988 & \textbf{0.9016} & 0.8970 \\
+        180 & -- & -- & -- & \textbf{0.8928} & 0.8906 & 0.8900 & 0.8971 & \textbf{0.8976} & 0.8967 & 0.9008 & \textbf{0.9040} & 0.8984 \\
+        200 & -- & -- & -- & \textbf{0.8925} & 0.8916 & 0.8912 & 0.8989 & \textbf{0.8993} & 0.8980 & 0.9024 & \textbf{0.9052} & 0.8996 \\
+        220 & -- & -- & -- & \textbf{0.8934} & 0.8929 & 0.8917 & 0.9007 & \textbf{0.9009} & 0.8989 & 0.9034 & \textbf{0.9069} & 0.9012 \\
+        240 & -- & -- & -- & \textbf{0.8940} & 0.8933 & 0.8916 & \textbf{0.9015} & \textbf{0.9015} & 0.8993 & 0.9052 & \textbf{0.9079} & 0.9021 \\
+        260 & -- & -- & -- & \textbf{0.8953} & 0.8944 & 0.8936 & \textbf{0.9027} & 0.9023 & 0.9006 & 0.9060 & \textbf{0.9085} & 0.9027 \\
+        270 & -- & -- & -- & \textbf{0.8953} & 0.8944 & 0.8931 & \textbf{0.9025} & 0.9019 & 0.9007 & 0.9062 & \textbf{0.9090} & 0.9032 \\
+        280 & -- & -- & -- & 0.8953 & \textbf{0.8955} & 0.8937 & \textbf{0.9029} & 0.9028 & 0.9012 & -- & -- & -- \\
+        300 & -- & -- & -- & \textbf{0.8965} & 0.8956 & 0.8942 & \textbf{0.9043} & 0.9038 & 0.9022 & -- & -- & -- \\
+        320 & -- & -- & -- & \textbf{0.8972} & 0.8967 & 0.8951 & \textbf{0.9054} & 0.9047 & 0.9026 & -- & -- & -- \\
+        340 & -- & -- & -- & \textbf{0.8985} & 0.8972 & 0.8955 & \textbf{0.9060} & 0.9051 & 0.9029 & -- & -- & -- \\
+        360 & -- & -- & -- & \textbf{0.8979} & 0.8968 & 0.8958 & \textbf{0.9065} & 0.9055 & 0.9039 & -- & -- & -- \\
+        380 & -- & -- & -- & \textbf{0.8984} & 0.8979 & 0.8961 & \textbf{0.9069} & 0.9057 & 0.9039 & -- & -- & -- \\
+        400 & -- & -- & -- & \textbf{0.8985} & 0.8978 & 0.8966 & 0.9065 & \textbf{0.9068} & 0.9040 & -- & -- & -- \\
+        420 & -- & -- & -- & \textbf{0.8991} & 0.8980 & 0.8967 & \textbf{0.9074} & 0.9071 & 0.9044 & -- & -- & -- \\
+        440 & -- & -- & -- & \textbf{0.8999} & 0.8979 & 0.8974 & 0.9075 & \textbf{0.9076} & 0.9057 & -- & -- & -- \\
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \caption{PickScore experiment status. The $\rho=1$ baseline is shared by both schemes at each $\beta$.}
+    \label{tab:pickscore-current-running-sweep}
+    \footnotesize
+    \setlength{\tabcolsep}{5pt}
+    \renewcommand{\arraystretch}{0.95}
+    \begin{tabular}{@{}c c c c c@{}}
+        \toprule
+        $\beta$ & Scheme & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$ (baseline) \\
+        \midrule
+        \multirow{2}{*}{$0.5$} & B & - & - & \multirow{2}{*}{$\bullet$} \\
+                                  & C & $\bullet$ & $\bullet$ & \\
+        \midrule
+        \multirow{2}{*}{$1.0$} & B & - & - & \multirow{2}{*}{$\checkmark$} \\
+                                  & C & $\checkmark$ & $\checkmark$ & \\
+        \midrule
+        \multirow{2}{*}{$2.0$} & B & - & - & \multirow{2}{*}{$\checkmark$} \\
+                                  & C & $\checkmark$ & $\checkmark$ & \\
+        \midrule
+        \multirow{2}{*}{$5.0$} & B & - & - & \multirow{2}{*}{$\checkmark$} \\
+                                  & C & $\checkmark$ & $\checkmark$ & \\
+        \bottomrule
+    \end{tabular}
+
+    \vspace{0.3em}
+    \scriptsize
+    $\checkmark$ running\qquad - waiting\qquad $\bullet$ finished
+\end{table}
+
+
+
+
+
+
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=1\linewidth]{imgs/ablation-selection.png}
+%     \caption{Current Experimental Results}
+%     \label{fig:placeholder}
+% \end{figure}
+
+% \paragraph{Problem with equal values.}
+% The original implementation sorts and selects individual samples.  If the
+% selection boundary falls among several samples with the same $\Delta_i$, it
+% may keep some of them and discard the others according only to their input
+% order.  Thus equally strong samples can receive different weights.  The
+% discrete boundary also means that the retained mass is generally only close
+% to, rather than exactly, $\rho\sum_i|\Delta_i|$.
+
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.75\linewidth]{imgs/reward-distribution-geneval.jpg}
+%     \caption{ GenEval reward distribution of one prompt across different training steps.}
+%     \label{fig:placeholder}
+% \end{figure}
+
+% \paragraph{Equal-value correction.}
+% The correction implementation first groups samples with exactly equal $|\Delta_i|$.  Starting from the
+% strongest groups, it keeps complete groups until the next group would exceed
+% the target mass $\rho\sum_i|\Delta_i|$.  Every sample in this boundary group
+% then receives the same fractional multiplier, chosen so that the remaining
+% required mass is shared equally across the group.  
+
+% For example, consider the
+% positive signals $\{1.0,0.5,0.5,0.5,0.25,0.25\}$ with $\rho=1/2$.  Their total
+% mass is $3.0$, so the target retained mass is $1.5$.  The strongest group
+% $\{1.0\}$ is completely retained, leaving $0.5$ mass to allocate.  The next
+% equal-value group is $\{0.5,0.5,0.5\}$, so this remaining mass is shared equally: each
+% sample receives the pre-rescaling signal $0.5/3=1/6$.  The weakest group
+% $\{0.25,0.25\}$ is completely discarded.  Thus the pre-rescaling signals are
+% $\{1.0,1/6,1/6,1/6,0,0\}$, whose mass is exactly $1.5$.  After division by
+% $\rho=1/2$, the final $w_i-1$ values are
+% $\{2.0,1/3,1/3,1/3,0,0\}$, whose total mass returns exactly to $3.0$.
+% Scheme B applies this procedure to both sides, whereas Scheme C
+% keeps all negative samples and applies it only to the positive side. 
+
+
+% \paragraph{Equal-value validation experiments.}
+% We evaluate the effect of equal-value groups with two sets of single-reward
+% experiments:
+
+% First, using the original implementation, we run both Schemes B
+% and C on PickScore with $\beta=1.0$ and
+% $\rho\in\{1/3,1/2,2/3\}$.  PickScore produces continuous rewards, so exactly
+% equal rewards are much rarer than with GenEval; these runs measure hard
+% selection when its result is largely unaffected by input-order selection
+% among equal values.  
+
+% Second, using the equal-value implementation, we run Schemes B and C on GenEval with $\beta=1.0$ and
+% $\rho=1/2$.  Comparing these runs with the corresponding original GenEval
+% runs at the same $(\rho,\beta)$ isolates the effect of treating equal-reward
+% samples consistently and preserving the selected mass exactly.
 
 \section{Experiments}
 \label{sec:experiments}
@@ -2845,11 +3484,11 @@ AWM use MSE regularization with reference model prediction.
 % $\frac{\eta_t}{b_t}\boldsymbol{\epsilon}_i$, rather than being defined by the
 % clean residual $\mathbf{v}_i-\mathbf{v}_i^{\mathrm{old}}$.
 
+
 We now recast Flow-GRPO in the unified velocity-target form of
 Eq.~\eqref{eq:unified_form}. We keep the sample index $i$ and timestep $t$
 fixed and temporarily omit the group average over $i$ and the time average
 over $t$, which are constant with respect to the local loss decomposition.
-
 
 Flow-GRPO optimizes
 \begin{equation}
@@ -2876,7 +3515,6 @@ In the unclipped region, the first term reduces to
 $r^i_t(\theta)\,\hat{A}^i_t$. The following derivation is based on this
 local approximation, which is exact for the gradient when the ratio lies
 inside $[1-\varepsilon,1+\varepsilon]$.
-
 
 Flow-GRPO replaces the deterministic flow ODE with the reverse SDE
 \begin{equation}
@@ -2921,23 +3559,25 @@ policy is an isotropic Gaussian:
 \qquad
 \epsilon\sim\mathcal N(0,I).
 \end{equation}
-Define
-\begin{equation}
-c_t
+In this paper, \(\sigma_t = a\sqrt{\frac{t}{1-t}}\). Substituting this into
+the coefficient of \(\vv_\theta\) yields
+\[
+1+\frac{\sigma_t^2(1-t)}{2t}
 =
-1+\frac{\sigma_t^2(1-t)}{2t},
-\qquad
-d_t
-=
-\frac{\sigma_t^2}{2t}.
-\end{equation}
-Then the conditional mean is
+1+\frac{a^2}{2},
+\]
+which is a constant independent of \(t\). The conditional mean of the policy
+is therefore
 \begin{equation}
 \bar{\vx}_{t+\Delta t,\theta}
 =
 \vx_t
 +
-\Delta t\bigl(d_t\vx_t+c_t\vv_\theta\bigr),
+\Delta t\left[
+\frac{\sigma_t^2}{2t}\vx_t
++
+\left(1+\frac{a^2}{2}\right)\vv_\theta
+\right],
 \end{equation}
 and the policy is
 \begin{equation}
@@ -2959,7 +3599,7 @@ The log-ratio is
 \left\|\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta_{\mathrm{old}}}\right\|^2
 \right].
 \end{equation}
-Since $\vx_{t-1}$ and the old mean are independent of $\theta$,
+Since \(\vx_{t-1}\) and the old mean are independent of \(\theta\),
 \begin{equation}
 \nabla_\theta\!\left[\hat{A}^i_t\log r^i_t(\theta)\right]
 =
@@ -2976,28 +3616,32 @@ Eq.~\eqref{eq:flowgrpo_per_sample_obj} is equivalent to
 \left\|\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}\right\|^2 .
 \end{equation}
 
-Substitute the expression for $\bar{\vx}_{t+\Delta t,\theta}$:
+Substituting the expression for \(\bar{\vx}_{t+\Delta t,\theta}\), we have
 \begin{equation}
 \vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}
 =
-\vx_{t-1}-\vx_t-\Delta t\,d_t\vx_t-\Delta t\,c_t\vv_\theta .
+\vx_{t-1}-\vx_t
+-\Delta t\,\frac{\sigma_t^2}{2t}\vx_t
+-\Delta t\left(1+\frac{a^2}{2}\right)\vv_\theta .
 \end{equation}
-Factoring out $-\Delta t\,c_t$ gives
+Factoring out \(-\Delta t\left(1+\frac{a^2}{2}\right)\) gives
 \begin{equation}
 \vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}
 =
--\Delta t\,c_t
+-\Delta t\left(1+\frac{a^2}{2}\right)
 \left[
 \vv_\theta
 +
-\frac{\vx_t-\vx_{t-1}+\Delta t\,d_t\vx_t}{\Delta t\,c_t}
+\frac{\vx_t-\vx_{t-1}
++\Delta t\,\frac{\sigma_t^2}{2t}\vx_t}
+{\Delta t\left(1+\frac{a^2}{2}\right)}
 \right].
 \end{equation}
 Hence
 \begin{equation}
 \left\|\vx_{t-1}-\bar{\vx}_{t+\Delta t,\theta}\right\|^2
 =
-(\Delta t\,c_t)^2
+\Delta t^2\left(1+\frac{a^2}{2}\right)^2
 \left\|
 \vv_\theta
 -
@@ -3008,15 +3652,19 @@ where the pseudo-target is
 \begin{equation}
 \bm{\tau}_i
 =
--\frac{\vx_t-\vx_{t-1}+\Delta t\,d_t\vx_t}{\Delta t\,c_t}
-=
-\frac{\vx_{t-1}-\vx_t-\Delta t\,d_t\vx_t}{\Delta t\,c_t}.
+\frac{\vx_{t-1}-\vx_t
+-\Delta t\,\frac{\sigma_t^2}{2t}\vx_t}
+{\Delta t\left(1+\frac{a^2}{2}\right)}.
 \end{equation}
 Using the sampling relation
 \begin{equation}
 \vx_{t-1}-\vx_t
 =
-\Delta t\bigl(d_t\vx_t+c_t\vv_{\theta_{\mathrm{old}}}\bigr)
+\Delta t\left[
+\frac{\sigma_t^2}{2t}\vx_t
++
+\left(1+\frac{a^2}{2}\right)\vv_{\theta_{\mathrm{old}}}
+\right]
 +
 \sigma_t\sqrt{\Delta t}\,\epsilon,
 \end{equation}
@@ -3027,35 +3675,37 @@ we obtain
 =
 \mathbf{v}_i^{\mathrm{old}}
 +
-\frac{\sigma_t}{\sqrt{\Delta t}\,c_t}\,\epsilon_i .
+\frac{\sigma_t}
+{\sqrt{\Delta t}\left(1+\frac{a^2}{2}\right)}\,\epsilon_i .
 \end{equation}
-Thus the pseudo-target is the old velocity prediction displaced by a stochastic
-term proportional to the exploration noise.
+Thus the pseudo-target is the old velocity prediction displaced by a
+stochastic term proportional to the exploration noise.
 
 Substituting the squared-norm factor into the ratio loss gives
 \begin{equation}
 \ell_i^{\mathrm{ratio}}(\theta)
 =
 \hat{A}^i_t\,
-\frac{\Delta t\,c_t^2}{2\sigma_t^2}
+\frac{\Delta t\left(1+\frac{a^2}{2}\right)^2}{2\sigma_t^2}
 \left\|
 \mathbf{v}_i^\theta-\bm{\tau}_i^{\mathrm{Flow-GRPO}}
 \right\|^2,
 \end{equation}
-where $\mathbf{v}_i^\theta=\vv_\theta(\vx^i_t,t,\vc_i)$. Therefore
+where \(\mathbf{v}_i^\theta=\vv_\theta(\vx^i_t,t,\vc_i)\). Therefore
 \begin{equation}
 \label{eq:flowgrpo_weight}
 \kappa_i^{\mathrm{Flow-GRPO}}
 =
 \hat{A}^i_t\,
-\frac{\Delta t\,c_t^2}{2\sigma_t^2},
-\qquad
-c_t=1+\frac{\sigma_t^2(1-t)}{2t}.
+\frac{\Delta t\left(1+\frac{a^2}{2}\right)^2}{2\sigma_t^2}
+=
+\hat{A}^i_t\,
+\frac{\Delta t\left(1+\frac{a^2}{2}\right)^2(1-t)}{2a^2 t}.
 \end{equation}
 
 \paragraph{KL regularization.}
 The KL divergence between the Gaussian policies
-$\pi_\theta$ and $\pi_{\mathrm{ref}}$ has the closed form
+\(\pi_\theta\) and \(\pi_{\mathrm{ref}}\) has the closed form
 \begin{equation}
 D_{\mathrm{KL}}\bigl(\pi_\theta\|\pi_{\mathrm{ref}}\bigr)
 =
@@ -3071,27 +3721,47 @@ D_{\mathrm{KL}}\bigl(\pi_\theta\|\pi_{\mathrm{ref}}\bigr)
 \vv_{\mathrm{ref}}(\vx_t,t,\vc)
 \right\|^2 .
 \end{equation}
-Defining
+Substituting \(\sigma_t = a\sqrt{\frac{t}{1-t}}\) and simplifying,
 \begin{equation}
-\lambda_t
-=
-\frac{\Delta t}{2}
-\left(
 \frac{\sigma_t(1-t)}{2t}
 +
 \frac{1}{\sigma_t}
-\right)^2,
-\end{equation}
-the regularization term in the unified form is
-\begin{equation}
-\mathcal{R}_i^{\mathrm{Flow-GRPO}}(\theta)
 =
-\beta\,\lambda_t
-\left\|
-\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}
-\right\|^2,
+\sqrt{\frac{1-t}{t}}
+\left(
+\frac{a}{2}
++
+\frac{1}{a}
+\right),
 \end{equation}
-with $\mathbf{v}_i^{\mathrm{ref}}=\vv_{\mathrm{ref}}(\vx^i_t,t,\vc_i)$.
+and therefore
+\begin{equation}
+D_{\mathrm{KL}}\bigl(\pi_\theta\|\pi_{\mathrm{ref}}\bigr)
+=
+\frac{\Delta t}{2}
+\frac{1-t}{t}
+\left(
+\frac{a}{2}
++
+\frac{1}{a}
+\right)^2
+\left\|
+\vv_\theta(\vx_t,t,\vc)
+-
+\vv_{\mathrm{ref}}(\vx_t,t,\vc)
+\right\|^2 .
+\end{equation}
+Equivalently,
+\begin{equation}
+D_{\mathrm{KL}}\bigl(\pi_\theta\|\pi_{\mathrm{ref}}\bigr)
+=
+\frac{\Delta t (1-t)(a^2+2)^2}{8a^2 t}
+\left\|
+\vv_\theta(\vx_t,t,\vc)
+-
+\vv_{\mathrm{ref}}(\vx_t,t,\vc)
+\right\|^2 .
+\end{equation}
 
 \paragraph{Unified form.}
 Combining the above pieces, the local per-sample objective of Flow-GRPO
@@ -3102,15 +3772,23 @@ fits Eq.~\eqref{eq:unified_form} with
 \kappa_i^{\mathrm{Flow-GRPO}}
 &=
 \hat{A}^i_t\,
-\frac{\Delta t\,c_t^2}{2\sigma_t^2},
-\qquad
-c_t=1+\frac{\sigma_t^2(1-t)}{2t},
+\frac{\Delta t\left(1+\frac{a^2}{2}\right)^2}{2\sigma_t^2}
+=
+\hat{A}^i_t\,
+\frac{\Delta t\left(1+\frac{a^2}{2}\right)^2(1-t)}{2a^2 t},
 \\
 \bm{\tau}_i^{\mathrm{Flow-GRPO}}
 &=
 \mathbf{v}_i^{\mathrm{old}}
 +
-\frac{\sigma_t}{\sqrt{\Delta t}\,c_t}\,\epsilon_i,
+\frac{\sigma_t}
+{\sqrt{\Delta t}\left(1+\frac{a^2}{2}\right)}\,\epsilon_i
+=
+\mathbf{v}_i^{\mathrm{old}}
++
+\frac{a}
+{\sqrt{\Delta t}\left(1+\frac{a^2}{2}\right)}
+\sqrt{\frac{t}{1-t}}\,\epsilon_i,
 \\
 \mathcal{R}_i^{\mathrm{Flow-GRPO}}(\theta)
 &=
@@ -3123,15 +3801,77 @@ c_t=1+\frac{\sigma_t^2(1-t)}{2t},
 \right)^2
 \left\|
 \mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}
+\right\|^2
+\\
+&=
+\beta\,
+\frac{\Delta t (1-t)(a^2+2)^2}{8a^2 t}
+\left\|
+\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}
 \right\|^2 .
 \end{aligned}
 }
 \end{equation}
-This explicitly shows that Flow-GRPO pseudo-target is the old velocity
-prediction perturbed by the exploration noise. The reward enters only through
-the advantage-scaled weight $\hat{A}^i_t$, and the sign of the advantage
-determines whether the squared loss attracts or repels the current velocity
-from the noisy target.
+
+\begin{equation}
+\label{eq:unified_form}
+\ell_i(\theta)
+\approx
+\kappa_i(A_i,t)
+\left\|
+\mathbf{v}_i^\theta
+-
+\mathbf{\tau}_i
+\left(
+A_i,
+\mathbf{v}_i,
+\mathbf{v}_i^{\mathrm{old}},
+t
+\right)
+\right\|^2
++
+\mathcal{R}_i(\theta),
+\end{equation}
+
+% \begin{equation}
+% \boxed{
+% \begin{aligned}
+% \kappa_i^{\mathrm{Flow-GRPO}}
+% &=
+% \hat{A}^i_t\,
+% \frac{\Delta t\,c_t^2}{2\sigma_t^2},
+% \qquad
+% c_t=1+\frac{\sigma_t^2(1-t)}{2t},
+% \\
+% \bm{\tau}_i^{\mathrm{Flow-GRPO}}
+% &=
+% \mathbf{v}_i^{\mathrm{old}}
+% +
+% \frac{\sigma_t}{\sqrt{\Delta t}\,c_t}\,\epsilon_i,
+% \\
+% \mathcal{R}_i^{\mathrm{Flow-GRPO}}(\theta)
+% &=
+% \beta\,
+% \frac{\Delta t}{2}
+% \left(
+% \frac{\sigma_t(1-t)}{2t}
+% +
+% \frac{1}{\sigma_t}
+% \right)^2
+% \left\|
+% \mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}
+% \right\|^2 .
+% \end{aligned}
+% }
+% \end{equation}
+
+
+This explicitly shows that Flow-GRPO does not use the clean velocity
+\(\mathbf{v}_i\) as its target. Instead, the pseudo-target is the old
+velocity prediction perturbed by the exploration noise. The reward enters
+only through the advantage-scaled weight \(\hat{A}^i_t\), and the sign of
+the advantage determines whether the squared loss attracts or repels the
+current velocity from the noisy target.
 
 
 
@@ -4746,46 +5486,56 @@ Comparison of the NFT baseline and the loss scaled by $1/\Delta_{\mathrm{clip}}$
 \begin{tabular}{l c c c c c c c c}
 \hline\hline
 Method 
-& Step 50 & Step 100 & Step 200 & Step 300 
-& Step 350 & Step 400 & Step 450 & Step 500 \\
+& Step 100 & Step 200 & Step 300 
+& Step 400 & Step 500 & Step 600 & Step 800 & Step 1000 \\
 \hline
 
 NFT Baseline (H)
-& 0.8723 & 0.9198 & 0.9465 & 0.9622
-& 0.9704 & 0.9680 & 0.9692 & 0.9722 \\
+& 0.9198 & 0.9465 & 0.9622
+& 0.9680 & 0.9722 & 0.9789 & 0.9779 & 0.9783 \\
 
 NFT Baseline Repeat (A6000)
-& 0.8910 & 0.9311 & 0.9539 & 0.9614
-& 0.9607 & 0.9642 & 0.9687 & 0.9727 \\
+& 0.9311 & 0.9539 & 0.9614
+& 0.9642 & 0.9727 & 0.9749 & 0.9775 & 0.9795 \\
 
 Scaled by $1/\Delta_{\mathrm{clip}}$ (H)
-& 0.8792 & 0.8797 & 0.9090 & 0.9094
-& - & - & - & - \\
+& 0.8797 & 0.9090 & 0.9094
+& - & - & - & - & - \\
 
 \makecell[l]{Scaled by $1/\Delta_{\mathrm{clip}}$,
 $C_{\max}\leftarrow 0.2$ (4090)}
-& 0.8644 & 0.8931 & 0.8920 & 0.9190
-& - & - & - & - \\
+& 0.8931 & 0.8920 & 0.9190
+& - & - & - & - & - \\
 
 \makecell[l]{Scaled by $2$,
 $C_{\max}\leftarrow 1.0$ (H)}
-& 0.8829 & 0.9119 & 0.9317 & 0.9403
-& 0.9427 & 0.9489 & 0.9521 & - \\
+& 0.9119 & 0.9317 & 0.9367
+& 0.9489 & - & - & - & - \\
+
+\makecell[l]{Scaled by $2$,
+$C_{\max}\leftarrow 1.0$ (H) repeat}
+& 0.9215 & 0.9430 & 0.9516
+& 0.9563 & 0.9645 & 0.9669 & - & - \\
+
+\makecell[l]{Scaled by $2$,
+$C_{\max}\leftarrow 2.0$ (H)}
+& 0.9131 & 0.9424 & 0.9557
+& 0.9581 & 0.9650 & 0.9728 & 0.9786 & - \\
 
 \makecell[l]{Scaled by $1$,
 $C_{\max}\leftarrow 1.0$ (4090)}
-& 0.8787 & 0.9068 & 0.9330 & 0.9460
-& 0.9451 & 0.9234 & - & - \\
+& 0.9068 & 0.9330 & 0.9460
+& 0.9234 & - & - & - & - \\
 
 \makecell[l]{Scaled by $1$,
 $C_{\max}\leftarrow 1.0$ (4090) repeat}
-& 0.8716 & 0.9050 & 0.9218 & 0.9470
-& 0.9443 & 0.9461 & - & - \\
+& 0.9050 & 0.9218 & 0.9470
+& 0.9461 & 0.9488 & 0.9547 & 0.9638 & 0.9702 \\
 
 \makecell[l]{Scaled by $1$,
 $C_{\max}\leftarrow 1.0$ (H)}
-& 0.8552 & 0.9092 & 0.9434 & 0.9533
-& 0.9507 & 0.9585 & 0.9609 & 0.9675 \\
+& 0.9092 & 0.9434 & 0.9533
+& 0.9585 & 0.9675 & 0.9660 & 0.9738 & 0.9784 \\
 
 \hline\hline
 \end{tabular}
@@ -5230,43 +5980,10 @@ The compositional breakdown further supports this interpretation: although 85.53
 
 \section{Currently Running Experiments}
 
-\subsection{Delta-Equality Baseline on 16 4090 (pause)}
-\textbf{Launcher:} \path{scripts/baseline_exps/run_sd3_4090_16gpu_nft-baseline-Aequality.sh}.\par
-\textbf{Training script:} \path{scripts/train_nft_sd3_origin-Aequality.py}.\par
-\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=1.0$.\par
-\textbf{Purpose:} establish the  adv-clip-equality baseline, where the outer \texttt{adv\_clip\_max} factor is removed from the policy loss and the KL coefficient is divided by the same factor.
-
-\subsection{Delta-Equality with Matched Gradient Clipping on 8 H200 (pause)}
-\textbf{Launcher:} \path{scripts/baseline_exps/run_sd3_geneval_h200_8gpu_nft-baseline-Aequality-fix-gradclip.sh}.\par
-\textbf{Training script:} \path{scripts/train_nft_sd3_origin-Aequality.py}.\par
-\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=0.2$.\par
-
-\textbf{Purpose:} test whether scaling the gradient clipping threshold by $1/\texttt{adv\_clip\_max}=1/5$.
-
-
-
-\subsection{Delta-Equality with Matched Gradient Clipping and Multiply loss by extra 2 on 8 H200 (runing)}
-\textbf{Launcher:} \path{scripts/baseline_exps/run_sd3_geneval_h200_8gpu_nft-baseline-Aequality*2.sh}.\par
-\textbf{Training script:} \path{scripts/train_nft_sd3_origin-Aequality-multiply2.py}.\par
-\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=1.0$. And multiply the loss (policy+kl) by 2.\par
-\textbf{Purpose:} test whether the inequivalence with NFT baseline is because of Numerical underflow under Float16 training.
-
-
-
 \subsection{Delta-Equality Baseline (scaled by 1) on 8 H200 (runing)}
 \textbf{Launcher:} \path{scripts/baseline_exps/run_sd3_geneval_h200_8gpu_nft-baseline-Aequality*2-RemoveBackToBaseline.sh}.\par
 \textbf{Training script:} \path{scripts/train_nft_sd3_origin-Aequality-multiply2-RemoveBackToBaseline.py}.\par
 \textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=1.0$. And multiply the loss (policy+kl) by 1.\par
 \textbf{Purpose:} test the stability of NFT baseline on H200.
-
-
-\subsection{Delta-Equality Baseline (scaled by 1) on 16 4090 (runing)}
-\textbf{Launcher:} \path{scripts/run_sd3_4090_16gpu_nft-baseline.sh}.\par
-\textbf{Training script:} \path{scripts/train_nft_sd3_origin.py}.\par
-\textbf{Setting:} SD3.5 Medium on GenEval; 10 sampling steps; $\beta=1.0$; $\lambda_{\mathrm{KL}}=10^{-4}$; full-timestep training; \texttt{max\_grad\_norm}$=1.0$. And multiply the loss (policy+kl) by 1.\par
-\textbf{Purpose:} test the stability of NFT baseline on 4090.
 \end{document}
-
-\end{document}
-
 
