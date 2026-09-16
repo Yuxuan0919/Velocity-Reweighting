@@ -94,7 +94,7 @@
     \setlength{\abovedisplayskip}{1pt}
     \setlength{\belowdisplayskip}{1pt}
     \renewcommand{\arraystretch}{0.9}
-    \caption{Scheme B: Symmetric Soft Selection}
+    \caption{Scheme B: Symmetric Soft Selection with Boost-Only Floor}
     \label{alg:x-prediction-symmetric-soft-selection}
     \textbf{Require:} Initial model $\theta_0$, reward function $R$,
     prompt distribution $p(c)$, $C$
@@ -185,15 +185,32 @@
                     \EndIf
                 \EndFor
 
-                \State Rescale the allocated mass:
+                \State First finish the original selection and rescaling:
                 \[
-                    w_{j,k}-1\leftarrow s_{j,k}/\rho,
+                    \widetilde{\Delta}_{j,k}\leftarrow s_{j,k}/\rho,
                     \qquad k=1,\dots,K.
                 \]
-                \State Store
-                $\mathcal{D}\leftarrow\mathcal{D}\cup
-                \{(c_j,\mathbf{x}_0^{j,k},w_{j,k})\}_{k=1}^{K}$.
             \EndFor
+
+            \State After selection has finished for all groups, apply the
+            boost-only floor to every sample:
+            \[
+                w_{j,k}-1\leftarrow
+                \begin{cases}
+                    \Delta_{j,k},
+                    &|\widetilde{\Delta}_{j,k}|<|\Delta_{j,k}|,\\
+                    \widetilde{\Delta}_{j,k},
+                    &|\widetilde{\Delta}_{j,k}|\ge|\Delta_{j,k}|,
+                \end{cases}
+                \qquad j=1,\dots,C,\quad k=1,\dots,K.
+            \]
+            \State Hence $|w_{j,k}-1|\ge|\Delta_{j,k}|$ for every sample:
+            attenuated candidates are restored to the original signal, while
+            equal or amplified candidates are kept unchanged.
+            \State Store
+            $\mathcal{D}\leftarrow\mathcal{D}\cup
+            \{(c_j,\mathbf{x}_0^{j,k},w_{j,k}):
+            j=1,\dots,C,\ k=1,\dots,K\}$.
 
             \For{\text{each mini batch }
             $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
@@ -500,22 +517,21 @@
 
 
 
-Schemes B and C use the same normalized and clipped signal
-$\Delta_{j,k}$ as the base scheme.  Scheme B selects strong-tail samples on
-both sides, whereas Scheme C keeps all negative samples and selects only the
-positive strong tail.
+All variants use the same normalized and clipped signal $\Delta_{j,k}$ as
+the base scheme.  Scheme B selects the strong tail on both sides, whereas
+Scheme C keeps all negative samples and selects only the positive strong
+tail.  Before applying the boost-only floor, division by $\rho$ preserves
+the selected side's mass (exactly for the tie-aware soft allocation and
+approximately for hard selection).
 
-The selected mass is approximately a fraction $\rho$ of the corresponding
-base mass.  Dividing the retained signal by $\rho$ therefore approximately
-preserves the total mass while reallocating it from
-borderline samples to strong signal samples.  In Scheme C, the negative side is not
-selected and is consequently not divided by $\rho$.
-
-When $\rho=1$, no sample is removed and both schemes reduce exactly to the base scheme under the
-same training hyperparameters.  When $\rho<1$, the
-total mass is approximately preserved because the selection boundary
-must fall between discrete samples.  Thus these schemes mainly test the
-effect of concentrating the base training signal on stronger samples.
+The boost-only Scheme B then compares the fully selected candidate
+$\widetilde{\Delta}_{j,k}$ with the original $\Delta_{j,k}$.  It restores
+$\Delta_{j,k}$ whenever selection reduced the magnitude and retains
+$\widetilde{\Delta}_{j,k}$ otherwise.  Consequently, its final absolute mass
+is never smaller than the base mass and is strictly larger exactly when at
+least one candidate is amplified; fixed-mass preservation no longer holds
+after the floor.  When $\rho=1$, the candidate already equals
+$\Delta_{j,k}$, so the method reduces exactly to the base scheme.
 
 
 
@@ -674,10 +690,13 @@ equal-value group is $\{0.5,0.5,0.5\}$, so this remaining mass is shared equally
 sample receives the pre-rescaling signal $0.5/3=1/6$.  The weakest group
 $\{0.25,0.25\}$ is completely discarded.  Thus the pre-rescaling signals are
 $\{1.0,1/6,1/6,1/6,0,0\}$, whose mass is exactly $1.5$.  After division by
-$\rho=1/2$, the final $w_i-1$ values are
-$\{2.0,1/3,1/3,1/3,0,0\}$, whose total mass returns exactly to $3.0$.
-Scheme B applies this procedure to both sides, whereas Scheme C
-keeps all negative samples and applies it only to the positive side. 
+$\rho=1/2$, the candidates $\widetilde{\Delta}_i$ are
+$\{2.0,1/3,1/3,1/3,0,0\}$.  The boost-only floor restores every candidate
+weaker than its original signal, producing the final $w_i-1$ values
+$\{2.0,0.5,0.5,0.5,0.25,0.25\}$.  Their total mass is $4.0$: only the
+strongest sample is enhanced, and no sample is weakened.  Scheme B applies
+this procedure to both sides, whereas Scheme C keeps all negative samples
+and applies selection only to the positive side.
 
 
 \paragraph{Equal-value validation experiments.}

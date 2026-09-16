@@ -8,7 +8,7 @@ CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 
 REWARD_CKPTS="${REPO_DIR}/reward_ckpts"
-TRAIN_SCRIPT="scripts/train_nft_sd3_ours-4.singleloss-alpha-selection-soft-record.py"
+TRAIN_SCRIPT="scripts/train_nft_sd3_ours-4.singleloss-alpha-selection-soft-record-weakening-only.py"
 
 MASS_SHIFT_SCHEME="${MASS_SHIFT_SCHEME:?MASS_SHIFT_SCHEME must be set to B or C}"
 MASS_SHIFT_RHO="${MASS_SHIFT_RHO:?MASS_SHIFT_RHO must be set}"
@@ -33,8 +33,8 @@ if [[ "${EFFECTIVE_BATCH}" -ne 1152 ]]; then
 fi
 
 LOGDIR="${LOGDIR:-${REPO_DIR}/logs/weight_exps/weight_exps_pickscore/h200_8gpu}"
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/weight_exps/weight_exps_pickscore/h200_8gpu/sd35_pickscore_h200_8gpu_nft_ours-4selection-soft-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
-RUN_NAME="${RUN_NAME:-sd35_pickscore_h200_8gpu_nft_ours-4selection-soft-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
+SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/weight_exps/weight_exps_pickscore/h200_8gpu/sd35_pickscore_h200_8gpu_nft_ours-4selection-soft-weakening-only-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
+RUN_NAME="${RUN_NAME:-sd35_pickscore_h200_8gpu_nft_ours-4selection-soft-weakening-only-${EXPERIMENT_TAG}-KL1e-4-beta${EXPERIMENT_BETA}-fulltime}"
 
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 

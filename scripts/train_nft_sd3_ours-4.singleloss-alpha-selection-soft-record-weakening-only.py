@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from collections import defaultdict
+import hashlib
 import os
 import re
 import datetime
@@ -41,12 +42,18 @@ from torch.utils.data import Dataset, DataLoader, Sampler
 from flow_grpo.ema import EMAModuleWrapper
 from ml_collections import config_flags
 from torch.cuda.amp import GradScaler, autocast as torch_autocast
+from PIL import Image
 
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/base.py", "Training configuration.")
+flags.DEFINE_bool(
+    "save_rollout_samples",
+    True,
+    "Save every sampled training image and its raw rewards, grouped by epoch and prompt.",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -302,11 +309,70 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
     return zero_std_ratio, prompt_std_devs.mean()
 
 
+def allocate_tie_aware_strong_tail(normalized_advantages, side_indices, retained_mass_ratio):
+    r"""Allocate exactly ``retained_mass_ratio`` of one side's mass.
+
+    Samples are processed in groups with exactly equal ``abs(Delta)``.  Groups
+    stronger than the boundary are retained completely, groups weaker than the
+    boundary are discarded, and every sample in the boundary group receives
+    the same fractional multiplier.  This makes the allocation invariant to
+    permutations within a tie and makes the retained pre-rescaling magnitude
+    equal to ``retained_mass_ratio * sum(abs(Delta))`` up to floating-point
+    roundoff.
+    """
+    side_indices = np.asarray(side_indices, dtype=np.int64)
+    allocated_signal = np.zeros(side_indices.shape, dtype=normalized_advantages.dtype)
+    if len(side_indices) == 0:
+        return allocated_signal
+
+    side_values = normalized_advantages[side_indices]
+    magnitudes = np.abs(side_values)
+    total_mass = magnitudes.sum()
+    if total_mass == 0.0:
+        return allocated_signal
+
+    target_mass = retained_mass_ratio * total_mass
+    order = np.argsort(-magnitudes, kind="stable")
+    sorted_magnitudes = magnitudes[order]
+
+    cumulative_mass = 0.0
+    group_start = 0
+    while group_start < len(order):
+        boundary_magnitude = sorted_magnitudes[group_start]
+        group_end = group_start + 1
+        while group_end < len(order) and sorted_magnitudes[group_end] == boundary_magnitude:
+            group_end += 1
+
+        group_positions = order[group_start:group_end]
+        group_mass = magnitudes[group_positions].sum()
+        remaining_mass = target_mass - cumulative_mass
+        if remaining_mass <= 0.0:
+            break
+
+        group_fraction = float(np.clip(remaining_mass / group_mass, 0.0, 1.0))
+        allocated_signal[group_positions] = group_fraction * side_values[group_positions]
+        cumulative_mass += group_fraction * group_mass
+
+        if group_fraction < 1.0:
+            break
+        group_start = group_end
+
+    return allocated_signal
+
+
 
 def compute_reinforced_flow_weights(
-    prompts, rollout_batch_ids, nft_advantages, advantage_clip, coverage_beta, epsilon, advantage_mode="all"
+    prompts,
+    rollout_batch_ids,
+    nft_advantages,
+    advantage_clip,
+    # coverage_beta,  # Disabled: it was only used by the inactive prompt normalizer.
+    epsilon,
+    advantage_mode="all",
+    mass_shift_scheme="B",  # [Scheme B/C addition]
+    mass_shift_rho=1.0,  # [Scheme B/C addition]
 ):
-    r"""Map the original NFT advantages to \hat A, W, and prompt-wise \bar Z."""
+    r"""Map the original NFT advantages to \hat A and W."""
     prompts = np.asarray(prompts)
     rollout_batch_ids = np.asarray(rollout_batch_ids)
     nft_advantages = np.asarray(nft_advantages, dtype=np.float64)
@@ -315,10 +381,17 @@ def compute_reinforced_flow_weights(
         nft_advantages = nft_advantages[:, 0]
     if advantage_clip <= 0:
         raise ValueError(f"advantage_clip must be positive, got {advantage_clip}")
+    # Prompt-normalizer-only validation (disabled with prompt normalization):
     # if not 0.0 <= coverage_beta <= 1.0:
     #     raise ValueError(f"coverage_beta must be in [0, 1], got {coverage_beta}")
     if epsilon <= 0:
         raise ValueError(f"epsilon must be positive, got {epsilon}")
+    # [Scheme B/C addition] Validate the two new hyperparameters.
+    mass_shift_scheme = str(mass_shift_scheme).upper()
+    if mass_shift_scheme not in {"B", "C"}:
+        raise ValueError(f"mass_shift_scheme must be 'B' or 'C', got {mass_shift_scheme!r}")
+    if not 0.0 < mass_shift_rho <= 1.0:
+        raise ValueError(f"mass_shift_rho must be in (0, 1], got {mass_shift_rho}")
     if not (len(prompts) == len(rollout_batch_ids) == len(nft_advantages)):
         raise ValueError("prompts, rollout_batch_ids, and nft_advantages must have the same length")
 
@@ -335,8 +408,12 @@ def compute_reinforced_flow_weights(
     # This is exactly 2 * r - 1 in the original NFT code:
     # r = clip((clip(adv, -A, A) / A) / 2 + 0.5, 0, 1).
     normalized_advantages = advantages_clip / advantage_clip
-    importance_weights = 1.0 + normalized_advantages
-    prompt_normalizers = np.empty_like(importance_weights)
+    # [Original base scheme, kept for reference]
+    # importance_weights = 1.0 + normalized_advantages
+
+    # Store the final w - 1 after tie-aware strong-tail allocation.
+    selected_advantages = np.zeros_like(normalized_advantages)
+    # prompt_normalizers = np.empty_like(importance_weights)  # Unused by target/loss.
 
     prompt_groups = defaultdict(list)
     for sample_idx, (rollout_batch_id, prompt) in enumerate(zip(rollout_batch_ids, prompts, strict=True)):
@@ -344,10 +421,48 @@ def compute_reinforced_flow_weights(
 
     for sample_indices in prompt_groups.values():
         sample_indices = np.asarray(sample_indices, dtype=np.int64)
-        prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
-        prompt_normalizers[sample_indices] = prompt_z_bar
 
-    return normalized_advantages, importance_weights, prompt_normalizers
+        negative_indices = sample_indices[normalized_advantages[sample_indices] < 0.0]
+        positive_indices = sample_indices[normalized_advantages[sample_indices] > 0.0]
+
+        if mass_shift_scheme == "B":
+            allocated_negative_signal = allocate_tie_aware_strong_tail(
+                normalized_advantages,
+                negative_indices,
+                mass_shift_rho,
+            )
+            selected_advantages[negative_indices] = (
+                allocated_negative_signal / mass_shift_rho
+            )
+        else:  # Scheme C keeps the complete negative side without 1 / rho rescaling.
+            selected_advantages[negative_indices] = normalized_advantages[negative_indices]
+
+        allocated_positive_signal = allocate_tie_aware_strong_tail(
+            normalized_advantages,
+            positive_indices,
+            mass_shift_rho,
+        )
+        selected_advantages[positive_indices] = (
+            allocated_positive_signal / mass_shift_rho
+        )
+        # [Scheme B/C addition end]
+
+        # Prompt normalization is disabled because this value was only logged
+        # and never used by the target, policy loss, or KL loss.
+        # prompt_z_bar = 1.0 + coverage_beta * np.mean(importance_weights[sample_indices] - 1.0)
+        # prompt_normalizers[sample_indices] = prompt_z_bar
+
+    # Keep the original Delta for samples whose selection result is stronger.
+    # This makes selection weakening-only: no sample's signal magnitude can
+    # exceed its original magnitude after selection.
+    amplified = np.abs(selected_advantages) > np.abs(normalized_advantages)
+    selected_advantages[amplified] = normalized_advantages[amplified]
+    importance_weights = 1.0 + selected_advantages
+
+    # [Original base scheme, kept for reference]
+    # return normalized_advantages, importance_weights, prompt_normalizers
+    # [Scheme B/C addition] Return the selected and rescaled signal (w - 1).
+    return selected_advantages, importance_weights
 
 
 def log_scalars(writer, scalars, step):
@@ -362,6 +477,230 @@ def log_scalars(writer, scalars, step):
             value = value.item()
         if isinstance(value, (int, float)):
             writer.add_scalar(key, value, step)
+
+
+def reward_values_to_numpy(reward_values):
+    """Move CUDA reward tensors to host memory before NumPy serialization."""
+    if isinstance(reward_values, torch.Tensor):
+        return reward_values.detach().cpu().numpy()
+    if isinstance(reward_values, (list, tuple)):
+        return np.asarray([reward_values_to_numpy(value) for value in reward_values])
+    return np.asarray(reward_values)
+
+
+def _json_compatible(value):
+    """Convert tensor/NumPy reward values into lossless JSON-compatible values."""
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().numpy()
+    if isinstance(value, np.ndarray):
+        return value.item() if value.ndim == 0 else value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return value
+
+
+def _reward_at_index(rewards, sample_index, batch_size):
+    sample_rewards = {}
+    for reward_name, reward_values in rewards.items():
+        values = reward_values_to_numpy(reward_values)
+        if values.ndim == 0:
+            if batch_size != 1:
+                raise ValueError(
+                    f"Reward '{reward_name}' is scalar for a sampling batch of size {batch_size}"
+                )
+            sample_value = values
+        else:
+            if len(values) != batch_size:
+                raise ValueError(
+                    f"Reward '{reward_name}' has {len(values)} values for a sampling batch of size {batch_size}"
+                )
+            sample_value = values[sample_index]
+        sample_rewards[str(reward_name)] = _json_compatible(sample_value)
+    return sample_rewards
+
+
+def _truncate_utf8(value, max_bytes):
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip()
+
+
+def _prompt_directory_name(prompt):
+    """Keep the prompt readable while making it safe as one directory component."""
+    original = str(prompt)
+    safe = original.replace("/", "／").replace("\\", "＼")
+    safe = " ".join(safe.split()).strip()
+    safe = "".join(character for character in safe if ord(character) >= 32)
+    digest = hashlib.sha1(original.encode("utf-8")).hexdigest()[:10]
+
+    if not safe or safe in {".", "..", "_SUCCESS"}:
+        return f"prompt_{digest}"
+    if safe != original or len(safe.encode("utf-8")) > 200:
+        safe = f"{_truncate_utf8(safe, 185)}__{digest}"
+    return safe
+
+
+def _save_uint8_png(image, image_path):
+    image_array = image.permute(1, 2, 0).contiguous().numpy()
+    if image_array.shape[-1] == 1:
+        image_array = image_array[..., 0]
+    Image.fromarray(image_array).save(image_path, format="PNG", compress_level=1)
+
+
+def save_rollout_samples(
+    save_dir,
+    epoch,
+    global_step,
+    rank,
+    world_size,
+    image_batches,
+    prompts_by_batch,
+    rewards_by_batch,
+    expected_images_per_prompt,
+):
+    """Save one complete distributed rollout as epoch/prompt/NNN.png + rewards.json."""
+    local_records = []
+    local_sample_index = 0
+    for rollout_batch_id, (images, prompts, rewards) in enumerate(
+        zip(image_batches, prompts_by_batch, rewards_by_batch, strict=True)
+    ):
+        if len(images) != len(prompts):
+            raise ValueError(
+                f"Sampling batch {rollout_batch_id} has {len(images)} images but {len(prompts)} prompts"
+            )
+        for batch_sample_index, prompt in enumerate(prompts):
+            local_records.append(
+                {
+                    "rank": rank,
+                    "local_sample_index": local_sample_index,
+                    "rollout_batch_id": rollout_batch_id,
+                    "prompt": str(prompt),
+                    "reward": _reward_at_index(rewards, batch_sample_index, len(prompts)),
+                }
+            )
+            local_sample_index += 1
+
+    records_by_rank = [None for _ in range(world_size)]
+    dist.all_gather_object(records_by_rank, local_records)
+
+    epoch_root = os.path.join(
+        save_dir, "checkpoints", "training_samples", f"epoch_{epoch:06d}"
+    )
+    payload = [{"assignments": {}, "prompt_groups": []}]
+    if is_main_process(rank):
+        os.makedirs(epoch_root, exist_ok=True)
+        completion_marker = os.path.join(epoch_root, "_SUCCESS")
+        if os.path.exists(completion_marker):
+            os.remove(completion_marker)
+
+        all_records = [record for rank_records in records_by_rank for record in rank_records]
+        grouped_records = defaultdict(list)
+        prompt_to_group_keys = defaultdict(list)
+        for record in all_records:
+            group_key = (record["rollout_batch_id"], record["prompt"])
+            grouped_records[group_key].append(record)
+            if group_key not in prompt_to_group_keys[record["prompt"]]:
+                prompt_to_group_keys[record["prompt"]].append(group_key)
+
+        used_directory_names = set()
+        prompt_groups = []
+        assignments = {}
+        for group_key in sorted(grouped_records, key=lambda key: (key[0], key[1])):
+            rollout_batch_id, prompt = group_key
+            directory_name = _prompt_directory_name(prompt)
+            if len(prompt_to_group_keys[prompt]) > 1:
+                directory_name = (
+                    f"{_truncate_utf8(directory_name, 200)}"
+                    f"__rollout_batch_{rollout_batch_id:04d}"
+                )
+            if directory_name in used_directory_names:
+                digest = hashlib.sha1(
+                    f"{rollout_batch_id}\0{prompt}".encode("utf-8")
+                ).hexdigest()[:10]
+                directory_name = f"{_truncate_utf8(directory_name, 205)}__{digest}"
+            used_directory_names.add(directory_name)
+
+            prompt_dir = os.path.join(epoch_root, directory_name)
+            os.makedirs(prompt_dir, exist_ok=True)
+            group_records = sorted(
+                grouped_records[group_key],
+                key=lambda record: (record["rank"], record["local_sample_index"]),
+            )
+            if len(group_records) != expected_images_per_prompt:
+                logger.warning(
+                    "Epoch %d prompt %r has %d images; expected %d",
+                    epoch,
+                    prompt,
+                    len(group_records),
+                    expected_images_per_prompt,
+                )
+
+            json_samples = []
+            for image_index, record in enumerate(group_records, start=1):
+                image_name = f"{image_index:03d}.png"
+                assignment_key = f"{record['rank']}:{record['local_sample_index']}"
+                assignments[assignment_key] = os.path.join(prompt_dir, image_name)
+                json_samples.append(
+                    {
+                        "image": image_name,
+                        "reward": record["reward"],
+                    }
+                )
+            prompt_groups.append(
+                {
+                    "directory": prompt_dir,
+                    "json": {
+                        "prompt": prompt,
+                        "rollout_batch_id": rollout_batch_id,
+                        "num_images": len(json_samples),
+                        "samples": json_samples,
+                    },
+                }
+            )
+        payload[0] = {"assignments": assignments, "prompt_groups": prompt_groups}
+
+    dist.broadcast_object_list(
+        payload,
+        src=0,
+        device=torch.device("cuda", torch.cuda.current_device()),
+    )
+    assignments = payload[0]["assignments"]
+
+    local_sample_index = 0
+    for images in image_batches:
+        for image in images:
+            image_path = assignments[f"{rank}:{local_sample_index}"]
+            os.makedirs(os.path.dirname(image_path), exist_ok=True)
+            _save_uint8_png(image, image_path)
+            local_sample_index += 1
+
+    dist.barrier()
+    if is_main_process(rank):
+        for prompt_group in payload[0]["prompt_groups"]:
+            json_path = os.path.join(prompt_group["directory"], "rewards.json")
+            json_tmp_path = f"{json_path}.tmp"
+            with open(json_tmp_path, "w", encoding="utf-8") as json_file:
+                json.dump(prompt_group["json"], json_file, ensure_ascii=False, indent=2)
+            os.replace(json_tmp_path, json_path)
+
+        completion_marker = os.path.join(epoch_root, "_SUCCESS")
+        marker_tmp = f"{completion_marker}.tmp"
+        with open(marker_tmp, "w", encoding="utf-8") as marker_file:
+            marker_file.write(
+                f"epoch={epoch}\nglobal_step={global_step}\nnum_samples={sum(len(x) for x in records_by_rank)}\n"
+            )
+        os.replace(marker_tmp, completion_marker)
+        logger.info(
+            "Saved %d rollout samples grouped by prompt to %s",
+            sum(len(x) for x in records_by_rank),
+            epoch_root,
+        )
+    dist.barrier()
 
 
 def eval_fn(
@@ -539,6 +878,14 @@ def main(_):
             f"{sorted(valid_trajectory_alpha_predictions)}, got {trajectory_alpha_prediction!r}"
         )
 
+    # [Scheme B/C addition] Read and validate command-line-overridable hyperparameters.
+    mass_shift_scheme = str(config.train.mass_shift_scheme).upper()
+    mass_shift_rho = float(config.train.mass_shift_rho)
+    if mass_shift_scheme not in {"B", "C"}:
+        raise ValueError(f"config.train.mass_shift_scheme must be 'B' or 'C', got {mass_shift_scheme!r}")
+    if not 0.0 < mass_shift_rho <= 1.0:
+        raise ValueError(f"config.train.mass_shift_rho must be in (0, 1], got {mass_shift_rho}")
+
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
@@ -561,6 +908,8 @@ def main(_):
         writer = SummaryWriter(log_dir=log_dir)
         writer.add_text("config", f"```text\n{config}\n```", 0)
     logger.info(f"\n{config}")
+    # [Scheme B/C addition]
+    logger.info("Mass-shift tie-aware selection: scheme=%s, rho=%.6f", mass_shift_scheme, mass_shift_rho)
 
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
 
@@ -622,12 +971,6 @@ def main(_):
             transformer = get_peft_model(transformer, transformer_lora_config)
         transformer.add_adapter("old", transformer_lora_config)
         transformer.set_adapter("default")
-    # 编译 Transformer，dynamic=True 以适应采样和训练的不同 batch size
-    transformer.base_model.model = torch.compile(
-        transformer.base_model.model,
-        dynamic=False,
-    )
-    pipeline.transformer = transformer
     transformer_ddp = DDP(transformer, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
     transformer_ddp.module.set_adapter("default")
     transformer_trainable_parameters = list(filter(lambda p: p.requires_grad, transformer_ddp.module.parameters()))
@@ -841,6 +1184,9 @@ def main(_):
         # SAMPLING
         pipeline.transformer.eval()
         samples_data_list = []
+        rollout_image_batches = []
+        rollout_prompts_by_batch = []
+        rollout_rewards_by_batch = []
 
         for i in tqdm(
             range(config.sample.num_batches_per_epoch),
@@ -901,8 +1247,8 @@ def main(_):
                     stat_tracker=stat_tracker if config.per_prompt_stat_tracking else None,
                 )
 
-            transformer_ddp.module.set_adapter("old")
-            # transformer_ddp.module.set_adapter("default")  # Algorithm 1: roll out with the current model theta.
+            # transformer_ddp.module.set_adapter("old")
+            transformer_ddp.module.set_adapter("default")  # roll out with the current model theta.
             with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
                 with torch.no_grad():
                     images, latents, _ = pipeline_with_logprob(
@@ -929,6 +1275,12 @@ def main(_):
             rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=True)
             time.sleep(0)
 
+            if FLAGS.save_rollout_samples:
+                rollout_image_batches.append(
+                    images.detach().float().clamp(0, 1).mul(255).round().to(torch.uint8).cpu()
+                )
+                rollout_prompts_by_batch.append(list(prompts))
+
             samples_data_list.append(
                 {
                     "prompt_ids": prompt_ids,
@@ -946,8 +1298,26 @@ def main(_):
             samples_data_list, desc="Waiting for rewards", disable=not is_main_process(rank), position=0
         ):
             rewards, reward_metadata = sample_item["rewards_future"].result()
+            if FLAGS.save_rollout_samples:
+                rollout_rewards_by_batch.append(rewards)
             sample_item["rewards"] = {k: torch.as_tensor(v, device=device).float() for k, v in rewards.items()}
             del sample_item["rewards_future"]
+
+        if FLAGS.save_rollout_samples:
+            save_rollout_samples(
+                config.save_dir,
+                epoch,
+                global_step,
+                rank,
+                world_size,
+                rollout_image_batches,
+                rollout_prompts_by_batch,
+                rollout_rewards_by_batch,
+                int(config.sample.num_image_per_prompt),
+            )
+            del rollout_image_batches
+            del rollout_prompts_by_batch
+            del rollout_rewards_by_batch
 
         # Collate samples
         collated_samples = {
@@ -1026,14 +1396,16 @@ def main(_):
             avg_rewards_all = gathered_rewards_dict["avg"]
             advantages = (avg_rewards_all - avg_rewards_all.mean()) / (avg_rewards_all.std() + 1e-4)
 
-        normalized_advantages, importance_weights, prompt_normalizers = compute_reinforced_flow_weights(
+        selected_advantages, importance_weights = compute_reinforced_flow_weights(
             prompts_all_decoded,
             rollout_batch_ids_all,
             advantages,
             advantage_clip=float(config.train.adv_clip_max),
-            coverage_beta=float(config.beta),
+            # coverage_beta=float(config.beta),  # Prompt normalization is disabled.
             epsilon=algorithm_epsilon,
             advantage_mode=getattr(config.train, "adv_mode", "all"),
+            mass_shift_scheme=mass_shift_scheme,  # [Scheme B/C addition]
+            mass_shift_rho=mass_shift_rho,  # [Scheme B/C addition]
         )
         total_rollout_size = len(importance_weights)  # Algorithm 1: D = K * C.
         # Distribute advantages back to processes
@@ -1048,18 +1420,18 @@ def main(_):
             collated_samples["importance_weights"] = torch.from_numpy(
                 importance_weights.reshape(world_size, samples_per_gpu)[rank]
             ).to(device=device, dtype=torch.float32)
-            collated_samples["prompt_normalizers"] = torch.from_numpy(
-                prompt_normalizers.reshape(world_size, samples_per_gpu)[rank]
-            ).to(device=device, dtype=torch.float32)
+            # collated_samples["prompt_normalizers"] = torch.from_numpy(
+            #     prompt_normalizers.reshape(world_size, samples_per_gpu)[rank]
+            # ).to(device=device, dtype=torch.float32)
         else:
             assert False
 
         if is_main_process(rank):
             logger.info(f"Advantages mean: {collated_samples['advantages'].abs().mean().item()}")
+            # The prompt-normalizer statistic is disabled with prompt normalization.
             logger.info(
-                "Importance weights mean: %.6f; prompt normalizers mean: %.6f; D: %d",
+                "Importance weights mean: %.6f; D: %d",
                 collated_samples["importance_weights"].mean().item(),
-                collated_samples["prompt_normalizers"].mean().item(),
                 total_rollout_size,
             )
 
@@ -1193,7 +1565,7 @@ def main(_):
 
 
                     importance_weight = train_sample_batch["importance_weights"].float()
-                    prompt_normalizer = train_sample_batch["prompt_normalizers"].float()
+                    # prompt_normalizer = train_sample_batch["prompt_normalizers"].float()
                     forward_x_prediction = xt.float() - t_expanded.float() * forward_prediction.float()
                     with torch.no_grad():
                         old_x_prediction = xt.float() - t_expanded.float() * old_prediction.detach().float()
@@ -1203,9 +1575,14 @@ def main(_):
                             if trajectory_alpha_prediction == "forward_prediction"
                             else old_x_prediction
                         )
+                        # Match train_nft_sd3_origin.py's FP64 adaptive
+                        # normalization.  Multiplying this FP64 factor by the
+                        # squared residual promotes policy_loss (and thus the
+                        # accumulated total loss) to FP64, while model forward
+                        # remains under AMP.
                         trajectory_alpha = 1.0 / (
                             torch.abs(
-                                x0.float() - trajectory_alpha_base_x_prediction.float()
+                                x0.double() - trajectory_alpha_base_x_prediction.double()
                             ).mean(
                                 dim=tuple(range(1, x0.ndim)), keepdim=True
                             )
@@ -1234,9 +1611,9 @@ def main(_):
                     loss_terms["importance_weight"] = importance_weight.mean().detach()
                     loss_terms["importance_weight_max"] = importance_weight.max().detach()
                     loss_terms["importance_weight_min"] = importance_weight.min().detach()
-                    loss_terms["prompt_normalizer"] = prompt_normalizer.mean().detach()
-                    loss_terms["prompt_normalizer_max"] = prompt_normalizer.max().detach()
-                    loss_terms["prompt_normalizer_min"] = prompt_normalizer.min().detach()
+                    # loss_terms["prompt_normalizer"] = prompt_normalizer.mean().detach()
+                    # loss_terms["prompt_normalizer_max"] = prompt_normalizer.max().detach()
+                    # loss_terms["prompt_normalizer_min"] = prompt_normalizer.min().detach()
                     # loss_terms["target_importance"] = target_importance.mean().detach()
                     # loss_terms["target_importance_max"] = target_importance.max().detach()
                     # loss_terms["target_importance_min"] = target_importance.min().detach()
@@ -1247,18 +1624,24 @@ def main(_):
                     loss_terms["correction_coefficient_max"] = correction_coefficient.max().detach()
                     loss_terms["correction_coefficient_min"] = correction_coefficient.min().detach()
 
-                    kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
+                    # Compute the complete KL branch in FP64 even when the
+                    # transformer forward pass runs under FP16/BF16 autocast.
+                    forward_prediction_fp64 = forward_prediction.double()
+                    ref_forward_prediction_fp64 = ref_forward_prediction.double()
+                    old_prediction_fp64 = old_prediction.double()
+
+                    kl_div_loss = ((forward_prediction_fp64 - ref_forward_prediction_fp64) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    loss += config.train.beta * torch.mean(kl_div_loss)
                     kl_div_loss = torch.mean(kl_div_loss)
-                    loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach()
-                    loss_terms["kl_div"] = torch.mean(
-                        ((forward_prediction - ref_forward_prediction) ** 2).mean(dim=tuple(range(1, x0.ndim)))
-                    ).detach()
+                    loss += config.train.beta * kl_div_loss
+                    loss_terms["kl_div_loss"] = kl_div_loss.detach()
+                    loss_terms["kl_div"] = kl_div_loss.detach()
                     loss_terms["old_kl_div"] = torch.mean(
-                        ((old_prediction - ref_forward_prediction) ** 2).mean(dim=tuple(range(1, x0.ndim)))
+                        ((old_prediction_fp64 - ref_forward_prediction_fp64) ** 2).mean(
+                            dim=tuple(range(1, x0.ndim))
+                        )
                     ).detach()
 
                     loss_terms["total_loss"] = loss.detach()

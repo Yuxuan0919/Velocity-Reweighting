@@ -1,0 +1,196 @@
+\section{An Exploration of Softmax and Its Variants}
+\begin{algorithm}[H]
+    \caption{Single Target Loss Exploration of Softmax Scheme}
+    \label{alg:velocity-add-delete}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$, prompt distribution $p(c)$, number of prompts per iteration $C$, rollout size per prompt $K$, batch size $B$, total samples per iteration $D = KC$, rollout coverage coefficient $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference regularization $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, reward-scale constant $\epsilon_R$, numerical constant $\epsilon_{\mathrm{alg}}$, gradient accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:} Training policy $\theta \leftarrow \theta_0$, old policy $\theta_{\mathrm{old}} \leftarrow \theta_0$, reference policy $\theta_{\mathrm{ref}} \leftarrow \theta_0$, data buffer $\mathcal{D} \leftarrow \emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j \sim p(c)$, $j = 1, \dots, C$}} \Comment{Rollout Step, Data Collection}
+                \State Sample $K$ clean images $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$ conditioned on $c_j$.
+                \State Evaluate rewards $R_{j,k} \leftarrow R(\mathbf{x}_0^{j,k}, c_j)$ for $k = 1, \dots, K$.
+            \EndFor
+
+            % \State Compute prompt-wise reward means
+            % $\bar{R}_{c_j} \leftarrow \frac{1}{K}\sum_{k=1}^{K} R_{j,k}$ for $j = 1, \dots, C$.
+
+            % \State Compute global reward mean
+            % $\bar{R} \leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K} R_{j,k}$.
+
+            % \State Compute global reward scale
+            % $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2}.$
+
+            \For{\text{each prompt $c_j$, $j = 1, \dots, C$}}
+                \State Compute normalized weights
+                \[
+                    w_{j,k} \leftarrow \frac{f(R_{j,k})}{\frac{1}{G}\sum_{k=1}^{G}f(R_{j,k})},
+                    \quad k = 1, \dots, K.
+                \]
+
+                \State Store
+                $\mathcal{D}\leftarrow\mathcal{D}\cup
+                \{(c_j,\mathbf{x}_0^{j,k},w_{j,k})\}_{k=1}^{K}$.
+            \EndFor
+
+            \For{\text{each mini batch }
+            $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
+                \State Sample $t_i\sim\mathcal{U}(0,1)$,
+                $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$;
+                set $\mathbf{x}_i^{t_i}\leftarrow
+                (1-t_i)\mathbf{x}_i^0+t_i\boldsymbol{\epsilon}_i$.
+                \State Predict $\mathbf{x}_i^\theta$,
+                $\mathbf{x}_i^{\mathrm{old}}$, and $\mathbf{x}_i^{\mathrm{ref}}$
+                from $(\mathbf{x}_i^{t_i},c_i,t_i)$ with
+                $\theta$, $\theta_{\mathrm{old}}$, and $\theta_{\mathrm{ref}}$.
+                \State $\mathbf{x}_i^{\mathrm{target}}\leftarrow
+                \mathbf{x}_i^{\mathrm{old}}+
+                \beta(w_i-1)(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}})$.
+                \State Compute
+                \[
+                    \begin{aligned}
+                    \mathcal{L}_{\mathrm{policy}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \frac{\|\mathbf{x}_i^\theta-\mathbf{x}_i^{\mathrm{target}}\|_2^2}
+                    {\operatorname{sg}[\operatorname{mean}
+                    |\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}|]},\\
+                    \mathcal{L}_{\mathrm{ref}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \|\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}\|_2^2.
+                    \end{aligned}
+                \]
+                \State Backpropagate
+                $(\Delta_{clip}\mathcal{L}_{\mathrm{policy}}+
+                \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})/N_{\mathrm{acc}}$.
+            \EndFor
+            \State Update $\theta$; set
+            $\theta_{\mathrm{old}}\leftarrow
+            \eta\theta_{\mathrm{old}}+(1-\eta)\theta$ and
+            $\mathcal{D}\leftarrow\emptyset$.
+        \EndFor
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{v}_\theta$
+\end{algorithm}
+
+For each prompt \(c_j\), let
+\[
+\bar R_{c_j}=\frac{1}{K}\sum_{k=1}^{K}R_{j,k},
+\qquad
+\sigma_{c_j}=\sqrt{\frac{1}{K}\sum_{k=1}^{K}\bigl(R_{j,k}-\bar R_{c_j}\bigr)^2},
+\]
+All weights below are normalized inside each prompt, i.e.
+\[
+\frac{1}{K}\sum_{k=1}^{K}w_{j,k}=1.
+\]
+
+\paragraph{Experiment A: Softmax weight variants.}
+
+\subparagraph{Standard-deviation temperature.}
+Directly substitute \(c\sigma_{c_j}\) as the temperature:
+\[
+f(R_{j,k})
+=
+\exp\left(
+\frac{R_{j,k}}{c\sigma_{c_j}}
+\right),
+\qquad
+c\in\{0.5,1.0,1.5,2.5\}.
+\]
+
+\subparagraph{Centered L1-norm temperature.}
+Let
+\[
+\|R_{j,\cdot}-\bar R_{c_j}\|_1
+=
+\sum_{\ell=1}^{K}\bigl|R_{j,\ell}-\bar R_{c_j}\bigr|.
+\]
+Define
+\[
+f(R_{j,k})
+=
+\exp\left(
+\frac{R_{j,k}}{c\,\|R_{j,\cdot}-\bar R_{c_j}\|_1}
+\right),
+\qquad
+c\in\{0.5,1.0,1.5,2.5\}.
+\]
+
+
+\paragraph{Experiment B: Linear centered and uncentered weights.}
+
+% \subparagraph{Centered linear.}
+% \[
+% f_{j,k}
+% =
+% \left[
+% 1 + \frac{R_{j,k}-\bar R_{c_j}}{\sigma_{c_j}}
+% \right]_+.
+% \]
+
+\subparagraph{Uncentered linear.}
+\[
+f_{j,k}
+=
+\left[
+R_{j,k}
+\right]_+.
+\]
+
+\subparagraph{Shifted uncentered linear.}
+\[
+f_{j,k}
+=
+\left[
+1+R_{j,k}
+\right]_+.
+\]
+
+where $[x]_+ = \max(x,0)$.
+
+
+\paragraph{Experiment C: Soft Top-$k$.}
+
+We consider this top-k design from a constrained optimization problem:
+
+\begin{equation}
+\max_{\{w_i\}}
+\sum_{i=1}^{G} w_i R_i
+\quad
+\text{s.t.}
+\quad
+\sum_{i=1}^{G} w_i = G,
+\qquad
+0 \le w_i \le \frac{G}{k}.
+\end{equation}
+
+
+The objective assigns as much probability mass as possible to samples with higher rewards. And the upper bound $G/k$ prevents the mass focusing to fewer than $k$ samples. So the optimal solution is: samples above the boundary $\tau=R_{(k)}$ have the maximum weight $G/k$, samples below $\tau$ have no weight, and the remaining mass is equally distributed among samples equal to $\tau$.
+
+Sort the rewards, \begin{equation} R_{(1)} \ge R_{(2)} \ge \cdots \ge R_{(G)}, \end{equation} and define the boundary reward as \begin{equation} \tau = R_{(k)}. \end{equation}
+
+\begin{equation}
+w_i=
+\begin{cases}
+\frac{G}{k},
+& R_i>\tau,\\[4pt]
+\displaystyle
+\frac{G}{k}
+\frac{
+k-\sum_j \mathbbm{1}[R_j>\tau]
+}{
+\sum_j \mathbbm{1}[R_j=\tau]
+},
+& R_i=\tau,\\[10pt]
+0,
+& R_i<\tau.
+\end{cases}
+\end{equation}
+
+
+This promises
+\begin{equation}
+\sum_{i=1}^{G} w_i = G.
+\end{equation}
+
+For continuous rewards with distinct values, it reduces to standard Top-$k$ weighting.
+
+

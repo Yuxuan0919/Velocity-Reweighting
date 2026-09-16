@@ -14,6 +14,7 @@
  urlcolor=CornflowerBlue
 }
 \usepackage{url}
+\usepackage{bbm}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{mathtools}
@@ -2240,6 +2241,171 @@ it becomes uniform, all are $1$.
 
 
 
+
+
+
+\begin{algorithm}[H]
+    \scriptsize
+    \setlength{\abovedisplayskip}{1pt}
+    \setlength{\belowdisplayskip}{1pt}
+    \renewcommand{\arraystretch}{0.9}
+    \caption{Scheme B: Symmetric Soft Selection with Boost-Only Floor}
+    \label{alg:x-prediction-symmetric-soft-selection}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$,
+    prompt distribution $p(c)$, $C$
+    prompts per iteration, $K$ samples per prompt, $D=CK$, batch size $B$,
+    retained ratio $\rho$, shift strength $\beta$, mass-shift clip
+    $\Delta_{\mathrm{clip}}$, reference regularization $\lambda_{\mathrm{ref}}$,
+    EMA rate $\eta$, accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:}
+    $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}\leftarrow\theta_0$,
+    $\mathcal{D}\leftarrow\emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+                \State Sample $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$
+                conditioned on $c_j$ and set
+                $R_{j,k}\leftarrow R(\mathbf{x}_0^{j,k},c_j)$.
+            \EndFor
+
+            \State Compute global reward mean
+            $\bar{R}\leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k}$.
+            \State Compute global reward scale
+            $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2}$.
+
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+                \State Set the mass-shift center to the prompt-group mean:
+                $b_j\leftarrow K^{-1}\sum_{k=1}^{K}R_{j,k}$.
+                \State Within this prompt group, compute
+                \[
+                    \Delta_{j,k}\leftarrow
+                    \frac{1}{\Delta_{\mathrm{clip}}}
+                    \operatorname{clip}\!\left(
+                        \frac{R_{j,k}-b_j}{\sigma_R},
+                        -\Delta_{\mathrm{clip}},
+                        \Delta_{\mathrm{clip}}
+                    \right),
+                    \qquad k=1,\dots,K.
+                \]
+                \State Initialize $s_{j,k}\leftarrow0$ for $k=1,\dots,K$.
+
+                \For{\text{each side $\tau\in\{-,+\}$}}
+                    \State Define
+                    $I_j^-\leftarrow\{k:\Delta_{j,k}<0\}$ and
+                    $I_j^+\leftarrow\{k:\Delta_{j,k}>0\}$; use $I_j^\tau$.
+                    \If{$I_j^\tau\neq\emptyset$}
+                        \State Partition $I_j^\tau$ into exact equal-magnitude groups
+                        $G_{j,1}^\tau,\dots,G_{j,m_j^\tau}^\tau$ such that
+                        \[
+                            G_{j,r}^\tau
+                            =\{k\in I_j^\tau:|\Delta_{j,k}|=a_{j,r}^\tau\},
+                            \qquad
+                            a_{j,1}^\tau>\cdots>a_{j,m_j^\tau}^\tau>0.
+                        \]
+                        \State Compute group masses and the target retained mass:
+                        \[
+                            m_{j,r}^\tau\leftarrow
+                            \sum_{k\in G_{j,r}^\tau}|\Delta_{j,k}|,
+                            \qquad
+                            T_j^\tau\leftarrow
+                            \rho\sum_{r=1}^{m_j^\tau}m_{j,r}^\tau.
+                        \]
+                        \State Find the boundary group and mass before it:
+                        \[
+                            r_{j,\rho}^\tau\leftarrow
+                            \min\left\{r:
+                            \sum_{u=1}^{r}m_{j,u}^\tau\ge T_j^\tau\right\},
+                            \qquad
+                            P_j^\tau\leftarrow
+                            \sum_{u=1}^{r_{j,\rho}^\tau-1}m_{j,u}^\tau.
+                        \]
+                        \State Assign one shared fraction to the complete boundary group:
+                        \[
+                            f_j^\tau\leftarrow
+                            \frac{T_j^\tau-P_j^\tau}
+                            {m_{j,r_{j,\rho}^\tau}^\tau}.
+                        \]
+                        \State Allocate the strong-tail mass without splitting a tie:
+                        \[
+                            s_{j,k}\leftarrow
+                            \begin{cases}
+                                \Delta_{j,k},
+                                &k\in G_{j,r}^\tau,\ r<r_{j,\rho}^\tau,\\
+                                f_j^\tau\Delta_{j,k},
+                                &k\in G_{j,r_{j,\rho}^\tau}^\tau,\\
+                                0,
+                                &k\in G_{j,r}^\tau,\ r>r_{j,\rho}^\tau.
+                            \end{cases}
+                        \]
+                    \EndIf
+                \EndFor
+
+                \State First finish the original selection and rescaling:
+                \[
+                    \widetilde{\Delta}_{j,k}\leftarrow s_{j,k}/\rho,
+                    \qquad k=1,\dots,K.
+                \]
+            \EndFor
+
+            \State After selection has finished for all groups, apply the
+            boost-only floor to every sample:
+            \[
+                w_{j,k}-1\leftarrow
+                \begin{cases}
+                    \Delta_{j,k},
+                    &|\widetilde{\Delta}_{j,k}|<|\Delta_{j,k}|,\\
+                    \widetilde{\Delta}_{j,k},
+                    &|\widetilde{\Delta}_{j,k}|\ge|\Delta_{j,k}|,
+                \end{cases}
+                \qquad j=1,\dots,C,\quad k=1,\dots,K.
+            \]
+            \State Hence $|w_{j,k}-1|\ge|\Delta_{j,k}|$ for every sample:
+            attenuated candidates are restored to the original signal, while
+            equal or amplified candidates are kept unchanged.
+            \State Store
+            $\mathcal{D}\leftarrow\mathcal{D}\cup
+            \{(c_j,\mathbf{x}_0^{j,k},w_{j,k}):
+            j=1,\dots,C,\ k=1,\dots,K\}$.
+
+            \For{\text{each mini batch }
+            $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
+                \State Sample $t_i\sim\mathcal{U}(0,1)$,
+                $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$;
+                set $\mathbf{x}_i^{t_i}\leftarrow
+                (1-t_i)\mathbf{x}_i^0+t_i\boldsymbol{\epsilon}_i$.
+                \State Predict $\mathbf{x}_i^\theta$,
+                $\mathbf{x}_i^{\mathrm{old}}$, and $\mathbf{x}_i^{\mathrm{ref}}$
+                from $(\mathbf{x}_i^{t_i},c_i,t_i)$ with
+                $\theta$, $\theta_{\mathrm{old}}$, and $\theta_{\mathrm{ref}}$.
+                \State $\mathbf{x}_i^{\mathrm{target}}\leftarrow
+                \mathbf{x}_i^{\mathrm{old}}+
+                \beta(w_i-1)(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}})$.
+                \State Compute
+                \[
+                    \begin{aligned}
+                    \mathcal{L}_{\mathrm{policy}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \frac{\|\mathbf{x}_i^\theta-\mathbf{x}_i^{\mathrm{target}}\|_2^2}
+                    {\operatorname{sg}[\operatorname{mean}
+                    |\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}|]},\\
+                    \mathcal{L}_{\mathrm{ref}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \|\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}\|_2^2.
+                    \end{aligned}
+                \]
+                \State Backpropagate
+                $(\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{policy}}+
+                \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})/N_{\mathrm{acc}}$.
+            \EndFor
+            \State Update $\theta$; set
+            $\theta_{\mathrm{old}}\leftarrow
+            \eta\theta_{\mathrm{old}}+(1-\eta)\theta$ and
+            $\mathcal{D}\leftarrow\emptyset$.
+        \EndFor
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{x}_\theta$
+\end{algorithm}
+
 Schemes B and C use the same normalized and clipped signal
 $\Delta_{j,k}$ as the base scheme.  Scheme B selects strong-tail samples on
 both sides, whereas Scheme C keeps all negative samples and selects only the
@@ -2381,48 +2547,63 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
 
 \begin{table}[H]
     \centering
-    \caption{PickScore evaluation for the soft-selection runs. Each $\beta$ block compares Scheme C at $\rho\in\{1/3,2/3\}$ with the $\rho=1$ baseline at selected checkpoints. Bold marks the highest displayed score after initialization at fixed $\beta$ and step.}
+    \caption{PickScore evaluation for the soft-selection runs, sampled every 50 steps. Each $\beta$ block compares Scheme C at the available $\rho$ values with the $\rho=1$ baseline; $\rho=1/2$ was evaluated for $\beta\in\{5,7\}$. Bold marks the highest displayed score after initialization at fixed $\beta$ and step. Dashes denote checkpoints absent from the corresponding log.}
     \label{tab:pickscore-soft-selection-rho-comparison}
     \scriptsize
     \setlength{\tabcolsep}{2pt}
-    \renewcommand{\arraystretch}{1.08}
+    \renewcommand{\arraystretch}{1.05}
+    \textbf{(a) $\beta\in\{0.5,1,2\}$}\\[0.2em]
     \resizebox{\linewidth}{!}{%
-    \begin{tabular}{@{}c*{12}{r}@{}}
+    \begin{tabular}{@{}c*{9}{r}@{}}
         \toprule
         & \multicolumn{3}{c}{$\beta=0.5$}
         & \multicolumn{3}{c}{$\beta=1.0$}
-        & \multicolumn{3}{c}{$\beta=2.0$}
-        & \multicolumn{3}{c}{$\beta=5.0$} \\
-        \cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}\cmidrule(l){11-13}
+        & \multicolumn{3}{c}{$\beta=2.0$} \\
+        \cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(l){8-10}
         Step & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$
-             & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$
              & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$
              & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$ \\
         \midrule
-          0 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 \\
-         20 & 0.8563 & 0.8600 & \textbf{0.8618} & 0.8606 & \textbf{0.8656} & 0.8637 & 0.8618 & 0.8644 & \textbf{0.8658} & 0.8612 & 0.8647 & \textbf{0.8652} \\
-         40 & 0.8653 & 0.8692 & \textbf{0.8701} & 0.8719 & \textbf{0.8756} & 0.8743 & 0.8702 & \textbf{0.8776} & 0.8772 & 0.8743 & \textbf{0.8780} & 0.8757 \\
-         60 & 0.8719 & 0.8752 & \textbf{0.8756} & 0.8789 & \textbf{0.8803} & 0.8787 & 0.8787 & \textbf{0.8847} & 0.8836 & 0.8811 & \textbf{0.8857} & 0.8834 \\
-         80 & 0.8737 & \textbf{0.8778} & 0.8774 & 0.8815 & \textbf{0.8831} & 0.8809 & 0.8846 & \textbf{0.8867} & 0.8863 & 0.8869 & \textbf{0.8903} & 0.8865 \\
-        100 & 0.8769 & \textbf{0.8801} & 0.8789 & 0.8853 & \textbf{0.8857} & 0.8837 & 0.8891 & \textbf{0.8898} & 0.8895 & 0.8920 & \textbf{0.8946} & 0.8906 \\
-        120 & 0.8782 & \textbf{0.8813} & 0.8803 & \textbf{0.8866} & 0.8863 & 0.8849 & 0.8921 & \textbf{0.8922} & 0.8914 & 0.8953 & \textbf{0.8979} & 0.8936 \\
-        140 & -- & -- & -- & \textbf{0.8892} & 0.8874 & 0.8868 & 0.8937 & \textbf{0.8939} & 0.8930 & 0.8970 & \textbf{0.9002} & 0.8952 \\
-        160 & -- & -- & -- & \textbf{0.8906} & 0.8890 & 0.8882 & 0.8953 & \textbf{0.8959} & 0.8946 & 0.8988 & \textbf{0.9016} & 0.8970 \\
-        180 & -- & -- & -- & \textbf{0.8928} & 0.8906 & 0.8900 & 0.8971 & \textbf{0.8976} & 0.8967 & 0.9008 & \textbf{0.9040} & 0.8984 \\
-        200 & -- & -- & -- & \textbf{0.8925} & 0.8916 & 0.8912 & 0.8989 & \textbf{0.8993} & 0.8980 & 0.9024 & \textbf{0.9052} & 0.8996 \\
-        220 & -- & -- & -- & \textbf{0.8934} & 0.8929 & 0.8917 & 0.9007 & \textbf{0.9009} & 0.8989 & 0.9034 & \textbf{0.9069} & 0.9012 \\
-        240 & -- & -- & -- & \textbf{0.8940} & 0.8933 & 0.8916 & \textbf{0.9015} & \textbf{0.9015} & 0.8993 & 0.9052 & \textbf{0.9079} & 0.9021 \\
-        260 & -- & -- & -- & \textbf{0.8953} & 0.8944 & 0.8936 & \textbf{0.9027} & 0.9023 & 0.9006 & 0.9060 & \textbf{0.9085} & 0.9027 \\
-        270 & -- & -- & -- & \textbf{0.8953} & 0.8944 & 0.8931 & \textbf{0.9025} & 0.9019 & 0.9007 & 0.9062 & \textbf{0.9090} & 0.9032 \\
-        280 & -- & -- & -- & 0.8953 & \textbf{0.8955} & 0.8937 & \textbf{0.9029} & 0.9028 & 0.9012 & -- & -- & -- \\
-        300 & -- & -- & -- & \textbf{0.8965} & 0.8956 & 0.8942 & \textbf{0.9043} & 0.9038 & 0.9022 & -- & -- & -- \\
-        320 & -- & -- & -- & \textbf{0.8972} & 0.8967 & 0.8951 & \textbf{0.9054} & 0.9047 & 0.9026 & -- & -- & -- \\
-        340 & -- & -- & -- & \textbf{0.8985} & 0.8972 & 0.8955 & \textbf{0.9060} & 0.9051 & 0.9029 & -- & -- & -- \\
-        360 & -- & -- & -- & \textbf{0.8979} & 0.8968 & 0.8958 & \textbf{0.9065} & 0.9055 & 0.9039 & -- & -- & -- \\
-        380 & -- & -- & -- & \textbf{0.8984} & 0.8979 & 0.8961 & \textbf{0.9069} & 0.9057 & 0.9039 & -- & -- & -- \\
-        400 & -- & -- & -- & \textbf{0.8985} & 0.8978 & 0.8966 & 0.9065 & \textbf{0.9068} & 0.9040 & -- & -- & -- \\
-        420 & -- & -- & -- & \textbf{0.8991} & 0.8980 & 0.8967 & \textbf{0.9074} & 0.9071 & 0.9044 & -- & -- & -- \\
-        440 & -- & -- & -- & \textbf{0.8999} & 0.8979 & 0.8974 & 0.9075 & \textbf{0.9076} & 0.9057 & -- & -- & -- \\
+          0 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 \\
+         50 & 0.8676 & 0.8710 & \textbf{0.8719} & 0.8751 & \textbf{0.8773} & 0.8757 & 0.8744 & \textbf{0.8810} & 0.8799 \\
+        100 & 0.8769 & \textbf{0.8801} & 0.8789 & 0.8853 & \textbf{0.8857} & 0.8837 & 0.8891 & \textbf{0.8898} & 0.8895 \\
+        150 & -- & -- & -- & \textbf{0.8898} & 0.8890 & 0.8878 & 0.8951 & \textbf{0.8954} & 0.8945 \\
+        200 & -- & -- & -- & \textbf{0.8925} & 0.8916 & 0.8912 & 0.8989 & \textbf{0.8993} & 0.8980 \\
+        250 & -- & -- & -- & \textbf{0.8944} & 0.8932 & 0.8927 & \textbf{0.9024} & 0.9018 & 0.9001 \\
+        300 & -- & -- & -- & \textbf{0.8965} & 0.8956 & 0.8942 & \textbf{0.9043} & 0.9038 & 0.9022 \\
+        350 & -- & -- & -- & \textbf{0.8980} & 0.8969 & 0.8957 & \textbf{0.9057} & 0.9053 & 0.9033 \\
+        400 & -- & -- & -- & \textbf{0.8985} & 0.8978 & 0.8966 & 0.9065 & \textbf{0.9068} & 0.9040 \\
+        \bottomrule
+    \end{tabular}}
+
+    \vspace{0.7em}
+    \textbf{(b) $\beta\in\{5,7,10\}$}\\[0.2em]
+    \resizebox{\linewidth}{!}{%
+    \begin{tabular}{@{}c*{11}{r}@{}}
+        \toprule
+        & \multicolumn{4}{c}{$\beta=5.0$}
+        & \multicolumn{4}{c}{$\beta=7.0$}
+        & \multicolumn{3}{c}{$\beta=10.0$} \\
+        \cmidrule(lr){2-5}\cmidrule(lr){6-9}\cmidrule(l){10-12}
+        Step & $\rho=1/3$ & $\rho=1/2$ & $\rho=2/3$ & $\rho=1$
+             & $\rho=1/3$ & $\rho=1/2$ & $\rho=2/3$ & $\rho=1$
+             & $\rho=1/3$ & $\rho=2/3$ & $\rho=1$ \\
+        \midrule
+          0 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 & 0.7613 \\
+         50 & 0.8769 & \textbf{0.8823} & 0.8821 & 0.8794 & 0.8785 & \textbf{0.8822} & 0.8800 & 0.8819 & 0.8781 & \textbf{0.8835} & 0.8832 \\
+        100 & 0.8920 & \textbf{0.8963} & 0.8946 & 0.8906 & 0.8936 & \textbf{0.8944} & 0.8924 & 0.8941 & 0.8920 & \textbf{0.8967} & 0.8940 \\
+        150 & 0.8972 & \textbf{0.9010} & 0.9009 & 0.8958 & 0.9002 & \textbf{0.9036} & 0.8993 & 0.9003 & -- & -- & -- \\
+        200 & 0.9024 & 0.9047 & \textbf{0.9052} & 0.8996 & 0.9053 & \textbf{0.9079} & 0.9041 & 0.9026 & -- & -- & -- \\
+        250 & 0.9050 & \textbf{0.9087} & 0.9084 & 0.9022 & 0.9081 & \textbf{0.9110} & 0.9063 & 0.9046 & -- & -- & -- \\
+        300 & 0.9080 & \textbf{0.9115} & 0.9108 & 0.9044 & 0.9091 & \textbf{0.9135} & 0.9085 & 0.9074 & -- & -- & -- \\
+        350 & 0.9096 & 0.9125 & \textbf{0.9126} & 0.9052 & 0.9097 & \textbf{0.9151} & 0.9100 & 0.9083 & -- & -- & -- \\
+        400 & 0.9103 & \textbf{0.9149} & 0.9140 & 0.9062 & 0.9127 & \textbf{0.9160} & 0.9112 & 0.9091 & -- & -- & -- \\
+        450 & 0.9116 & \textbf{0.9160} & 0.9158 & 0.9069 & 0.9140 & \textbf{0.9171} & 0.9110 & 0.9089 & -- & -- & -- \\
+        500 & -- & \textbf{0.9175} & -- & -- & 0.9157 & \textbf{0.9177} & 0.9127 & 0.9113 & -- & -- & -- \\
+        550 & -- & \textbf{0.9189} & -- & -- & 0.9158 & \textbf{0.9195} & 0.9145 & 0.9135 & -- & -- & -- \\
+        600 & -- & \textbf{0.9199} & -- & -- & 0.9158 & \textbf{0.9205} & 0.9169 & 0.9150 & -- & -- & -- \\
+        650 & -- & \textbf{0.9205} & -- & -- & 0.9149 & 0.9175 & \textbf{0.9180} & 0.9154 & -- & -- & -- \\
+        700 & -- & \textbf{0.9210} & -- & -- & 0.9143 & \textbf{0.9195} & 0.9194 & 0.9168 & -- & -- & -- \\
         \bottomrule
     \end{tabular}}
 \end{table}
@@ -2448,10 +2629,10 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
                                   & C & $\bullet$ & - & $\bullet$ & \\
         \midrule
         \multirow{2}{*}{$5.0$} & B & $\bullet$ & - & $\bullet$ & \multirow{2}{*}{$\bullet$} \\
-                                  & C & $\bullet$ & - & $\bullet$ & \\
+                                  & C & $\bullet$ & $\checkmark$ & $\bullet$ & \\
         \midrule
-        \multirow{2}{*}{$8.0$} & B & - & - & - & \multirow{2}{*}{-} \\
-                                  & C & - & - & - & \\
+        \multirow{2}{*}{$7.0$} & B & - & - & - & \multirow{2}{*}{$\checkmark$} \\
+                                  & C & $\checkmark$ & $\checkmark$ & $\checkmark$ & \\
         \midrule
         \multirow{2}{*}{$10.0$} & B & $\bullet$ & - & $\bullet$ & \multirow{2}{*}{$\bullet$} \\
                                   & C & $\bullet$ & - & $\bullet$ & \\
@@ -2463,9 +2644,12 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
     $\checkmark$ running\qquad - waiting\qquad $\bullet$ finished
 \end{table}
 
+
+
+
 \begin{table}[H]
     \centering
-    \caption{OCR, GenEval, and HPSv2 experiment status at $\beta=5.0$. Each task has two running experiments, at $\rho=2/3$ and $\rho=1$, for six experiments in total.}
+    \caption{OCR, GenEval, and HPSv2 experiment status at $\beta=5.0$. Each task has two experiments, at $\rho=2/3$ and $\rho=1$.}
     \label{tab:other-reward-current-running-sweep}
     \footnotesize
     \setlength{\tabcolsep}{5pt}
@@ -2477,13 +2661,10 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
         \multirow{3}{*}{$5.0$}
             & OCR     & $\checkmark$ & $\checkmark$ \\
             & GenEval & $\checkmark$ & $\checkmark$ \\
-            & HPSv2   & $\checkmark$ & $\checkmark$ \\
+            & HPSv2   & - & - \\
         \bottomrule
     \end{tabular}
 
-    \vspace{0.3em}
-    \scriptsize
-    $\checkmark$ running
 \end{table}
 
 
