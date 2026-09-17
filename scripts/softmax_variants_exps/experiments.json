@@ -1,0 +1,182 @@
+[
+  {
+    "run": "01",
+    "variant": "A",
+    "c": 0.0,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0",
+    "launcher": "run_01_A_near_max_c0_4090.sh",
+    "trainer": "train_nft_sd3_A_near_max.py"
+  },
+  {
+    "run": "02",
+    "variant": "A",
+    "c": 0.05,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.05",
+    "launcher": "run_02_A_near_max_c0.05_4090.sh",
+    "trainer": "train_nft_sd3_A_near_max.py"
+  },
+  {
+    "run": "03",
+    "variant": "A",
+    "c": 0.1,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.1",
+    "launcher": "run_03_A_near_max_c0.1_4090.sh",
+    "trainer": "train_nft_sd3_A_near_max.py"
+  },
+  {
+    "run": "04",
+    "variant": "A",
+    "c": 0.25,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.25",
+    "launcher": "run_04_A_near_max_c0.25_4090.sh",
+    "trainer": "train_nft_sd3_A_near_max.py"
+  },
+  {
+    "run": "05",
+    "variant": "B",
+    "c": 0.5,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.5",
+    "launcher": "run_05_B_softmax_std_c0.5_4090.sh",
+    "trainer": "train_nft_sd3_B_softmax_std.py"
+  },
+  {
+    "run": "06",
+    "variant": "B",
+    "c": 0.75,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.75",
+    "launcher": "run_06_B_softmax_std_c0.75_4090.sh",
+    "trainer": "train_nft_sd3_B_softmax_std.py"
+  },
+  {
+    "run": "07",
+    "variant": "B",
+    "c": 1.0,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "1.0",
+    "launcher": "run_07_B_softmax_std_c1.0_4090.sh",
+    "trainer": "train_nft_sd3_B_softmax_std.py"
+  },
+  {
+    "run": "08",
+    "variant": "B",
+    "c": 1.5,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "1.5",
+    "launcher": "run_08_B_softmax_std_c1.5_4090.sh",
+    "trainer": "train_nft_sd3_B_softmax_std.py"
+  },
+  {
+    "run": "09",
+    "variant": "C",
+    "c": 1.0,
+    "p": 1.0,
+    "parameter": null,
+    "value": null,
+    "launcher": "run_09_C_linear_4090.sh",
+    "trainer": "train_nft_sd3_C_linear.py"
+  },
+  {
+    "run": "10",
+    "variant": "D",
+    "c": 0.01,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.01",
+    "launcher": "run_10_D_sigmoid_c0.01_4090.sh",
+    "trainer": "train_nft_sd3_D_sigmoid.py"
+  },
+  {
+    "run": "11",
+    "variant": "D",
+    "c": 0.1,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.1",
+    "launcher": "run_11_D_sigmoid_c0.1_4090.sh",
+    "trainer": "train_nft_sd3_D_sigmoid.py"
+  },
+  {
+    "run": "12",
+    "variant": "D",
+    "c": 0.3,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.3",
+    "launcher": "run_12_D_sigmoid_c0.3_4090.sh",
+    "trainer": "train_nft_sd3_D_sigmoid.py"
+  },
+  {
+    "run": "13",
+    "variant": "E",
+    "c": 1.0,
+    "p": 0.5,
+    "parameter": "p",
+    "value": "0.5",
+    "launcher": "run_13_E_power_p0.5_4090.sh",
+    "trainer": "train_nft_sd3_E_power.py"
+  },
+  {
+    "run": "14",
+    "variant": "E",
+    "c": 1.0,
+    "p": 2.0,
+    "parameter": "p",
+    "value": "2.0",
+    "launcher": "run_14_E_power_p2.0_4090.sh",
+    "trainer": "train_nft_sd3_E_power.py"
+  },
+  {
+    "run": "15",
+    "variant": "F",
+    "c": 0.5,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.5",
+    "launcher": "run_15_F_softmax_l1_c0.5_4090.sh",
+    "trainer": "train_nft_sd3_F_softmax_l1.py"
+  },
+  {
+    "run": "16",
+    "variant": "F",
+    "c": 0.75,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "0.75",
+    "launcher": "run_16_F_softmax_l1_c0.75_4090.sh",
+    "trainer": "train_nft_sd3_F_softmax_l1.py"
+  },
+  {
+    "run": "17",
+    "variant": "F",
+    "c": 1.0,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "1.0",
+    "launcher": "run_17_F_softmax_l1_c1.0_4090.sh",
+    "trainer": "train_nft_sd3_F_softmax_l1.py"
+  },
+  {
+    "run": "18",
+    "variant": "F",
+    "c": 1.5,
+    "p": 1.0,
+    "parameter": "c",
+    "value": "1.5",
+    "launcher": "run_18_F_softmax_l1_c1.5_4090.sh",
+    "trainer": "train_nft_sd3_F_softmax_l1.py"
+  }
+]

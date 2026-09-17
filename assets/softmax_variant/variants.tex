@@ -1,3 +1,339 @@
+\documentclass[10pt]{article} % For LaTeX2e
+\usepackage{tmlr}
+% If accepted, instead use the following line for the camera-ready submission:
+%\usepackage[accepted]{tmlr}
+% To de-anonymize and remove mentions to TMLR (for example for posting to preprint servers), instead use the following:
+%\usepackage[preprint]{tmlr}
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{bbm}
+\usepackage{multirow}
+\usepackage{mathtools}
+\usepackage{tabularx} % 必须在导言区引入该宏包
+\usepackage{amsmath}  % 确保引入了数学公式宏包
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+
+\title{RL in Diffusion}
+
+% Authors must not appear in the submitted version. They should be hidden
+% as long as the tmlr package is used without the [accepted] or [preprint] options.
+% Non-anonymous submissions will be rejected without review.
+
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\dd}{\,\mathrm{d}}
+
+\newcommand{\piold}{\pi^{\mathrm{old}}}
+\newcommand{\pinew}{\pi^{\mathrm{new}}}
+\newcommand{\pipos}{\pi^{+}}
+\newcommand{\pineg}{\pi^{-}}
+
+\newcommand{\vold}{v^{\mathrm{old}}}
+\newcommand{\vref}{v^{\mathrm{ref}}}
+\newcommand{\vpos}{v^{+}}
+\newcommand{\vneg}{v^{-}}
+\newcommand{\myvtheta}{v_{\theta}}
+
+\newcommand{\utarget}{u}
+
+% ---- added for this section ----
+\newcommand{\pold}{p^{\mathrm{old}}}
+\newcommand{\pstar}{p^{*}}
+% --------------------------------
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\DeclareMathOperator{\clip}{clip}
+\DeclareMathOperator{\sg}{sg}
+
+% The \author macro works with any number of authors. Use \AND
+% to separate the names and addresses of multiple authors.
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\def\month{MM}  % Insert correct month for camera-ready version
+\def\year{YYYY} % Insert correct year for camera-ready version
+\def\openreview{\url{https://openreview.net/forum?id=XXXX}} % Insert correct link to OpenReview for camera-ready version
+
+
+\begin{document}
+
+
+\maketitle
+
+\begin{abstract}
+PlaceHolder
+\end{abstract}
+
+%------------------------------------------------------------
+\section{Setup}
+\label{sec:setup}
+%------------------------------------------------------------
+Let $c$ be a prompt and $x_1^{(1)},\dots,x_1^{(G)}$ a group of $G$ images sampled for it, with rewards
+$R_i:=R(c,x_1^{(i)})$. We build it in two steps: pick a map
+$f:\mathbb{R}\to\mathbb{R}$, apply it to each reward, and normalize inside the group
+whenever the denominator is nonzero,
+\begin{equation}\label{eq:weight-def}
+w_i\;=\;\frac{f(R_i)}{\frac{1}{G}\sum_{j=1}^{G}f(R_j)},
+\qquad\text{so that}\qquad
+\frac{1}{G}\sum_{i=1}^{G}w_i=1 .
+\end{equation}
+The weights are nonnegative when $f(R_i)\ge0$ for every sample and at least
+one mapped reward is positive.
+Designing the algorithm is thus designing $f$, and only its shape
+matters, since $f\mapsto af$ for $a>0$ cancels in \eqref{eq:weight-def}.
+
+The default choice is $f(R)=\exp(R/\gamma)$, which makes \eqref{eq:weight-def} a group softmax,
+\begin{equation}\label{eq:awr-group}
+w_i\;=\;\frac{\exp(R_i/\gamma)}{\frac{1}{G}\sum_{j=1}^{G}\exp(R_j/\gamma)} .
+\end{equation}
+The
+temperature $\gamma$ sets how concentrated the step is: $\gamma\to\infty$ gives $w_i\to1$, i.e.\ plain
+supervised fine-tuning on the whole group, and $\gamma\to0$ puts everything on the best image, i.e.\
+best-of-$N$.
+
+%------------------------------------------------------------
+\section{Variants of the Group Softmax}
+\label{sec:variants}
+%------------------------------------------------------------
+Other constraints give other maps $f$,
+$\bar{R}=\tfrac1G\sum_j R_j$ is the group mean and $z_i=(R_i-\bar{R})/\gamma$ the  reward, on
+which Figure~\ref{fig:shapes} compares the shapes of $f$: they differ in how fast they grow, whether they reach zero at finite $z$.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.68\textwidth, height=0.38\textwidth,
+  xlabel={centered reward $z=(R-\bar{R})/\gamma$},
+  ylabel={$f(z)$, before normalizing},
+  domain=-3:3, samples=241,
+  xmin=-3, xmax=3, ymin=-2.5, ymax=4,
+  restrict y to domain=-2.5:6,
+  legend pos=north west, legend cell align=left,
+  legend style={font=\scriptsize, draw=none, fill=none},
+  grid=both, grid style={gray!20},
+  tick label style={font=\scriptsize}, label style={font=\small},
+]
+\addplot[very thick] {exp(x)};
+\addlegendentry{$e^{z}$ --- softmax, Eq.~\eqref{eq:awr-group}}
+\addplot[very thick, dashed] {(max(0,1+0.5*x))^2};
+\addlegendentry{Tsallis $q{=}1.5$, Eq.~\eqref{eq:w-tsallis}}
+\addplot[very thick, dotted] {1+x};
+\addlegendentry{$1+z$ --- linear, Eq.~\eqref{eq:w-linear}}
+\addplot[very thick, dashdotted] {2/(1+exp(-x))};
+\addlegendentry{logistic, Eq.~\eqref{eq:w-logistic}}
+\addplot[thick, gray] coordinates {(-3,0) (-0.005,0) (0.005,2) (3,2)};
+\addlegendentry{top-half indicator, Eq.~\eqref{eq:w-topk}}
+\end{axis}
+\end{tikzpicture}
+\caption{Shapes of $f$ before the normalization in \eqref{eq:weight-def}.}
+\label{fig:shapes}
+\end{figure}
+
+\paragraph{Linear.}
+\begin{equation}\label{eq:w-linear}
+w_i\;=\;\frac{1+z_i}{\frac{1}{G}\sum_{j=1}^{G}(1+z_j)}
+\;=\;1+z_i,
+\end{equation}
+since $z$ is centered, the normalizer is exactly $1$: the weight is linear in the centered reward,
+with unit baseline at the group mean and no clipping. An image more than one temperature below the
+mean ($z_i<-1$) therefore receives a negative weight: it is pushed away rather than ignored.
+
+\paragraph{Tsallis-$q$.}
+\begin{equation}\label{eq:w-tsallis}
+w_i\;=\;\frac{\big[\,1+(q{-}1)z_i\,\big]_+^{1/(q-1)}}{\frac{1}{G}\sum_{j=1}^{G}\big[\,1+(q{-}1)z_j\,\big]_+^{1/(q-1)}},
+\qquad q\in(1,2],
+\end{equation}
+a single knob from the softmax \eqref{eq:awr-group} at $q\to1$ to the clipped linear
+weight $[1+z]_+$ at $q=2$, with the zero set moving in as $q$ grows: $w_i=0$ below $z_i=-1/(q-1)$.
+For $q<2$ the truncation is what keeps the fractional power real; at $q=2$ the exponent is one,
+the truncation is optional, and dropping it gives the linear weight \eqref{eq:w-linear}.
+
+\paragraph{Sparsemax, from an $\alpha{=}2$ divergence.}
+\begin{equation}\label{eq:w-sparsemax}
+w_i\;=\;\frac{\big[\,R_i-\tau\,\big]_+}{\frac{1}{G}\sum_{j=1}^{G}\big[\,R_j-\tau\,\big]_+},
+\end{equation}
+where $\tau$ is a group quantile, e.g.\ the median. The temperature cancels in the normalization, so here
+the threshold plays the role of $\gamma$: everything below $\tau$ gets $w_i=0$ and is dropped from the
+step. Dropping the clip and setting $\tau=\bar{R}-\gamma$ gives $w_i=(R_i-\bar{R}+\gamma)/\gamma=1+z_i$,
+the linear weight \eqref{eq:w-linear}.
+
+
+\paragraph{Logistic, bounded.}
+\begin{equation}\label{eq:w-logistic}
+w_i\;=\;\frac{s(z_i)}{\frac{1}{G}\sum_{j=1}^{G}s(z_j)},\qquad s(z)=\frac{1}{1+e^{-z}},
+\end{equation}
+which saturates in both tails. Since $z$ is centered, the normalizer is close to $\tfrac12$ and hence
+$w_i\lesssim2$: no image can take much more than $2/G$ of the step, however large its reward.
+
+\paragraph{Rank, ordinal only.}
+\begin{equation}\label{eq:w-rank}
+w_i\;=\;\frac{\mathrm{rank}_i}{\frac{1}{G}\sum_{j=1}^{G}\mathrm{rank}_j}\;=\;\frac{2\,\mathrm{rank}_i}{G+1},
+\qquad \mathrm{rank}_i\in\{1,\dots,G\},
+\end{equation}
+where the normalizer is the deterministic $(G{+}1)/2$, so no reward value ever enters the weight. Any
+monotone recalibration of the reward model leaves the update unchanged.
+
+\paragraph{Top-$k$, hard.}
+\begin{equation}\label{eq:w-topk}
+w_i\;=\;\frac{G}{k}\,\mathbbm{1}\big[\,R_i\in\mathrm{top}\text{-}k\,\big],
+\end{equation}
+already of unit mean without further normalization. The whole step comes from $k$ images: $k=1$ is
+best-of-$N$, general $k$ is RAFT.
+
+\paragraph{A worked example.}
+Table~\ref{tab:numeric} runs one group of $G=8$ rewards through several of these weights. The group is
+deliberately skewed: seven images spread over $[0.10,0.75]$ and one outlier at $R=1.75$, which sits $2.4$
+standard deviations above the mean ($\bar{R}=0.625$, $\mathrm{std}(R)=0.463$). Two readings matter. Shape
+decides concentration: with $\gamma=\mathrm{std}(R)$ the softmax hands $68\%$ of the step to one image out
+of eight, the linear weight $43\%$, ranks only $22\%$ --- from the same rewards. And temperature matters
+even more than shape: keeping the softmax but dividing $\gamma$ by three leaves $99.7\%$ of the step on
+the outlier, i.e.\ best-of-$N$ in all but name. Since the weights multiply the regression target rather
+than a gradient, how spread out they are inside a group is also how much variance the regression cannot
+remove, which is why we keep $\gamma$ at the scale of $\mathrm{std}(R)$ and winsorize outliers.
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\caption{One group of $8$ rewards mapped to weights $w_i$ by \eqref{eq:awr-group}, \eqref{eq:w-linear},
+\eqref{eq:w-rank} and \eqref{eq:w-topk}, with $\gamma=\mathrm{std}(R)=0.463$ unless stated; every column
+sums to $8$. ``winsor.'' is the softmax applied to $\min(R_i,q_{0.95})$, which makes the top two images
+indistinguishable; the $1+z$ column is unclipped and turns negative for the worst image. The last row
+is the share of the step taken by the best image.}
+\label{tab:numeric}
+\begin{tabular}{@{}rcccccc@{}}
+\toprule
+& \multicolumn{2}{c}{softmax} & & & & \\
+\cmidrule(lr){2-3}
+$R_i$ & $\gamma$ & $\gamma/3$ & $1+z$ & rank & winsor. & top-$1$ \\
+\midrule
+$0.10$ & $0.15$ & $0.00$ & $-0.13$ & $0.22$ & $0.39$ & $0.00$ \\
+$0.30$ & $0.24$ & $0.00$ & $0.30$ & $0.44$ & $0.59$ & $0.00$ \\
+$0.45$ & $0.33$ & $0.00$ & $0.62$ & $0.67$ & $0.82$ & $0.00$ \\
+$0.50$ & $0.37$ & $0.00$ & $0.73$ & $0.89$ & $0.91$ & $0.00$ \\
+$0.55$ & $0.41$ & $0.00$ & $0.84$ & $1.11$ & $1.02$ & $0.00$ \\
+$0.60$ & $0.45$ & $0.00$ & $0.95$ & $1.33$ & $1.13$ & $0.00$ \\
+$0.75$ & $0.63$ & $0.01$ & $1.27$ & $1.56$ & $1.57$ & $0.00$ \\
+$1.75$ & $5.43$ & $7.98$ & $3.43$ & $1.78$ & $1.57$ & $8.00$ \\
+\midrule
+$\max_i w_i/G$ & $0.68$ & $1.00$ & $0.43$ & $0.22$ & $0.20$ & $1.00$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Every variant is a reward relabeling.}
+Any positive $f$ can be written as $f(R)=\exp(\tilde{R}/\gamma)$ with $\tilde{R}=\gamma\log f(R)$, so
+picking a variant is the same as keeping the softmax \eqref{eq:awr-group} and feeding it a relabeled
+reward: dividing by $\mathrm{std}(R)$ is an adaptive temperature, $\gamma\log(2\,\mathrm{rank}/(G{+}1))$
+turns \eqref{eq:awr-group} into \eqref{eq:w-rank}, $\min(R,q_{0.95})$ is the winsorized column of
+Table~\ref{tab:numeric}, and summing several rewards as $\sum_k R_k/s_k$ multiplies their softmaxes, so
+one failed reward suppresses the image whatever the others say (an AND), with each $s_k$ acting as that
+reward's own temperature. Averaging weights across rewards instead allows compensation (an OR). The
+linear weight \eqref{eq:w-linear} is the exception: it changes sign at $z=-1$, and no relabeled
+softmax ever returns a negative weight.
+
+
+
+% Section to be inserted after the paragraph following Equation (2).
+% Requires: \usepackage{amsmath} (and \usepackage{amssymb} if not already loaded).
+% Equation numbers are written as plain text; replace with \eqref{...}
+% if the draft carries labels.
+
+\section{Temperature Proof}
+\label{sec:temperature-limits}
+
+Equation~(2) defines the group softmax weights
+\[
+w_i=\frac{\exp(R_i/\gamma)}{\frac{1}{G}\sum_{j=1}^{G}\exp(R_j/\gamma)} .
+\]
+This section proves the two statements made below Equation~(2). In both proofs the group size $G$ and the rewards $R_1,\dots,R_G$ are fixed, $G$ is finite, and the temperature $\gamma>0$ is the varying quantity.
+
+\subsection{Infinite temperature: $w_i \to 1$}
+
+We prove that $w_i\to 1$ for every image $i$ as $\gamma\to\infty$.
+
+\begin{enumerate}
+\item Fix an image $i$. Its reward $R_i$ is a fixed number and $\gamma\to\infty$, so
+\[
+\frac{R_i}{\gamma}\to 0 .
+\]
+\item The exponential function is continuous, therefore
+\[
+\exp\left(\frac{R_i}{\gamma}\right)\to\exp(0)=1 .
+\]
+The same holds for every image $j\in\{1,\dots,G\}$, so each of the $G$ terms in the denominator of $w_i$ tends to $1$.
+\item The denominator is the average of these $G$ terms. The number of terms $G$ is fixed, and each term tends to $1$, so
+\[
+\frac{1}{G}\sum_{j=1}^{G}\exp\left(\frac{R_j}{\gamma}\right)\to\frac{1}{G}\cdot G\cdot 1=1 .
+\]
+\item By step~2 the numerator of $w_i$ tends to $1$, and by step~3 the denominator tends to $1\neq 0$. The limit of a fraction whose numerator and denominator both converge is the quotient of the limits whenever the limit of the denominator is not zero, hence
+\[
+w_i\to\frac{1}{1}=1 .
+\]
+\end{enumerate}
+
+The share of image $i$ in the step is $w_i/G$, so every share tends to $1/G$: all $G$ images enter the update with equal weight. The step is the unweighted average of the per-image updates, i.e.\ plain supervised fine-tuning on the whole group.
+
+\subsection{Zero temperature: everything on the best image}
+
+Let $M=\max_j R_j$ and let $i^\star$ be the image with $R_{i^\star}=M$. Assume first that $i^\star$ is unique; the case of several images attaining $M$ is covered by the remark at the end. We prove that the step is carried entirely by image $i^\star$ as $\gamma\to 0$.
+
+\begin{enumerate}
+\item For every $\gamma>0$ the number $\exp(-M/\gamma)$ is positive, so multiplying the numerator and the denominator of $w_i$ by it does not change the value of the fraction. Using $\exp(a)\exp(b)=\exp(a+b)$ in both the numerator and the denominator,
+\[
+w_i
+=\frac{\exp(R_i/\gamma)\,\exp(-M/\gamma)}
+{\left(\frac{1}{G}\sum_{j=1}^{G}\exp(R_j/\gamma)\right)\exp(-M/\gamma)}
+=\frac{\exp\left(\frac{R_i-M}{\gamma}\right)}
+{\frac{1}{G}\sum_{j=1}^{G}\exp\left(\frac{R_j-M}{\gamma}\right)} .
+\]
+\item By the definition of $M$ we have $R_i-M\le 0$ for every image, and $R_i-M<0$ for every image other than $i^\star$.
+\item Fix an image $i\neq i^\star$. The number $R_i-M$ is fixed and negative, so
+\[
+\frac{R_i-M}{\gamma}\to-\infty \qquad(\gamma\to 0),
+\]
+and since $\exp(x)\to 0$ for $x\to-\infty$,
+\[
+\exp\left(\frac{R_i-M}{\gamma}\right)\to 0 .
+\]
+\item For the best image, $R_{i^\star}-M=0$, hence $\frac{R_{i^\star}-M}{\gamma}=0$ for every $\gamma$, and
+\[
+\exp\left(\frac{R_{i^\star}-M}{\gamma}\right)=1 \quad\text{for every }\gamma .
+\]
+\item The denominator of the rewritten $w_i$ is the average of $G$ terms. By step~3, the $G-1$ terms with $i\neq i^\star$ tend to $0$, and by step~4 the term with $i^\star$ is equal to $1$ for every $\gamma$. Therefore
+\[
+\frac{1}{G}\sum_{j=1}^{G}\exp\left(\frac{R_j-M}{\gamma}\right)\to\frac{1}{G}\cdot 1=\frac{1}{G} .
+\]
+\item For the best image the numerator is $1$ for every $\gamma$ (step~4) and the denominator tends to $1/G\neq 0$ (step~5), so
+\[
+w_{i^\star}\to\frac{1}{1/G}=G .
+\]
+\item For any other image the numerator tends to $0$ (step~3) and the denominator tends to $1/G\neq 0$ (step~5), so
+\[
+w_i\to\frac{0}{1/G}=0 .
+\]
+\item The share of the best image in the step is $w_{i^\star}/G$, which tends to $G/G=1$, and every other share tends to $0$. The step is carried entirely by the best image, i.e.\ best-of-N.
+\end{enumerate}
+
+
+
+
+
+
 \section{An Exploration of Softmax and Its Variants}
 \begin{algorithm}[H]
     \caption{Single Target Loss Exploration of Softmax Scheme}
@@ -71,126 +407,250 @@
     \textbf{Output:} $\mathbf{v}_\theta$
 \end{algorithm}
 
-For each prompt \(c_j\), let
+For each prompt \(c_j\), let \(G=K\) and define
 \[
-\bar R_{c_j}=\frac{1}{K}\sum_{k=1}^{K}R_{j,k},
+\bar R_{c_j}=\frac{1}{G}\sum_{i=1}^{G}R_{j,i},
 \qquad
-\sigma_{c_j}=\sqrt{\frac{1}{K}\sum_{k=1}^{K}\bigl(R_{j,k}-\bar R_{c_j}\bigr)^2},
+\sigma_{c_j}=\sqrt{\frac{1}{G}\sum_{i=1}^{G}
+\bigl(R_{j,i}-\bar R_{c_j}\bigr)^2}.
 \]
-All weights below are normalized inside each prompt, i.e.
-\[
-\frac{1}{K}\sum_{k=1}^{K}w_{j,k}=1.
-\]
+Unless stated otherwise, each experiment applies the within-prompt normalization
+in \eqref{eq:weight-def}, so \(G^{-1}\sum_i w_{j,i}=1\).
 
-\paragraph{Experiment A: Softmax weight variants.}
 
-\subparagraph{Standard-deviation temperature.}
-Directly substitute \(c\sigma_{c_j}\) as the temperature:
-\[
-f(R_{j,k})
-=
-\exp\left(
-\frac{R_{j,k}}{c\sigma_{c_j}}
-\right),
-\qquad
-c\in\{0.5,1.0,1.5,2.5\}.
-\]
 
-\subparagraph{Centered L1-norm temperature.}
+\paragraph{Motivation and experiment plan.}
+We want to understand why the softmax weights in FlowAWR can lead to fast
+convergence. Under \eqref{eq:weight-def}, they give more of each group's total
+weight to samples with higher rewards. We test whether this focus on better
+samples is the main reason.
+
+Experiment A pushes this idea to the extreme situation. A one-hot rule gives all weight to
+the top sample(s) and zero to the rest. This sharp choice may make training
+unstable, so we also give weight to samples within \(cR_j^{\max}\) of the top
+reward, without using the group standard deviation for this threshold.
+If no reward in the group is positive, we use uniform weights and apply no
+reward-driven target shift to that group.
+
+Experiment B straightly tests the idea with softmax. Compared with \(c=1\),
+\(c<1\) puts more weight on high-reward samples, while \(c>1\) spreads weight
+more evenly. If \(c<1\) works better, it supports our idea.
+
+Experiment C uses the unshifted linear mapping as a baseline. Experiment D
+compares sigmoid with linear within each group: depending on \(c\) and the
+rewards, sigmoid can yield either sharper or flatter normalized weights.
+We test whether smaller \(c\) helps, whether \(c=0.3\) underperforms, and
+whether a small-\(c\) sigmoid is preferable to the softmax-style mappings.
+
+Experiment E changes the power \(p\) to
+test whether steeper or flatter maps work better. It is another view to test our idea.
+
+Experiment F uses an L1
+scale. Its weight curve looks much like the softmax curve in Exp.B, so it is
+less important and may be skipped.
+
+
+
+\paragraph{Experiment A: One-hot and near-maximum threshold.}
+
 Let
 \[
-\|R_{j,\cdot}-\bar R_{c_j}\|_1
-=
-\sum_{\ell=1}^{K}\bigl|R_{j,\ell}-\bar R_{c_j}\bigr|.
+R_j^{\max}=\max_i R_{j,i},\qquad
+T_j(c)=R_j^{\max}-cR_j^{\max}=(1-c)R_j^{\max}.
 \]
+\[
+S_j(c)=\{i:R_{j,i}\ge T_j(c)\}\qquad\text{for }R_j^{\max}>0.
+\]
+Set
+\[
+w_{j,i}(c)
+\;=\;
+\begin{cases}
+\displaystyle\frac{G}{|S_j(c)|}\,\mathbbm{1}[i\in S_j(c)],
+& R_j^{\max}>0,\\[6pt]
+1, & R_j^{\max}\le0,
+\end{cases}
+\qquad c\in\{0,0.05,0.1,0.25\}.
+\]
+For \(R_j^{\max}>0\), when the maximum is unique, \(c=0\) is one-hot with weight \(G\) on the
+max-reward sample. If several samples are equal-reward at the maximum, they share the
+G mass equally. Increasing \(c\) includes samples
+within a larger fraction of the maximum reward. For \(R_j^{\max}\le0\),
+all weights equal \(1\), so the \(w_{j,i}-1\) term in the policy target
+vanishes. This disables reward-driven reweighting for that group while
+preserving its unit mean weight; other loss terms still apply unless
+the group is explicitly masked out.
+
+\textbf{Target}: Test whether assigning most or all of each group's weight
+mass to its best-reward samples is the main source of the gain from
+softmax weighting.
+% \subparagraph{Soft Top-$k$ with boundary ties.}
+% As a complementary fixed-size concentration rule, solve
+% \[
+% \max_{\{w_{j,i}\}}\sum_{i=1}^{G}w_{j,i}R_{j,i}
+% \quad\text{s.t.}\quad
+% \sum_{i=1}^{G}w_{j,i}=G,\qquad
+% 0\le w_{j,i}\le\frac{G}{k}.
+% \]
+% Let \(R_{j,(1)}\ge\cdots\ge R_{j,(G)}\),
+% \(\tau_j=R_{j,(k)}\),
+% \(n_{>,j}=|\{i:R_{j,i}>\tau_j\}|\), and
+% \(n_{=,j}=|\{i:R_{j,i}=\tau_j\}|\). The weights are
+% \[
+% w_{j,i}^{\mathrm{top}\text{-}k}=\begin{cases}
+% G/k, & R_{j,i}>\tau_j,\\[3pt]
+% (G/k)(k-n_{>,j})/n_{=,j}, & R_{j,i}=\tau_j,\\[3pt]
+% 0, & R_{j,i}<\tau_j.
+% \end{cases}
+% \]
+% For \(G=24\), use \(k\in\{1,3,6,12\}\). With distinct rewards this is
+% hard Top-$k$; only a tie at the boundary receives fractional weights. Both
+% rules satisfy \(\sum_i w_{j,i}=G\). Compare performance across \(c\) and
+% \(k\) to test how much concentration on the best samples helps.
+
+\paragraph{Experiment B: Softmax with standard-deviation temperature.}
+
+\[
+f_c(R_{j,i})=\exp\!\left(\frac{R_{j,i}}{c\sigma_{c_j}}\right),
+\qquad c\in\{0.5,0.75,1.0,1.5\}.
+\]
+For \(\sigma_{c_j}>0\), smaller \(c\) yields a steeper mapping and more
+concentrated weights; larger \(c\) gives a flatter mapping.
+
+\textbf{Target}: This exp tests
+the trade-off between concentrating on high rewards and keeping a flatter
+training signal. We want to test whether more concentrating or flat than classical softmax is better for optimize.
+
+\paragraph{Experiment C: Linear baseline.}
+\[
+f_{\mathrm{lin}}(R)=[R]_+,
+\qquad
+f_{\mathrm{lin,shift}}(R)=[1+R]_+,
+\qquad [x]_+=\max(x,0).
+\]
+Only \(f_{\mathrm{lin}}(R)=[R]_+\) is included in the planned sweep;
+the shifted mapping is shown for comparison, not run as an experiment.
+
+\textbf{Target}: Linear reward mapping acts as baseline variant. Expect to be worse than softmax and one-hot.
+
+\paragraph{Experiment D: Sigmoid mapping.}
+\[
+f_{\mathrm{sig},c}(R_{j,i})
+=\frac{1}{1+\exp(-(R_{j,i}-0.5)/c)},
+\qquad c\in\{0.01,0.1,0.3\}.
+\]
+
+The smaller \(c\) is, the sharper the transition around \(R=0.5\).
+After within-group normalization, the sigmoid may be sharper or flatter
+than linear, depending on the reward range; its saturation also limits
+how much the highest rewards can dominate.
+
+\textbf{Target}: Compare sigmoid with the linear baseline within each group.
+Test whether smaller \(c\) improves performance, whether the flatter
+\(c=0.3\) setting underperforms, and whether a small-\(c\) sigmoid is a
+better choice than the softmax-style mappings in Experiment B.
+
+
+\paragraph{Experiment E: Power mapping.}
+
+\[
+f_p(R_{j,i})=\bigl[R_{j,i}\bigr]_+^p.
+\]
+
+We condider \(p\in\{0.5,2.0\}\).
+
+\textbf{Target}: Compare with the linear \(p=1\) to test
+whether the stronger emphasis on high rewards gives better behavior (similar
+performance with softmax).
+
+\paragraph{Experiment F: Softmax with L1 scale.}
 Define
 \[
-f(R_{j,k})
-=
-\exp\left(
-\frac{R_{j,k}}{c\,\|R_{j,\cdot}-\bar R_{c_j}\|_1}
-\right),
-\qquad
-c\in\{0.5,1.0,1.5,2.5\}.
+||R_{j,i}-\bar{R}_{c_j}||_1=\frac{1}{G}\sum_{i=1}^{G}
+\bigl|R_{j,i}-\bar R_{c_j}\bigr|.
 \]
-
-
-\paragraph{Experiment B: Linear centered and uncentered weights.}
-
-% \subparagraph{Centered linear.}
-% \[
-% f_{j,k}
-% =
-% \left[
-% 1 + \frac{R_{j,k}-\bar R_{c_j}}{\sigma_{c_j}}
-% \right]_+.
-% \]
-
-\subparagraph{Uncentered linear.}
+Then
 \[
-f_{j,k}
-=
-\left[
-R_{j,k}
-\right]_+.
+f_{c,1}(R_{j,i})
+=\exp\!\left(\frac{R_{j,i}}{c||R_{j,i}-\bar{R}_{c_j}||_1}\right),
+\qquad c\in\{0.5,0.75,1.0,1.5\}.
 \]
 
-\subparagraph{Shifted uncentered linear.}
-\[
-f_{j,k}
-=
-\left[
-1+R_{j,k}
-\right]_+.
-\]
 
-where $[x]_+ = \max(x,0)$.
+\textbf{Target}: This is a variant for softmax. It is similiar with softmax with std temperature as shown in following figure. So we expect a similar performance with Experiment B. This exp can be skipped if nessesary.
 
 
-\paragraph{Experiment C: Soft Top-$k$.}
-
-We consider this top-k design from a constrained optimization problem:
-
-\begin{equation}
-\max_{\{w_i\}}
-\sum_{i=1}^{G} w_i R_i
-\quad
-\text{s.t.}
-\quad
-\sum_{i=1}^{G} w_i = G,
-\qquad
-0 \le w_i \le \frac{G}{k}.
-\end{equation}
+\begin{figure}[thbp]
+    \centering
+    \includegraphics[width=1\linewidth]{imgs/weight_variants_normalized.png}
+    \caption{Illustration of the temperature multiplier $c$ with
+    $\bar R_{c_j}=0.3$, $\sigma_{c_j}=0.5$, and mean centered L1 deviation
+    $d_{1,c_j}=0.4$.}
+    \label{fig:placeholder}
+\end{figure}
 
 
-The objective assigns as much probability mass as possible to samples with higher rewards. And the upper bound $G/k$ prevents the mass focusing to fewer than $k$ samples. So the optimal solution is: samples above the boundary $\tau=R_{(k)}$ have the maximum weight $G/k$, samples below $\tau$ have no weight, and the remaining mass is equally distributed among samples equal to $\tau$.
-
-Sort the rewards, \begin{equation} R_{(1)} \ge R_{(2)} \ge \cdots \ge R_{(G)}, \end{equation} and define the boundary reward as \begin{equation} \tau = R_{(k)}. \end{equation}
-
-\begin{equation}
-w_i=
-\begin{cases}
-\frac{G}{k},
-& R_i>\tau,\\[4pt]
-\displaystyle
-\frac{G}{k}
-\frac{
-k-\sum_j \mathbbm{1}[R_j>\tau]
-}{
-\sum_j \mathbbm{1}[R_j=\tau]
-},
-& R_i=\tau,\\[10pt]
-0,
-& R_i<\tau.
-\end{cases}
-\end{equation}
 
 
-This promises
-\begin{equation}
-\sum_{i=1}^{G} w_i = G.
-\end{equation}
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=1.0\linewidth]{imgs/softmax-variant-example.png}
+%     \caption{Enter Caption}
+%     \label{fig:placeholder}
+% \end{figure}
 
-For continuous rewards with distinct values, it reduces to standard Top-$k$ weighting.
+\begin{table}[H]
+    \centering
+    \caption{Planned reward-to-weight experiments in execution order.}
+    \label{tab:weight-variant-planned-sweep}
+    \footnotesize
+    \setlength{\tabcolsep}{5pt}
+    \renewcommand{\arraystretch}{0.95}
+    \begin{tabular}{@{}c l l c@{}}
+        \toprule
+        Run & Experiment & Configuration & Status \\
+        \midrule
+        01 & \multirow{4}{*}{A: near-max one-hot, $cR_j^{\max}$} & $c=0$  & - \\
+        02 & & $c=0.05$ & - \\
+        03 & & $c=0.1$ & - \\
+        04 & & $c=0.25$ & - \\
+        \midrule
+        05 & \multirow{4}{*}{B: softmax, $c\sigma_{c_j}$} & $c=0.5$ & - \\
+        06 & & $c=0.75$ & - \\
+        07 & & $c=1.0$ & - \\
+        08 & & $c=1.5$ & - \\
+        \midrule
+        09 & C: linear & $f(R)=[R]_+$ & - \\
+        \midrule
+        10 & \multirow{3}{*}{D: sigmoid, $(R-0.5)/c$} & $c=0.01$ & - \\
+        11 & & $c=0.1$ & - \\
+        12 & & $c=0.3$ & - \\
+        \midrule
+        13 & \multirow{2}{*}{E: power} & $f(R)=[R]_+^{0.5}$ & - \\
+        14 & & $f(R)=[R]_+^{2.0}$ & - \\
+        \midrule
+        15 & \multirow{4}{*}{F: softmax, L1 scale} & $c=0.5$ & - \\
+        16 & & $c=0.75$ & - \\
+        17 & & $c=1.0$ & - \\
+        18 & & $c=1.5$ & - \\
+        \bottomrule
+    \end{tabular}
+
+    \vspace{0.3em}
+    \scriptsize
+    $\checkmark$ running\qquad - waiting\qquad $\bullet$ finished
+\end{table}
 
 
+\bibliography{main}
+\bibliographystyle{tmlr}
+
+% \appendix
+% \section{Appendix}
+% You may include other additional sections here.
+
+
+
+
+
+\end{document}
