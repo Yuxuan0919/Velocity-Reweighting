@@ -731,721 +731,6 @@ subtracting $\mathbf{v}^o(\mathbf{x}_t,t)$
 leads to smaller variance?
 }
 
-\subsection{Strict Derivation of Reward-Tilted Velocity Correction}
-\label{sec:strict_correction}
-
-
-Using the importance weight, we rewrite $\mathbf{v}^{\mathrm{n}}$ as an
-expectation under $\pi^{\mathrm{o}}$:
-\begin{align}
-\mathbf{v}^{\mathrm{n}}(\mathbf{x}_t,t)
-=
-\mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
-\left[
-w_r(\mathbf{z})\,
-\alpha_t^{\mathrm{n}}(\mathbf{x}_t,\mathbf{z})\,
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
-\right].
-\end{align}
-The exact increment is therefore
-\begin{align}
-\Delta(\mathbf{x}_t,t)
-&=
-\mathbf{v}^{\mathrm{n}}(\mathbf{x}_t,t)
--
-\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
-\\
-&=
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-\left(
-w_r\alpha_t^{\mathrm{n}}
--
-\alpha_t^{\mathrm{o}}
-\right)
-\mathbf{v}_t
-\right]
-\\
-&=
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-(w_r-1)\alpha_t^{\mathrm{o}}\,
-\mathbf{v}_t
-\right]
-+
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-w_r(\alpha_t^{\mathrm{n}}-\alpha_t^{\mathrm{o}})\,
-\mathbf{v}_t
-\right].
-\end{align}
-
-
-To obtain a computable form, we adopt the approximation
-\begin{align}
-\alpha_t^{\mathrm{n}}(\mathbf{x}_t,\mathbf{z})
-\approx
-\alpha_t^{\mathrm{o}}(\mathbf{x}_t,\mathbf{z}).
-\end{align}
-Under this approximation,
-\begin{align}
-\Delta(\mathbf{x}_t,t)
-&\approx
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-(w_r-1)\alpha_t^{\mathrm{o}}\,
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
-\right].
-\end{align}
-
-Since $\mathbb{E}_{\pi^{\mathrm{o}}}[\alpha_t^{\mathrm{o}}]=1$,
-the increment can be decomposed as
-\begin{align}
-\Delta(\mathbf{x}_t,t)
-&\approx
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-(w_r-1)\alpha_t^{\mathrm{o}}\,
-\left(
-\mathbf{v}_t-\mathbf{v}^{\mathrm{o}}
-\right)
-\right]
-+
-\mathbf{v}^{\mathrm{o}}\,
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-(w_r-1)\alpha_t^{\mathrm{o}}
-\right].
-\end{align}
-
-Under the incremental update regime, we assume that the reward-induced
-distribution shift is sufficiently small such that the timestep marginal
-distribution changes only mildly,
-$p_t^{\mathrm{n}}(\mathbf{x}_t)
-\approx
-p_t^{\mathrm{o}}(\mathbf{x}_t)$.
-Since
-\begin{align}
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-w_r\alpha_t^{\mathrm{o}}
-\right]
-=
-\frac{
-p_t^{\mathrm{n}}(\mathbf{x}_t)
-}{
-p_t^{\mathrm{o}}(\mathbf{x}_t)
-},
-\end{align}
-and
-$\mathbb{E}_{\pi^{\mathrm{o}}}
-[\alpha_t^{\mathrm{o}}]=1$,
-we have
-\begin{align}
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-(w_r-1)\alpha_t^{\mathrm{o}}
-\right]
-=
-\frac{
-p_t^{\mathrm{n}}(\mathbf{x}_t)
-}{
-p_t^{\mathrm{o}}(\mathbf{x}_t)
-}
--1
-\approx
-0.
-\end{align}
-
-
-the global offset vanishes and the increment becomes a pure local
-correction:
-\begin{align}
-\Delta(\mathbf{x}_t,t)
-&\approx
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-(w_r-1)\alpha_t^{\mathrm{o}}\,
-\left(
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
--
-\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
-\right)
-\right].
-\end{align}
-
-
-
-\noindent\textbf{Partial rollout coverage.}
-In practice, rollout samples only cover a fraction $\beta$ of the probability
-mass of the old distribution. We model
-\begin{align}
-\pi^{\mathrm{o}}
-=
-(1-\beta)\pi_{\mathrm{bg}}
-+
-\beta\pi_{\mathcal D},
-\end{align}
-where $\pi_{\mathrm{bg}}$ denotes the unobserved background distribution and
-\begin{align}
-\pi_{\mathcal D}
-=
-\frac{1}{D}
-\sum_{i=1}^{D}
-\delta_{\mathbf z_i}
-\end{align}
-is the empirical distribution of the observed rollout samples.
-
-Since no reward is available for the background region, we set
-\begin{align}
-\exp\left(\frac{r(\mathbf z)}{\gamma}\right)=1,
-\qquad
-\mathbf z\sim\pi_{\mathrm{bg}}.
-\end{align}
-The normalization constant is therefore
-\begin{align}
-Z
-&=
-\mathbb{E}_{\mathbf z\sim\pi^{\mathrm{o}}}
-\left[
-\exp\left(\frac{r(\mathbf z)}{\gamma}\right)
-\right]
-\\
-&=
-(1-\beta)
-+
-\frac{\beta}{D}
-\sum_{i=1}^{D}
-\exp\left(\frac{r(\mathbf z_i)}{\gamma}\right).
-\end{align}
-
-The reward-tilted distribution is
-\begin{align}
-\pi^{\mathrm{n}}(\mathbf z)
-=
-\frac{1}{Z}
-\exp\left(\frac{r(\mathbf z)}{\gamma}\right)
-\pi^{\mathrm{o}}(\mathbf z).
-\end{align}
-Hence, the corresponding importance ratio is
-\begin{align}
-w_r(\mathbf z)
-=
-\frac{\pi^{\mathrm{n}}}{\pi^{\mathrm{o}}}(\mathbf z)
-=
-\frac{1}{Z}
-\exp\left(\frac{r(\mathbf z)}{\gamma}\right).
-\end{align}
-
-Under the partial rollout model, this gives
-\begin{align}
-w_r(\mathbf z)
-=
-\begin{cases}
-\displaystyle
-\frac{1}{Z},
-& \mathbf z\in\mathrm{bg},
-\\[3mm]
-\displaystyle
-\frac{
-\exp\left(r(\mathbf z)/\gamma\right)
-}{Z},
-& \mathbf z\in\mathcal D.
-\end{cases}
-\end{align}
-
-
-The increment decomposes into background and observed contributions:
-\begin{align}
-\Delta(\mathbf{x}_t,t)
-&=
-\mathbf{v}^{\mathrm{n}}(\mathbf{x}_t,t)
--
-\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
-\\
-&\approx
-\mathbb{E}_{\pi^{\mathrm{o}}}
-\left[
-(w_r-1)\alpha_t^{\mathrm{o}}\,
-\left(
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
--
-\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
-\right)
-\right]
-\\
-&\approx
-(1-\beta)\,
-\mathbb{E}_{\pi_{\mathrm{bg}}}
-\left[
-\left(\frac{1}{Z}-1\right)
-\alpha_t^{\mathrm{o}}
-\left(\mathbf{v}_t-\mathbf{v}^{\mathrm{o}}\right)
-\right]
-\\
-&\quad
-+\beta\,
-\mathbb{E}_{\pi_{\mathcal{D}}}
-\left[
-\left(
-\frac{\exp(r/\gamma)}{Z}-1
-\right)
-\alpha_t^{\mathrm{o}}
-\left(\mathbf{v}_t-\mathbf{v}^{\mathrm{o}}\right)
-\right].
-\end{align}
-The background term cannot be estimated from rollout samples and is
-usually omitted, effectively assuming that the background contributes
-negligibly to the local correction. Dropping the background term, the
-observed rollout samples give the per-sample correction
-
-\begin{align}
-\boxed{
-\mathbf{c}_t(\mathbf{x}_t,\mathbf{z})
-=
-\beta
-\left(
-\frac{\exp\!\left(r(\mathbf{z})/\gamma\right)}{Z}
--
-1
-\right)
-\alpha_t^{\mathrm{o}}(\mathbf{x}_t,\mathbf{z})
-\left(
-\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
--
-\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
-\right)
-},
-\end{align}
-
-
-\begin{align}
-\mathbf v^n(\mathbf x_t,t)
-=
-\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
-+ 
-\mathbb{E}_{z\sim\pi_{\mathcal{D}}} [\mathbf c_t(\mathbf x_t,\mathbf z)],
-\end{align}
-
-
-where $Z$ is defined above.
-
-\noindent\textbf{Revised derivation:}
-
-\begin{align}
-    \bar{Z}=~&
-    1 + \frac{\beta}{D}(\sum_i(\exp(\bar{r}(\mathbf{z})/\gamma)-1))
-\end{align}
-\begin{align}
-w_t(\mathbf{x}_t,\mathbf{z}) = \alpha_t(\mathbf{x}_t, \mathbf{z})(\exp(\bar{r}(\mathbf{z}_i)/\gamma) -1 )
-\end{align}
-
-\begin{align}
-\mathbf{v}_{old}(\mathbf{x}_t, t) 
-=~&{\color{blue}\mathbb{E}_{\mathbf{z} \sim \pi_{old}(\mathbf{z})}
-    \left[\alpha_t(\mathbf{x}_t, \mathbf{z})\mathbf{v}_t(\mathbf{x}_t | \mathbf{z})\right]} 
-\end{align}    
-
-
-\begin{align}
-    \mathbf{v}^*(\mathbf{x}_t, t)
-    &=
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
-    \left[
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \frac{\pi^*(\mathbf{z})}{\pi_{\mathrm{old}}(\mathbf{z})}\,
-        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-    \right]
-    \\
-    &=
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
-    \left[
-        w_r(\mathbf{z})\,
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-    \right]
-    \\
-    &=
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
-    \left[
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-    \right]
-    +
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
-    \left[
-        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-    \right]
-    \\
-    &=
-    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-    +
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
-    \left[
-        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-    \right]
-\end{align}
-
-Split $\mathbf{v}_t$ into $\mathbf{v}_{\mathrm{old}} + (\mathbf{v}_t - \mathbf{v}_{\mathrm{old}})$:
-\begin{align}
-    \mathbf{v}^*(\mathbf{x}_t, t)
-    &=
-    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-    +
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        \bigl( w_r - 1 \bigr)\,
-        \alpha_t\,
-        \mathbf{v}_t
-    \right]
-    \\
-    &=
-    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-    +
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        \bigl( w_r - 1 \bigr)\,
-        \alpha_t\,
-        \bigl( \mathbf{v}_t - \mathbf{v}_{\mathrm{old}} \bigr)
-    \right]
-    \notag \\
-    &\quad
-    +
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        \bigl( w_r - 1 \bigr)\,
-        \alpha_t
-    \right]
-    \mathbf{v}_{\mathrm{old}}
-\end{align}
-
-Under the incremental update assumption, $p_t^{\mathrm{n}}(\mathbf{x}_t) \approx p_t^{\mathrm{o}}(\mathbf{x}_t)$, the global offset term vanishes:
-\begin{align}
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        \bigl( w_r - 1 \bigr)\,
-        \alpha_t
-    \right]
-    &=
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        w_r \alpha_t
-    \right]
-    -
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        \alpha_t
-    \right]
-    \\
-    &=
-    \frac{p_t^{\mathrm{n}}(\mathbf{x}_t)}{p_t^{\mathrm{o}}(\mathbf{x}_t)}
-    -
-    1
-    \;\approx\;
-    0
-\end{align}
-
-Thus we obtain
-\begin{align}
-    \mathbf{v}^*(\mathbf{x}_t, t)
-    &\approx
-    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-    +
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
-    \left[
-        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \bigl( \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z}) - \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t) \bigr)
-    \right]
-\end{align}
-
-Substituting the partial-coverage mixture model $\pi_{\mathrm{old}} = (1-\beta)\pi_{\mathrm{bg}} + \beta P_{\mathcal{D}}$ and neglecting the background contribution to the local velocity residual gives
-\begin{align}
-    \mathbf{v}^*(\mathbf{x}_t, t)
-    &\approx
-    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-    +
-    \beta\,
-    \mathbb{E}_{\mathbf{z} \sim P_{\mathcal{D}}(\mathbf{z})}
-    \left[
-        \left(
-            \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right)}{\bar{Z}}
-            - 1
-        \right)
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \left(
-            \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-            -
-            \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-        \right)
-    \right]
-\end{align}
-
-The final velocity correction formula is
-\begin{align}
-    \boxed{
-        \mathbf{v}^*(\mathbf{x}_t, t)
-        \approx
-        \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-        +
-        \beta\,
-        \mathbb{E}_{\mathbf{z} \sim P_{\mathcal{D}}(\mathbf{z})}
-        \left[
-            \left(
-                \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right)}{\bar{Z}}
-                - 1
-            \right)
-            \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-            \left(
-                \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-                -
-                \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-            \right)
-        \right]
-    }
-\end{align}
-
-\noindent\textbf{Another derivation:}
-\begin{align}
-    \bar{Z}=~&
-    1 + \frac{\beta}{D}(\sum_i(\exp(\bar{r}(\mathbf{z})/\gamma)-1))
-\end{align}
-\begin{align}
-    \mathbf{v}^*(\mathbf{x}_t, t)
-    &=
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
-    \left[
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \frac{\pi^*(\mathbf{z})}{\pi_{\mathrm{old}}(\mathbf{z})}\,
-        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-    \right]
-    \\
-    &=
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
-    \left[
-        w_r(\mathbf{z})\,
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-    \right]
-    \\
-    &=
-    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-    +
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
-    \left[
-        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
-        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-    \right]
-\end{align}
-
-Add and subtract $\mathbf{v}_{\mathrm{old}}$ inside the expectation:
-\begin{align}
-    \mathbf{v}^*(\mathbf{x}_t, t)
-    &=
-    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-    +
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        \bigl( w_r - 1 \bigr)
-        \bigl( \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}} \bigr)
-    \right]
-    +
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        \bigl( w_r - 1 \bigr)
-    \right]
-    \mathbf{v}_{\mathrm{old}}
-\end{align}
-
-Since $w_r = \pi^* / \pi_{\mathrm{old}}$ is a likelihood ratio, $\mathbb{E}_{\pi_{\mathrm{old}}}[w_r]=1$, hence $\mathbb{E}_{\pi_{\mathrm{old}}}[w_r-1]=0$. Therefore the last term vanishes exactly:
-\begin{align}
-    \mathbf{v}^*(\mathbf{x}_t, t)
-    &=
-    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-    +
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        \bigl( w_r - 1 \bigr)
-        \bigl( \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}} \bigr)
-    \right]
-\end{align}
-
-\begin{align}
-    \pi_{\mathrm{old}}
-    =
-    (1-\beta)\,\pi_{\mathrm{bg}}
-    +
-    \beta\,\pi_{\mathcal{D}},
-    \qquad
-    \pi_{\mathcal{D}}
-    =
-    \frac{1}{D}
-    \sum_{i=1}^{D}
-    \delta_{\mathbf{z}_i}
-\end{align}
-
-\begin{align}
-    w_r(\mathbf{z}) - 1
-    =
-    \begin{cases}
-        \displaystyle
-        \frac{1}{\bar{Z}} - 1
-        =
-        -\frac{\bar{Z}-1}{\bar{Z}},
-        & \mathbf{z} \sim \pi_{\mathrm{bg}},
-        \\[4mm]
-        \displaystyle
-        \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right)}{\bar{Z}} - 1
-        =
-        \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right) - \bar{Z}}{\bar{Z}},
-        & \mathbf{z} \sim \pi_{\mathcal{D}}.
-    \end{cases}
-\end{align}
-
-Starting from the exact identity
-\begin{align}
-    \mathbf{v}^*(\mathbf{x}_t, t)
-    &=
-    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-    +
-    \mathbb{E}_{\pi_{\mathrm{old}}}
-    \left[
-        \bigl( w_r - 1 \bigr)
-        \bigl(
-            \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}}
-        \bigr)
-    \right]
-\end{align}
-
-Expand the expectation under the partial-coverage mixture:
-\begin{align}
-    &\mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}}
-    \left[
-        \bigl( w_r(\mathbf{z}) - 1 \bigr)
-        \bigl(
-            \alpha_t(\mathbf{x}_t, \mathbf{z})\,
-            \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
-            -
-            \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-        \bigr)
-    \right]
-    \\
-    &=
-    (1-\beta)\,
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{bg}}}
-    \left[
-        \left( \frac{1}{\bar{Z}} - 1 \right)
-        \bigl(
-            \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}}
-        \bigr)
-    \right]
-    +
-    \beta\,
-    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathcal{D}}}
-    \left[
-        \left(
-            \frac{\exp(\bar{r}/\gamma)}{\bar{Z}} - 1
-        \right)
-        \bigl(
-            \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}}
-        \bigr)
-    \right]
-\end{align}
-
-The observed rollout region contributes the empirical average
-\begin{align}
-    &\frac{\beta}{\bar{Z}}
-    \frac{1}{D}
-    \sum_{i=1}^{D}
-    \left[
-        \left(
-            \exp\!\left( \frac{\bar{r}(\mathbf{z}_i)}{\gamma} \right)
-            -
-            \bar{Z}
-        \right)
-        \left(
-            \alpha_t(\mathbf{x}_t, \mathbf{z}_i)\,
-            \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z}_i)
-            -
-            \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-        \right)
-    \right]
-\end{align}
-
-Therefore the exact reward-optimized velocity field under the partial-coverage mixture model is
-\begin{align}
-    \boxed{
-    \begin{aligned}
-        \mathbf{v}^*(\mathbf{x}_t, t)
-        &=
-        \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-        \\
-        &\quad
-        +
-        \frac{\beta}{\bar{Z}}
-        \frac{1}{D}
-        \sum_{i=1}^{D}
-        \left[
-            \left(
-                \exp\!\left( \frac{\bar{r}(\mathbf{z}_i)}{\gamma} \right)
-                -
-                \bar{Z}
-            \right)
-            \left(
-                \alpha_t(\mathbf{x}_t, \mathbf{z}_i)\,
-                \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z}_i)
-                -
-                \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
-            \right)
-        \right]
-    \end{aligned}
-    }
-\end{align}
-
-
-
-\noindent\textbf{Objective.}
-We train the parameterized velocity field $\mathbf v_{\boldsymbol{\theta}}$
-to approximate $\mathbf v^n$ by minimizing the following flow matching
-objective:
-\begin{align}
-\mathcal{L}_{\mathrm{RCFM}}
-&=
-\mathbb E_t
-\mathbb E_{
-\mathbf z\sim\pi^n(\mathbf z),
-\mathbf x_t\sim p_t(\cdot|\mathbf z)
-}
-\left[
-\left\|
-\mathbf v_{\boldsymbol{\theta}}(\mathbf x_t,t)
--
-\mathtt{sg}(\mathbf v^n(\mathbf x_t,t))
-\right\|_2^2
-\right]\\
-&=
-\mathbb E_t
-\mathbb E_{
-\mathbf z\sim\pi^{\mathrm{o}}(\mathbf z),
-\mathbf x_t\sim p_t(\cdot|\mathbf z)
-}
-\left[
-\frac{\pi^n(\mathbf z)}
-{\pi^{\mathrm{o}}(\mathbf z)}
-\left\|
-\mathbf v_{\boldsymbol{\theta}}(\mathbf x_t,t)
--
-\mathtt{sg}(
-\mathbf v^n(\mathbf x_t,t))
-\right\|_2^2
-\right].
-\end{align}
-
 \subsection{Implementation}
 \noindent\textbf{Monte Carlo form.}
 The reward-tilted velocity field can be viewed as a correction of the
@@ -1485,73 +770,6 @@ generative dynamics while incorporating the reward-induced correction.
 Compared with direct reward-guided sampling, the reward signal is absorbed
 into the learned vector field, enabling efficient sampling without
 evaluating the reward model during inference.
-
-
-\noindent\textbf{On-policy or one-step gradient descent.}
-The gradient is as follows,
-\begin{align}
-~&-2 w_{\mathcal D}(\mathbf z)
-\frac{\partial\mathbf{v}_{\boldsymbol{\theta}}(\mathbf x_t,t)}
-{\partial \boldsymbol{\theta}}
-\mathbf c_t(\mathbf x_t,\mathbf z)) \\
- =~& 
- -2\underbrace{
- \frac{\pi^n(\mathbf z)}
- {\pi^{\mathrm{o}}(\mathbf z)}
- }_{\text{importance weight}}
- \times
- \underbrace{
- \alpha^o_t(\mathbf x_t,\mathbf z)
- }_{\text{trajectory contribution}}
- \times
- \underbrace{
-\beta
-\left(
-\frac{\exp\!\left(r(\mathbf{z})/\gamma\right)}{Z}
--
-1
-\right)
- }_{\text{mass shift}}
- \times
- \underbrace{\frac{\partial\mathbf{v}_{\boldsymbol{\theta}}(\mathbf x_t,t)}
- {\partial \boldsymbol{\theta}}}_{\text{Jacobian}}
- \times
- \underbrace{
- \left(
- \mathbf v_t(\mathbf x_t|\mathbf z)
- -
- \mathbf v_{\boldsymbol{\theta}}(\mathbf x_t,t)
- \right)
- }_{\text{velocity discrepancy}}.
-\end{align}
-
-The last two terms on the right-hand side correspond to the standard flow matching
-gradient, where the velocity discrepancy provides the regression direction and the
-Jacobian term propagates this discrepancy to the model parameters.
-
-
-The proposed formulation equivalently introduces an adaptive weighting mechanism on top of the
-standard flow matching objective.
-The overall update can be viewed as an adaptive flow matching update,
-where the effective learning signal is modulated by the adaptive factor
-\begin{align}
-w_{\mathrm{adapt}}(\mathbf x_t,\mathbf z)
-=
-\frac{\pi^n(\mathbf z)}
-{\pi^{\mathrm{o}}(\mathbf z)}
-\alpha_t^o(\mathbf x_t,\mathbf z)
-\beta
-\left(
-\frac{\exp\!\left(r(\mathbf{z})/\gamma\right)}{Z}
--
-1
-\right).
-\end{align}
-Compared with conventional flow matching, which treats all training pairs equally,
-the proposed weighting dynamically emphasizes samples that are more aligned with
-the optimal policy, have higher contribution to the transport trajectory, and
-receive higher reward.
-
 
 
 \noindent\textbf{\color{red}Trajectory contribution weight.}
@@ -1694,86 +912,6 @@ are equivalent (DiffusionNFT):
 \end{align}
 }
 
-
-
-
-\noindent\textbf{Importance weights.}
-We need to compute unnormalized importance weight, $\bar{w}(\mathbf{z}) = \exp(r(\mathbf z)/\gamma)$, 
-for reward-guided mass shift.
-
-\emph{GRPO-style:} 
-At each training iteration, let $R_{j,k}$ be the reward of rollout $k$
-for prompt $c_j$, where $j=1,\ldots,C$, $k=1,\ldots,K$, and
-$D=CK$. We center rewards by the mean of their prompt group,
-\begin{align}
-\bar R_{c_j}
-=
-\frac{1}{K}\sum_{k=1}^{K}R_{j,k},
-\end{align}
-and use the population standard deviation over all rollout rewards in the
-current iteration as the common reward scale:
-\begin{align}
-\bar R
-&=
-\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k},\\
-\sigma_R
-&=
-\sqrt{
-\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}
-(R_{j,k}-\bar R)^2
-}
-+\epsilon_R.
-\end{align}
-Given the mass-shift clip $\Delta_{\mathrm{clip}}>0$, the signed mass shift
-and unnormalized importance weight are
-\begin{align}
-\Delta_{j,k}
-&=
-\frac{1}{\Delta_{\mathrm{clip}}}
-\operatorname{clip}
-\left(
-\frac{R_{j,k}-\bar R_{c_j}}{\sigma_R},
--\Delta_{\mathrm{clip}},
-\Delta_{\mathrm{clip}}
-\right),\\
-W_{j,k}&=1+\Delta_{j,k}.
-\end{align}
-Thus, rewards are centered within each prompt group but share a global scale
-computed from the current rollout iteration. For asymmetric mass shifts, we
-use $\sigma_+=c\sigma_R$ and $\sigma_-=\sigma_R/c$, as detailed in the
-ablation study.
-
-
-
-One similar choice is derived 
-by miximizing
-\begin{align}
-    \sum_i r_i w_i
-\end{align}
-with the constraint $\sum_i w^2_i = c$:
-then $w_i = \frac{r_i}{\frac{1}{N}\sum_{j} r_j}
-= \frac{r_i}{\beta + \beta/D \sum_l r_j}$. 
-$r_j$ (regarded as $\bar{w}(\mathbf{z}) = \exp(r(\mathbf{z})/\gamma)$) is normalized so that
-the reward of background sample is $1$,
-larger than $1$ is good,
-smaller than $1$ is bad,
-of course it could also be clipped.
-
-\emph{$\mathtt{Softmax}$-style:}
-$r$ is adjusted so that $r=0$
-for the background sample.
-\begin{align}
-    \bar{w}(\mathbf{z}) = \frac{\exp(r/t))}
-    {\beta + \beta/D\sum_{i=1}^D\exp(r_i/t)}
-\end{align}
-$t$ plays a role,
-something like the $\mathtt{clip}$ operator,
-transforming $r$ to a probability.
-If $t=0$, it becomes $\mathtt{max}$
-If $t=\infty$,
-it becomes uniform, all are $1$.
-\\
-
 \newpage
 \clearpage
 
@@ -1890,12 +1028,6 @@ it becomes uniform, all are $1$.
 
 
 \subsection{Reweighting Design Exploration}
-
-
-
-
-
-
 \begin{algorithm}[H]
     \caption{Single Target Loss Base Scheme }
     \label{alg:velocity-add-delete}
@@ -2545,6 +1677,7 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
 
 
 
+
 \begin{table}[H]
     \centering
     \caption{PickScore evaluation for the soft-selection runs, sampled every 50 steps. Each $\beta$ block compares Scheme C at the available $\rho$ values with the $\rho=1$ baseline; $\rho=1/2$ was evaluated for $\beta\in\{5,7\}$. Bold marks the highest displayed score after initialization at fixed $\beta$ and step. Dashes denote checkpoints absent from the corresponding log.}
@@ -2608,6 +1741,8 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
     \end{tabular}}
 \end{table}
 
+
+
 \begin{table}[H]
     \centering
     \caption{PickScore experiment status.}
@@ -2635,7 +1770,7 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
                                   & C & $\checkmark$ & $\checkmark$ & $\checkmark$ & \\
         \midrule
         \multirow{2}{*}{$10.0$} & B & $\bullet$ & - & $\bullet$ & \multirow{2}{*}{$\bullet$} \\
-                                  & C & $\bullet$ & - & $\bullet$ & \\
+                                  & C & $\bullet$ & $\checkmark$ & $\checkmark$ & \\
         \bottomrule
     \end{tabular}
 
@@ -2659,8 +1794,8 @@ Comparing B and C at the same $(\rho,\beta)$ isolates this asymmetry.  Better an
         $\beta$ & Task & $\rho=2/3$ & $\rho=1$ (baseline) \\
         \midrule
         \multirow{3}{*}{$5.0$}
-            & OCR     & $\checkmark$ & $\checkmark$ \\
-            & GenEval & $\checkmark$ & $\checkmark$ \\
+            & OCR     & $\bullet$ & $\bullet$ \\
+            & GenEval & $\bullet$ & $\bullet$ \\
             & HPSv2   & - & - \\
         \bottomrule
     \end{tabular}
@@ -4964,6 +4099,724 @@ Uses the clean flow-matching target and lets the signed advantage weight the mat
 \bottomrule
 \end{tabularx}
 \end{table}
+
+\subsection{Strict Derivation of Reward-Tilted Velocity Correction}
+\label{sec:strict_correction}
+
+
+Using the importance weight, we rewrite $\mathbf{v}^{\mathrm{n}}$ as an
+expectation under $\pi^{\mathrm{o}}$:
+\begin{align}
+\mathbf{v}^{\mathrm{n}}(\mathbf{x}_t,t)
+=
+\mathbb{E}_{\mathbf{z}\sim\pi^{\mathrm{o}}}
+\left[
+w_r(\mathbf{z})\,
+\alpha_t^{\mathrm{n}}(\mathbf{x}_t,\mathbf{z})\,
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right].
+\end{align}
+The exact increment is therefore
+\begin{align}
+\Delta(\mathbf{x}_t,t)
+&=
+\mathbf{v}^{\mathrm{n}}(\mathbf{x}_t,t)
+-
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\\
+&=
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+\left(
+w_r\alpha_t^{\mathrm{n}}
+-
+\alpha_t^{\mathrm{o}}
+\right)
+\mathbf{v}_t
+\right]
+\\
+&=
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
+\mathbf{v}_t
+\right]
++
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+w_r(\alpha_t^{\mathrm{n}}-\alpha_t^{\mathrm{o}})\,
+\mathbf{v}_t
+\right].
+\end{align}
+
+
+To obtain a computable form, we adopt the approximation
+\begin{align}
+\alpha_t^{\mathrm{n}}(\mathbf{x}_t,\mathbf{z})
+\approx
+\alpha_t^{\mathrm{o}}(\mathbf{x}_t,\mathbf{z}).
+\end{align}
+Under this approximation,
+\begin{align}
+\Delta(\mathbf{x}_t,t)
+&\approx
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+\right].
+\end{align}
+
+Since $\mathbb{E}_{\pi^{\mathrm{o}}}[\alpha_t^{\mathrm{o}}]=1$,
+the increment can be decomposed as
+\begin{align}
+\Delta(\mathbf{x}_t,t)
+&\approx
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
+\left(
+\mathbf{v}_t-\mathbf{v}^{\mathrm{o}}
+\right)
+\right]
++
+\mathbf{v}^{\mathrm{o}}\,
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}
+\right].
+\end{align}
+
+Under the incremental update regime, we assume that the reward-induced
+distribution shift is sufficiently small such that the timestep marginal
+distribution changes only mildly,
+$p_t^{\mathrm{n}}(\mathbf{x}_t)
+\approx
+p_t^{\mathrm{o}}(\mathbf{x}_t)$.
+Since
+\begin{align}
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+w_r\alpha_t^{\mathrm{o}}
+\right]
+=
+\frac{
+p_t^{\mathrm{n}}(\mathbf{x}_t)
+}{
+p_t^{\mathrm{o}}(\mathbf{x}_t)
+},
+\end{align}
+and
+$\mathbb{E}_{\pi^{\mathrm{o}}}
+[\alpha_t^{\mathrm{o}}]=1$,
+we have
+\begin{align}
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}
+\right]
+=
+\frac{
+p_t^{\mathrm{n}}(\mathbf{x}_t)
+}{
+p_t^{\mathrm{o}}(\mathbf{x}_t)
+}
+-1
+\approx
+0.
+\end{align}
+
+
+the global offset vanishes and the increment becomes a pure local
+correction:
+\begin{align}
+\Delta(\mathbf{x}_t,t)
+&\approx
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
+\left(
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+-
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\right)
+\right].
+\end{align}
+
+
+
+\noindent\textbf{Partial rollout coverage.}
+In practice, rollout samples only cover a fraction $\beta$ of the probability
+mass of the old distribution. We model
+\begin{align}
+\pi^{\mathrm{o}}
+=
+(1-\beta)\pi_{\mathrm{bg}}
++
+\beta\pi_{\mathcal D},
+\end{align}
+where $\pi_{\mathrm{bg}}$ denotes the unobserved background distribution and
+\begin{align}
+\pi_{\mathcal D}
+=
+\frac{1}{D}
+\sum_{i=1}^{D}
+\delta_{\mathbf z_i}
+\end{align}
+is the empirical distribution of the observed rollout samples.
+
+Since no reward is available for the background region, we set
+\begin{align}
+\exp\left(\frac{r(\mathbf z)}{\gamma}\right)=1,
+\qquad
+\mathbf z\sim\pi_{\mathrm{bg}}.
+\end{align}
+The normalization constant is therefore
+\begin{align}
+Z
+&=
+\mathbb{E}_{\mathbf z\sim\pi^{\mathrm{o}}}
+\left[
+\exp\left(\frac{r(\mathbf z)}{\gamma}\right)
+\right]
+\\
+&=
+(1-\beta)
++
+\frac{\beta}{D}
+\sum_{i=1}^{D}
+\exp\left(\frac{r(\mathbf z_i)}{\gamma}\right).
+\end{align}
+
+The reward-tilted distribution is
+\begin{align}
+\pi^{\mathrm{n}}(\mathbf z)
+=
+\frac{1}{Z}
+\exp\left(\frac{r(\mathbf z)}{\gamma}\right)
+\pi^{\mathrm{o}}(\mathbf z).
+\end{align}
+Hence, the corresponding importance ratio is
+\begin{align}
+w_r(\mathbf z)
+=
+\frac{\pi^{\mathrm{n}}}{\pi^{\mathrm{o}}}(\mathbf z)
+=
+\frac{1}{Z}
+\exp\left(\frac{r(\mathbf z)}{\gamma}\right).
+\end{align}
+
+Under the partial rollout model, this gives
+\begin{align}
+w_r(\mathbf z)
+=
+\begin{cases}
+\displaystyle
+\frac{1}{Z},
+& \mathbf z\in\mathrm{bg},
+\\[3mm]
+\displaystyle
+\frac{
+\exp\left(r(\mathbf z)/\gamma\right)
+}{Z},
+& \mathbf z\in\mathcal D.
+\end{cases}
+\end{align}
+
+
+The increment decomposes into background and observed contributions:
+\begin{align}
+\Delta(\mathbf{x}_t,t)
+&=
+\mathbf{v}^{\mathrm{n}}(\mathbf{x}_t,t)
+-
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\\
+&\approx
+\mathbb{E}_{\pi^{\mathrm{o}}}
+\left[
+(w_r-1)\alpha_t^{\mathrm{o}}\,
+\left(
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+-
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\right)
+\right]
+\\
+&\approx
+(1-\beta)\,
+\mathbb{E}_{\pi_{\mathrm{bg}}}
+\left[
+\left(\frac{1}{Z}-1\right)
+\alpha_t^{\mathrm{o}}
+\left(\mathbf{v}_t-\mathbf{v}^{\mathrm{o}}\right)
+\right]
+\\
+&\quad
++\beta\,
+\mathbb{E}_{\pi_{\mathcal{D}}}
+\left[
+\left(
+\frac{\exp(r/\gamma)}{Z}-1
+\right)
+\alpha_t^{\mathrm{o}}
+\left(\mathbf{v}_t-\mathbf{v}^{\mathrm{o}}\right)
+\right].
+\end{align}
+The background term cannot be estimated from rollout samples and is
+usually omitted, effectively assuming that the background contributes
+negligibly to the local correction. Dropping the background term, the
+observed rollout samples give the per-sample correction
+
+\begin{align}
+\boxed{
+\mathbf{c}_t(\mathbf{x}_t,\mathbf{z})
+=
+\beta
+\left(
+\frac{\exp\!\left(r(\mathbf{z})/\gamma\right)}{Z}
+-
+1
+\right)
+\alpha_t^{\mathrm{o}}(\mathbf{x}_t,\mathbf{z})
+\left(
+\mathbf{v}_t(\mathbf{x}_t|\mathbf{z})
+-
+\mathbf{v}^{\mathrm{o}}(\mathbf{x}_t,t)
+\right)
+},
+\end{align}
+
+
+\begin{align}
+\mathbf v^n(\mathbf x_t,t)
+=
+\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
++ 
+\mathbb{E}_{z\sim\pi_{\mathcal{D}}} [\mathbf c_t(\mathbf x_t,\mathbf z)],
+\end{align}
+
+
+where $Z$ is defined above.
+
+\noindent\textbf{Revised derivation:}
+
+\begin{align}
+    \bar{Z}=~&
+    1 + \frac{\beta}{D}(\sum_i(\exp(\bar{r}(\mathbf{z})/\gamma)-1))
+\end{align}
+\begin{align}
+w_t(\mathbf{x}_t,\mathbf{z}) = \alpha_t(\mathbf{x}_t, \mathbf{z})(\exp(\bar{r}(\mathbf{z}_i)/\gamma) -1 )
+\end{align}
+
+\begin{align}
+\mathbf{v}_{old}(\mathbf{x}_t, t) 
+=~&{\color{blue}\mathbb{E}_{\mathbf{z} \sim \pi_{old}(\mathbf{z})}
+    \left[\alpha_t(\mathbf{x}_t, \mathbf{z})\mathbf{v}_t(\mathbf{x}_t | \mathbf{z})\right]} 
+\end{align}    
+
+
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \frac{\pi^*(\mathbf{z})}{\pi_{\mathrm{old}}(\mathbf{z})}\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        w_r(\mathbf{z})\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    +
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+\end{align}
+
+Split $\mathbf{v}_t$ into $\mathbf{v}_{\mathrm{old}} + (\mathbf{v}_t - \mathbf{v}_{\mathrm{old}})$:
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)\,
+        \alpha_t\,
+        \mathbf{v}_t
+    \right]
+    \\
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)\,
+        \alpha_t\,
+        \bigl( \mathbf{v}_t - \mathbf{v}_{\mathrm{old}} \bigr)
+    \right]
+    \notag \\
+    &\quad
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)\,
+        \alpha_t
+    \right]
+    \mathbf{v}_{\mathrm{old}}
+\end{align}
+
+Under the incremental update assumption, $p_t^{\mathrm{n}}(\mathbf{x}_t) \approx p_t^{\mathrm{o}}(\mathbf{x}_t)$, the global offset term vanishes:
+\begin{align}
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)\,
+        \alpha_t
+    \right]
+    &=
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        w_r \alpha_t
+    \right]
+    -
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \alpha_t
+    \right]
+    \\
+    &=
+    \frac{p_t^{\mathrm{n}}(\mathbf{x}_t)}{p_t^{\mathrm{o}}(\mathbf{x}_t)}
+    -
+    1
+    \;\approx\;
+    0
+\end{align}
+
+Thus we obtain
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &\approx
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \bigl( \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z}) - \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t) \bigr)
+    \right]
+\end{align}
+
+Substituting the partial-coverage mixture model $\pi_{\mathrm{old}} = (1-\beta)\pi_{\mathrm{bg}} + \beta P_{\mathcal{D}}$ and neglecting the background contribution to the local velocity residual gives
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &\approx
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \beta\,
+    \mathbb{E}_{\mathbf{z} \sim P_{\mathcal{D}}(\mathbf{z})}
+    \left[
+        \left(
+            \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right)}{\bar{Z}}
+            - 1
+        \right)
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \left(
+            \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+            -
+            \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        \right)
+    \right]
+\end{align}
+
+The final velocity correction formula is
+\begin{align}
+    \boxed{
+        \mathbf{v}^*(\mathbf{x}_t, t)
+        \approx
+        \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        +
+        \beta\,
+        \mathbb{E}_{\mathbf{z} \sim P_{\mathcal{D}}(\mathbf{z})}
+        \left[
+            \left(
+                \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right)}{\bar{Z}}
+                - 1
+            \right)
+            \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+            \left(
+                \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+                -
+                \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+            \right)
+        \right]
+    }
+\end{align}
+
+\noindent\textbf{Another derivation:}
+\begin{align}
+    \bar{Z}=~&
+    1 + \frac{\beta}{D}(\sum_i(\exp(\bar{r}(\mathbf{z})/\gamma)-1))
+\end{align}
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \frac{\pi^*(\mathbf{z})}{\pi_{\mathrm{old}}(\mathbf{z})}\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        w_r(\mathbf{z})\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+    \\
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}(\mathbf{z})}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)\,
+        \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+        \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+    \right]
+\end{align}
+
+Add and subtract $\mathbf{v}_{\mathrm{old}}$ inside the expectation:
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)
+        \bigl( \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}} \bigr)
+    \right]
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)
+    \right]
+    \mathbf{v}_{\mathrm{old}}
+\end{align}
+
+Since $w_r = \pi^* / \pi_{\mathrm{old}}$ is a likelihood ratio, $\mathbb{E}_{\pi_{\mathrm{old}}}[w_r]=1$, hence $\mathbb{E}_{\pi_{\mathrm{old}}}[w_r-1]=0$. Therefore the last term vanishes exactly:
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)
+        \bigl( \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}} \bigr)
+    \right]
+\end{align}
+
+\begin{align}
+    \pi_{\mathrm{old}}
+    =
+    (1-\beta)\,\pi_{\mathrm{bg}}
+    +
+    \beta\,\pi_{\mathcal{D}},
+    \qquad
+    \pi_{\mathcal{D}}
+    =
+    \frac{1}{D}
+    \sum_{i=1}^{D}
+    \delta_{\mathbf{z}_i}
+\end{align}
+
+\begin{align}
+    w_r(\mathbf{z}) - 1
+    =
+    \begin{cases}
+        \displaystyle
+        \frac{1}{\bar{Z}} - 1
+        =
+        -\frac{\bar{Z}-1}{\bar{Z}},
+        & \mathbf{z} \sim \pi_{\mathrm{bg}},
+        \\[4mm]
+        \displaystyle
+        \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right)}{\bar{Z}} - 1
+        =
+        \frac{\exp\!\left( \bar{r}(\mathbf{z})/\gamma \right) - \bar{Z}}{\bar{Z}},
+        & \mathbf{z} \sim \pi_{\mathcal{D}}.
+    \end{cases}
+\end{align}
+
+Starting from the exact identity
+\begin{align}
+    \mathbf{v}^*(\mathbf{x}_t, t)
+    &=
+    \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+    +
+    \mathbb{E}_{\pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r - 1 \bigr)
+        \bigl(
+            \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}}
+        \bigr)
+    \right]
+\end{align}
+
+Expand the expectation under the partial-coverage mixture:
+\begin{align}
+    &\mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{old}}}
+    \left[
+        \bigl( w_r(\mathbf{z}) - 1 \bigr)
+        \bigl(
+            \alpha_t(\mathbf{x}_t, \mathbf{z})\,
+            \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z})
+            -
+            \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        \bigr)
+    \right]
+    \\
+    &=
+    (1-\beta)\,
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathrm{bg}}}
+    \left[
+        \left( \frac{1}{\bar{Z}} - 1 \right)
+        \bigl(
+            \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}}
+        \bigr)
+    \right]
+    +
+    \beta\,
+    \mathbb{E}_{\mathbf{z} \sim \pi_{\mathcal{D}}}
+    \left[
+        \left(
+            \frac{\exp(\bar{r}/\gamma)}{\bar{Z}} - 1
+        \right)
+        \bigl(
+            \alpha_t \mathbf{v}_t - \mathbf{v}_{\mathrm{old}}
+        \bigr)
+    \right]
+\end{align}
+
+The observed rollout region contributes the empirical average
+\begin{align}
+    &\frac{\beta}{\bar{Z}}
+    \frac{1}{D}
+    \sum_{i=1}^{D}
+    \left[
+        \left(
+            \exp\!\left( \frac{\bar{r}(\mathbf{z}_i)}{\gamma} \right)
+            -
+            \bar{Z}
+        \right)
+        \left(
+            \alpha_t(\mathbf{x}_t, \mathbf{z}_i)\,
+            \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z}_i)
+            -
+            \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        \right)
+    \right]
+\end{align}
+
+Therefore the exact reward-optimized velocity field under the partial-coverage mixture model is
+\begin{align}
+    \boxed{
+    \begin{aligned}
+        \mathbf{v}^*(\mathbf{x}_t, t)
+        &=
+        \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+        \\
+        &\quad
+        +
+        \frac{\beta}{\bar{Z}}
+        \frac{1}{D}
+        \sum_{i=1}^{D}
+        \left[
+            \left(
+                \exp\!\left( \frac{\bar{r}(\mathbf{z}_i)}{\gamma} \right)
+                -
+                \bar{Z}
+            \right)
+            \left(
+                \alpha_t(\mathbf{x}_t, \mathbf{z}_i)\,
+                \mathbf{v}_t(\mathbf{x}_t \mid \mathbf{z}_i)
+                -
+                \mathbf{v}_{\mathrm{old}}(\mathbf{x}_t, t)
+            \right)
+        \right]
+    \end{aligned}
+    }
+\end{align}
+
+
+
+\noindent\textbf{Objective.}
+We train the parameterized velocity field $\mathbf v_{\boldsymbol{\theta}}$
+to approximate $\mathbf v^n$ by minimizing the following flow matching
+objective:
+\begin{align}
+\mathcal{L}_{\mathrm{RCFM}}
+&=
+\mathbb E_t
+\mathbb E_{
+\mathbf z\sim\pi^n(\mathbf z),
+\mathbf x_t\sim p_t(\cdot|\mathbf z)
+}
+\left[
+\left\|
+\mathbf v_{\boldsymbol{\theta}}(\mathbf x_t,t)
+-
+\mathtt{sg}(\mathbf v^n(\mathbf x_t,t))
+\right\|_2^2
+\right]\\
+&=
+\mathbb E_t
+\mathbb E_{
+\mathbf z\sim\pi^{\mathrm{o}}(\mathbf z),
+\mathbf x_t\sim p_t(\cdot|\mathbf z)
+}
+\left[
+\frac{\pi^n(\mathbf z)}
+{\pi^{\mathrm{o}}(\mathbf z)}
+\left\|
+\mathbf v_{\boldsymbol{\theta}}(\mathbf x_t,t)
+-
+\mathtt{sg}(
+\mathbf v^n(\mathbf x_t,t))
+\right\|_2^2
+\right].
+\end{align}
+
+
+
 
 \section{Differences to Investigate Between Ours and NFT}
 

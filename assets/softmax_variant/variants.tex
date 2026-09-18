@@ -475,11 +475,10 @@ w_{j,i}(c)
 For \(R_j^{\max}>0\), when the maximum is unique, \(c=0\) is one-hot with weight \(G\) on the
 max-reward sample. If several samples are equal-reward at the maximum, they share the
 G mass equally. Increasing \(c\) includes samples
-within a larger fraction of the maximum reward. For \(R_j^{\max}\le0\),
-all weights equal \(1\), so the \(w_{j,i}-1\) term in the policy target
-vanishes. This disables reward-driven reweighting for that group while
-preserving its unit mean weight; other loss terms still apply unless
-the group is explicitly masked out.
+within a larger fraction of the maximum reward. 
+
+For \(R_j^{\max}\le0\),
+all $w_{j,i}(c)$ equal \(1\), so the probability for each sample in this group $c_j$ will not change. While other loss terms like mse between $v_{\theta}$ and $v_{old}$ and KL terms still apply.
 
 \textbf{Target}: Test whether assigning most or all of each group's weight
 mass to its best-reward samples is the main source of the gain from
@@ -579,6 +578,59 @@ f_{c,1}(R_{j,i})
 
 \textbf{Target}: This is a variant for softmax. It is similiar with softmax with std temperature as shown in following figure. So we expect a similar performance with Experiment B. This exp can be skipped if nessesary.
 
+\paragraph{Experiment G: Exponential on positive excess with mass-preserving rescaling.}
+As in Experiment C, we use the linear mapping
+\[
+w_{j,i}=
+\begin{cases}
+\displaystyle
+\frac{[R_{j,i}]_+}{\frac{1}{G}\sum_{k=1}^{G}[R_{j,k}]_+},
+& \displaystyle \sum_{k=1}^{G}[R_{j,k}]_+>0,\\[10pt]
+1, & \displaystyle \sum_{k=1}^{G}[R_{j,k}]_+=0,
+\end{cases}
+\]
+so that \(\frac{1}{G}\sum_{i=1}^{G}w_{j,i}=1\). We
+apply an exponential only to the positive excess, while leaving the
+non-positive excess unchanged:
+\[
+h_{j,i}(\alpha)
+=
+\begin{cases}
+\exp\!\bigl(\alpha\, (w_{j,i}-1)\bigr), & w_{j,i}-1>0,\\[4pt]
+w_{j,i}-1, & w_{j,i}-1\le 0,
+\end{cases}
+\qquad
+\alpha\in\{1.0,5.0,10.0,20.0\}.
+\]
+Because the exponential changes the total positive mass, we rescale the
+positive part so that its sum is preserved:
+\[
+S_j^{+}=\sum_{i:\,w_{j,i}-1>0} (w_{j,i}-1),
+\qquad
+\widetilde{S}_j^{+}(\alpha)=\sum_{i:\,w_{j,i}-1>0} h_{j,i}(\alpha),
+\]
+\[
+\tilde w_{j,i}
+=
+\begin{cases}
+\displaystyle
+\frac{S_j^{+}}{\widetilde{S}_j^{+}(\alpha)}\, h_{j,i}(\alpha),
+& w_{j,i}-1>0,\\[10pt]
+w_{j,i}-1, & w_{j,i}-1\le 0.
+\end{cases}
+\]
+Since \(\sum_{i:\,w_{j,i}-1>0}\tilde w_{j,i}=S_j^{+}\) and the
+negative part is untouched, we still have
+\(\sum_{i=1}^{G}\tilde w_{j,i}=0\). The target shift then uses
+the same form as the algorithm:
+\[
+\mathbf{x}_i^{\mathrm{target}}
+=
+\mathbf{x}_i^{\mathrm{old}}
++
+\beta\,\tilde w_{j,i}(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}).
+\]
+
 
 \begin{figure}[thbp]
     \centering
@@ -586,6 +638,13 @@ f_{c,1}(R_{j,i})
     \caption{Illustration of the temperature multiplier $c$ with
     $\bar R_{c_j}=0.3$, $\sigma_{c_j}=0.5$, and mean centered L1 deviation
     $d_{1,c_j}=0.4$.}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[thbp]
+    \centering
+    \includegraphics[width=1\linewidth]{imgs/weight_excess_variants.png}
+    \caption{Comparison Chart of Curves from Experiment G}
     \label{fig:placeholder}
 \end{figure}
 
@@ -633,6 +692,11 @@ f_{c,1}(R_{j,i})
         16 & & $c=0.75$ & - \\
         17 & & $c=1.0$ & - \\
         18 & & $c=1.5$ & - \\
+        \midrule
+        19 & \multirow{4}{*}{G: positive excess} & $\alpha=1.0$ & - \\
+        20 & & $\alpha=5.0$ & - \\
+        21 & & $\alpha=10.0$ & - \\
+        22 & & $\alpha=20.0$ & - \\
         \bottomrule
     \end{tabular}
 

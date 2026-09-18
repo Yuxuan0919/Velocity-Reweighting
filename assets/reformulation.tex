@@ -1,0 +1,1071 @@
+
+\documentclass{article} % For LaTeX2e
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+
+\usepackage[dvipsnames]{xcolor}
+\usepackage{hyperref}
+\hypersetup{
+ colorlinks=true,
+ citecolor=RoyalBlue,
+ linkcolor=BrickRed,
+ urlcolor=CornflowerBlue
+}
+\usepackage{url}
+\usepackage{bbm}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{colortbl,xcolor}
+\usepackage{makecell}
+\definecolor{indomgray}{gray}{0.9}
+\newcommand{\cellgray}{\cellcolor{indomgray}}
+\newcolumntype{Y}{>{\centering\arraybackslash}X}
+\newcommand{\dd}{\mathrm{d}}
+\def\v\epsilon{{\bm{\epsilon}}}
+
+
+\title{Reinforced Flow Matching}
+
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to \LaTeX{} to determine where to break
+% the lines. Using \AND forces a linebreak at that point. So, if \LaTeX{}
+% puts 3 of 4 authors names on the first line, and the last on the second
+% line, try using \AND instead of \And before the third author name.
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\setlength{\parindent}{0pt}
+
+%\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+
+\maketitle
+
+\begin{abstract}
+Large language model with reinforcement learning
+usually learns a reward-tilted conditional distribution,
+in a parametric form.
+In diffusion model,
+the distribution for the clean data 
+is non-parametric, and
+represented by samples,
+and the diffusion model learns a denoising process
+to approximate the distribution.
+Inspired by this,
+we decompose the problem into two steps.
+reweight the samples according to rewards,
+and update the flow matching with weighted samples
+in an incremental way.
+The reweighting scheme is a non-parametric way for the reward-tilted distribution,
+formulated
+from KL-constrained reward maximization. 
+The incremental update consists of the target velocity 
+estimation from the original velocity
+and velocity correction that depends on  mass shift 
+and timestep-dependent contribution weight,
+followed by an MSE loss for velocity update.
+We also note that
+several existing methods
+can also be casted into 
+sampling reweighting and 
+velocity correction.
+
+
+\end{abstract}
+
+
+
+
+% \section{From rewards to sample weights}
+
+
+
+% For a fixed prompt, let $\pi^{\mathrm{o}}(\mathbf z)$ be the old distribution
+% of clean samples and $r(\mathbf z)$ their reward. We omit the prompt from the
+% notation. Reward maximization with a KL penalty gives
+% \begin{equation}
+% \begin{gathered}
+% \max_{\pi}\;
+% \mathbb E_{\mathbf z\sim\pi}[r(\mathbf z)]
+% -\gamma D_{\mathrm{KL}}(\pi\|\pi^{\mathrm{o}}),\\
+% \pi^{\mathrm{*}}(\mathbf z)
+% =\pi^{\mathrm{o}}(\mathbf z)
+% \frac{\exp(r(\mathbf z)/\gamma)}
+% {\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[\exp(r(\mathbf z)/\gamma)]},
+% \end{gathered}
+% \label{eq:reward-tilt}
+% \end{equation}
+% where $\gamma>0$ controls the strength of the reward preference. Thus, the
+% distribution update can be represented by the probability ratio
+% \begin{equation}
+% w(\mathbf z)=\frac{\pi^{\mathrm{*}}(\mathbf z)}{\pi^{\mathrm{o}}(\mathbf z)},
+% \qquad
+% \mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[w(\mathbf z)]=1.
+% \label{eq:ratio}
+% \end{equation}
+% For $K$ rollout samples from the same prompt, we estimate these weights by
+% \begin{equation}
+% w(\mathbf z_k)
+% =\frac{\exp(r(\mathbf z_k)/\gamma)}
+% {\frac1K\sum_{j=1}^{K}\exp(r(\mathbf z_j)/\gamma)},
+% \qquad
+% \frac1K\sum_{k=1}^{K}w(\mathbf z_k)=1.
+% \label{eq:sample-weights}
+% \end{equation}
+% Each sample's old empirical probability is $1/K$ and its new probability is
+% $w(\mathbf z_k)/K$. The quantity $w-1$ therefore describes the relative
+% increase or decrease in probability. More generally, the framework accepts
+% any nonnegative weights with mean one; the exponential map is one of the choice
+% which is given by Eq.~\eqref{eq:reward-tilt}.
+
+\section{Incremental velocity target update}
+
+\paragraph{The old velocity.}
+Let $p_t(\mathbf x_t\mid\mathbf z)$ be the forward noising distribution and
+$\mathbf v_t(\mathbf x_t\mid\mathbf z)$ its conditional velocity. For example,
+the linear path $\mathbf x_t=(1-t)\mathbf z+t\boldsymbol\epsilon$, with
+$\boldsymbol\epsilon\sim\mathcal N(\mathbf 0,\mathbf I)$, has
+$\mathbf v_t(\mathbf x_t\mid\mathbf z)=(\mathbf x_t-\mathbf z)/t$ for $t>0$.
+The optimal flow-matching velocity is the conditional average
+\begin{align}
+\mathbf v(\mathbf x_t,t)
+&=\mathbb E_{\mathbf z\sim p(\cdot\mid\mathbf x_t)}
+  [\mathbf v_t(\mathbf x_t\mid\mathbf z)]
+\nonumber\\
+&=\mathbb E_{\mathbf z\sim\pi}
+  [\alpha_t(\mathbf x_t,\mathbf z)
+   \mathbf v_t(\mathbf x_t\mid\mathbf z)],
+\nonumber\\
+\alpha_t(\mathbf x_t,\mathbf z)
+&=\frac{p_t(\mathbf x_t\mid\mathbf z)}{p_t(\mathbf x_t)}.
+\label{eq:old-velocity}
+\end{align}
+Here $p_t$ is the noisy marginal distribution, and
+$\alpha_t$ measures a sample's relative contribution at
+$\mathbf x_t$. For fixed $(\mathbf x_t,t)$, its expectation over
+$\mathbf z\sim\pi$ is one.
+
+
+Reweighting changes the clean distribution while keeping the forward noising
+process fixed. Hence the new optimal velocity is
+\begin{equation}
+\mathbf v^{\mathrm{n}}(\mathbf x_t,t)
+=\mathbb E_{z\sim\pi^{\mathrm{o}}}[w(z)\alpha_t^{\mathrm{n}}\mathbf v_t(\mathbf x_t\mid\mathbf z)].
+\label{eq:new-velocity}
+\end{equation}
+
+\paragraph{One way:}
+For a small incremental update, we assume that the noisy marginal distribution changes only slightly, so \textbf{we assume
+$p_t^{\mathrm{n}}(\mathbf x_t)\approx p_t^{\mathrm{o}}(\mathbf x_t)$}, so
+$\alpha_t^{\mathrm{n}}\approx\alpha_t^{\mathrm{o}}$. Using
+$\mathbb E_{\pi^{\mathrm{o}}}[w-1]=0$ gives
+\begin{align}
+\mathbf v^{\mathrm{n}}(\mathbf x_t,t)
+&\approx\mathbb E_{z\sim\pi^{\mathrm{o}}}[w(z)\alpha_t^{\mathrm{o}}\mathbf v_t(\mathbf x_t\mid\mathbf z)]
+\nonumber\\
+&=\mathbb E_{\pi^{\mathrm{o}}}
+   [\alpha_t^{\mathrm{o}}\mathbf v_t(\mathbf x_t\mid\mathbf z)]
+ +\mathbb E_{\pi^{\mathrm{o}}}[(w-1)\alpha_t^{\mathrm{o}}\mathbf v_t(\mathbf x_t\mid\mathbf z)]\\
+&=\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
+ +\mathbb E_{\pi^{\mathrm{o}}}[(w-1)\alpha_t^{\mathrm{o}}\mathbf v_t(\mathbf x_t\mid\mathbf z)]
+\nonumber\\
+&=\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
+ +\mathbb E_{\pi^{\mathrm{o}}}
+   [(w-1)(\alpha_t^{\mathrm{o}}\mathbf v_t(\mathbf x_t\mid\mathbf z)-\mathbf v^{\mathrm{o}}(\mathbf x_t,t))].
+\label{eq:increment}
+\end{align}
+% Replacing this expectation with average gives
+% \begin{equation}
+% \boxed{
+% \mathbf v^{\mathrm{n}}(\mathbf x_t,t)
+% \approx\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
+% +\frac1K\sum_{k=1}^{K}(w(\mathbf z_k)-1)
+% \alpha_t^{\mathrm{o}}(\mathbf x_t,\mathbf z_k)
+% \left(
+% \mathbf v_t(\mathbf x_t\mid\mathbf z_k)
+% -\frac{\mathbf v^{\mathrm{o}}(\mathbf x_t,t)}
+% {\alpha_t^{\mathrm{o}}(\mathbf x_t,\mathbf z_k)}
+% \right).
+% }
+% \label{eq:rollout-increment}
+% \end{equation}
+
+\paragraph{Another way:}
+
+Since $w=\pi^{\mathrm{n}}/\pi^{\mathrm{o}}$,
+\begin{align}
+\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[w\alpha_t^{\mathrm{o}}]
+&=\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[\frac{\pi^{\mathrm{n}}}{\pi^{\mathrm{o}}}\frac{p_t(\mathbf x_t\mid\mathbf z)}{p_t^{\mathrm{o}}(\mathbf x_t)}]\\
+&=\mathbb E_{\mathbf z\sim\pi^{\mathrm{n}}}[\frac{p_t(\mathbf x_t\mid\mathbf z)}{p_t^{\mathrm{o}}(\mathbf x_t)}]\\
+&=\frac{p_t^{\mathrm{n}}(\mathbf x_t)}{p_t^{\mathrm{o}}(\mathbf x_t)},
+\label{eq:velocity-normalizer}
+\end{align}
+So, 
+\begin{align}
+\mathbf v^{\mathrm{n}}(\mathbf x_t,t)
+&=\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}
+ [w\alpha_t^{\mathrm{n}}\mathbf v_t(\mathbf x_t\mid\mathbf z)]
+\nonumber\\
+&=\frac{\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}
+ [w\alpha_t^{\mathrm{o}}\mathbf v_t(\mathbf x_t\mid\mathbf z)]}
+ {\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[w\alpha_t^{\mathrm{o}}]}.
+\label{eq:normalized-new-velocity}
+\end{align}
+The old velocity satisfies
+$\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[\alpha_t^{\mathrm{o}}\mathbf v_t(\mathbf x_t\mid\mathbf z)]
+=\mathbf v^{\mathrm{o}}(\mathbf x_t,t)$ and
+$\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[\alpha_t^{\mathrm{o}}]=1$, so
+\begin{equation}
+\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}
+ [\alpha_t^{\mathrm{o}}(\mathbf v_t(\mathbf x_t\mid\mathbf z)-\mathbf v^{\mathrm{o}}(\mathbf x_t,t))]=0.
+\label{eq:centered-old-velocity}
+\end{equation}
+Subtracting this zero term from the numerator gives the exact increment:
+\begin{align}
+&\mathbf v^{\mathrm{n}}(\mathbf x_t,t)-\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
+\nonumber\\
+&\quad=\frac{\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}
+ [w\alpha_t^{\mathrm{o}}\mathbf v_t(\mathbf x_t\mid\mathbf z)]}
+ {\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[w\alpha_t^{\mathrm{o}}]} 
+-\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
+\nonumber\\
+&\quad=\frac{\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}
+ [w\alpha_t^{\mathrm{o}}(\mathbf v_t(\mathbf x_t\mid\mathbf z)-\mathbf v^{\mathrm{o}}(\mathbf x_t,t))]}
+ {\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[w\alpha_t^{\mathrm{o}}]}
+\nonumber\\
+&\quad=\frac{\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}
+ [(w-1)\alpha_t^{\mathrm{o}}(\mathbf v_t(\mathbf x_t\mid\mathbf z)-\mathbf v^{\mathrm{o}}(\mathbf x_t,t))]}
+ {\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}[w\alpha_t^{\mathrm{o}}]}
+\nonumber\\
+&\quad=\frac{p_t^{\mathrm{o}}(\mathbf x_t)}{p_t^{\mathrm{n}}(\mathbf x_t)}
+ \mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}
+ [(w-1)\alpha_t^{\mathrm{o}}(\mathbf v_t(\mathbf x_t\mid\mathbf z)-\mathbf v^{\mathrm{o}}(\mathbf x_t,t))].
+\label{eq:exact-residual-increment}
+\end{align}
+With the same small-change assumption,
+\begin{equation}
+\frac{p_t^{\mathrm{n}}(\mathbf x_t)}{p_t^{\mathrm{o}}(\mathbf x_t)}
+\approx1,
+\label{eq:small-marginal-change}
+\end{equation}
+We have
+\begin{equation}
+\begin{aligned}
+\mathbf v^{\mathrm{n}}(\mathbf x_t,t)
+\approx\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
++\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}
+ [(w-1)\alpha_t^{\mathrm{o}}(\mathbf v_t(\mathbf x_t\mid\mathbf z)-\mathbf v^{\mathrm{o}}(\mathbf x_t,t))].
+\end{aligned}
+\label{eq:residual-increment}
+\end{equation}
+This separates three roles: $w-1$ sets the probability change,
+$\alpha_t^{\mathrm{o}}$ measures the contribution at the current noisy state,
+and $\mathbf v_t(\mathbf x_t\mid\mathbf z)-\mathbf v^{\mathrm{o}}(\mathbf x_t,t)$ gives the correction direction.
+A weight above one pulls toward that sample's velocity; a weight below one
+pushes away. A weight of one contributes no correction.
+
+
+% And we also replace this expectation with average
+% \begin{equation}
+% \boxed{
+% \mathbf v^{\mathrm{n}}(\mathbf x_t,t)
+% \approx\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
+% +\frac1K\sum_{k=1}^{K}(w(\mathbf z_k)-1)
+% \alpha_t^{\mathrm{o}}(\mathbf x_t,\mathbf z_k)
+% \left(
+% \mathbf v_t(\mathbf x_t\mid\mathbf z_k)
+% -\mathbf v^{\mathrm{o}}(\mathbf x_t,t)
+% \right).
+% }
+% \label{eq:rollout-residual-increment}
+% \end{equation}
+
+\paragraph{Estimating the contribution.}
+The marginal density in $\alpha_t$ is expensive to compute. We therefore
+use a normalized velocity error as a estimate:
+\begin{equation}
+\begin{aligned}
+\widetilde\alpha_t(\mathbf x_t,\mathbf z)
+&=\frac{1}{\operatorname{mean}
+ |\mathbf v_t(\mathbf x_t\mid\mathbf z)-\mathbf v_\theta(\mathbf x_t,t)|},\\
+\alpha_t(\mathbf x_t,\mathbf z)
+&\approx\frac{\widetilde\alpha_t(\mathbf x_t,\mathbf z)}
+{\frac1B\sum_{b=1}^{B}
+ \widetilde\alpha_{t_b}(\mathbf x_{t_b},\mathbf z_b)}.
+\end{aligned}
+\label{eq:alpha-estimate}
+\end{equation}
+The mean in the error is over feature dimensions, $B$ is the batch size. This assigns larger
+contributions to samples whose conditional velocities are closer to the
+model prediction.
+
+\section{Gap between current implemented algorithm and our derivation}
+
+With gradient accumulation over all mini batches before one optimizer
+update, shuffling samples only changes how the computation is split.
+The accumulated gradient corresponds to the
+mean loss over all $CK$ samples. For simplicity, we consider a single prompt and its
+$K$ samples group below.
+
+
+
+\paragraph{Equivalent v-prediction policy loss of the current implementation.}
+Let $\mathbf v_i=\mathbf v_{t_i}(\mathbf x_i^{t_i}\mid\mathbf x_i^0)$
+be the conditional velocity, and let $\mathbf v_i^\theta$ and
+$\mathbf v_i^{\mathrm{o}}$ be the current and old predictions.
+Using $\mathbf x_i^\theta=\mathbf x_i^{t_i}-t_i\mathbf v_i^\theta$
+and the same relation for the old prediction, the algorithm's policy loss
+is exactly
+\begin{align}
+\mathbf v_i^{\mathrm{target}}
+&=\mathbf v_i^{\mathrm{o}}
++\beta(w_i-1)(\mathbf v_i-\mathbf v_i^{\mathrm{o}}),
+\label{eq:implemented-v-target}\\
+\mathcal L_{\mathrm{policy}}^{\mathrm{impl}}
+&=\frac1K\sum_{i=1}^{K}
+\frac{t_i\|\mathbf v_i^\theta
+-\mathbf v_i^{\mathrm{target}}\|_2^2}
+{\operatorname{sg}[\operatorname{mean}
+|\mathbf v_i-\mathbf v_i^{\mathrm{o}}|]}.
+\label{eq:implemented-v-loss}
+\end{align}
+
+
+\paragraph{Policy loss with the derived target.}
+Using $\mathbf v^{\mathrm{n}}$ from Eq.~\eqref{eq:residual-increment}
+as the target and keeping a timestep weight $t_i$ outside MSE, we define
+\begin{equation}
+\boxed{
+\begin{aligned}
+\mathbf v_i^{\mathrm{target}}
+&=\mathbf v^{\mathrm{o}}_i
++\mathbb E_{\mathbf z\sim\pi^{\mathrm{o}}}
+ [(w_i-1)\alpha_{t_i}^{\mathrm{o}}(\mathbf v_i-\mathbf v^{\mathrm{o}}_i)],\\
+\mathcal L_{\mathrm{policy}}^{\mathrm{derived}}
+&=\frac1K\sum_{i=1}^{K}t_i
+\left\|\mathbf v_i^\theta
+-\mathbf v_i^{\mathrm{target}}\right\|_2^2.
+\end{aligned}
+}
+\label{eq:derived-policy-loss}
+\end{equation}
+
+
+
+
+\begin{algorithm}[H]
+    \caption{Single Target Loss Base Scheme }
+    \label{alg:velocity-add-delete}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$, prompt distribution $p(c)$, number of prompts per iteration $C$, rollout size per prompt $K$, batch size $B$, total samples per iteration $D = KC$, rollout coverage coefficient $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference regularization $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, reward-scale constant $\epsilon_R$, numerical constant $\epsilon_{\mathrm{alg}}$, gradient accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:} Training policy $\theta \leftarrow \theta_0$, old policy $\theta_{\mathrm{old}} \leftarrow \theta_0$, reference policy $\theta_{\mathrm{ref}} \leftarrow \theta_0$, data buffer $\mathcal{D} \leftarrow \emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j \sim p(c)$, $j = 1, \dots, C$}} \Comment{Rollout Step, Data Collection}
+                \State Sample $K$ clean images $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$ conditioned on $c_j$.
+                \State Evaluate rewards $R_{j,k} \leftarrow R(\mathbf{x}_0^{j,k}, c_j)$ for $k = 1, \dots, K$.
+            \EndFor
+
+            \State Compute prompt-wise reward means
+            $\bar{R}_{c_j} \leftarrow \frac{1}{K}\sum_{k=1}^{K} R_{j,k}$ for $j = 1, \dots, C$.
+
+            \State Compute global reward mean
+            $\bar{R} \leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K} R_{j,k}$.
+
+            \State Compute global reward scale
+            $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2}.$
+
+            \For{\text{each prompt $c_j$, $j = 1, \dots, C$}}
+                \State Compute normalized weights
+                \[
+                    \Delta_{j,k} \leftarrow \frac{1}{\Delta_{\mathrm{clip}}}
+                    \operatorname{clip}\!\left(
+                        \frac{R_{j,k} - \bar{R}_{c_j}}{\sigma_R},
+                        -\Delta_{\mathrm{clip}},
+                        \Delta_{\mathrm{clip}}
+                    \right),
+                    \quad
+                    w_{j,k}-1\leftarrow \Delta_{j,k},
+                    \quad k = 1, \dots, K.
+                \]
+
+                \State Store
+                $\mathcal{D}\leftarrow\mathcal{D}\cup
+                \{(c_j,\mathbf{x}_0^{j,k},w_{j,k})\}_{k=1}^{K}$.
+            \EndFor
+
+            \For{\text{each mini batch }
+            $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
+                \State Sample $t_i\sim\mathcal{U}(0,1)$,
+                $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$;
+                set $\mathbf{x}_i^{t_i}\leftarrow
+                (1-t_i)\mathbf{x}_i^0+t_i\boldsymbol{\epsilon}_i$.
+                \State Predict $\mathbf{x}_i^\theta$,
+                $\mathbf{x}_i^{\mathrm{old}}$, and $\mathbf{x}_i^{\mathrm{ref}}$
+                from $(\mathbf{x}_i^{t_i},c_i,t_i)$ with
+                $\theta$, $\theta_{\mathrm{old}}$, and $\theta_{\mathrm{ref}}$.
+                \State $\mathbf{x}_i^{\mathrm{target}}\leftarrow
+                \mathbf{x}_i^{\mathrm{old}}+
+                \beta(w_i-1)(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}})$.
+                \State Compute
+                \[
+                    \begin{aligned}
+                    \mathcal{L}_{\mathrm{policy}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \frac{\|\mathbf{x}_i^\theta-\mathbf{x}_i^{\mathrm{target}}\|_2^2}
+                    {\operatorname{sg}[\operatorname{mean}
+                    |\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}|]},\\
+                    \mathcal{L}_{\mathrm{ref}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \|\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}\|_2^2.
+                    \end{aligned}
+                \]
+                \State Backpropagate
+                $(\Delta_{clip}\mathcal{L}_{\mathrm{policy}}+
+                \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})/N_{\mathrm{acc}}$.
+            \EndFor
+            \State Update $\theta$; set
+            $\theta_{\mathrm{old}}\leftarrow
+            \eta\theta_{\mathrm{old}}+(1-\eta)\theta$ and
+            $\mathcal{D}\leftarrow\emptyset$.
+        \EndFor
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{v}_\theta$
+\end{algorithm}
+
+
+
+
+
+
+
+\section{Reweighting design}
+\label{sec:group-reweighting}
+
+
+\begin{algorithm}[H]
+    \scriptsize
+    \setlength{\abovedisplayskip}{1pt}
+    \setlength{\belowdisplayskip}{1pt}
+    \renewcommand{\arraystretch}{0.9}
+    \caption{Selection scheme: Asymmetric Selection}
+    \label{alg:x-prediction-asymmetric-hard-selection}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$,
+    prompt distribution $p(c)$, $C$ prompts per iteration, $K$ samples per
+    prompt, $D=CK$, batch size $B$, retained ratio $\rho$, shift strength
+    $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference coefficient
+    $\lambda_{\mathrm{ref}}$, EMA rate $\eta$,
+    accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:}
+    $\theta,\theta_{\mathrm{old}},\theta_{\mathrm{ref}}\leftarrow\theta_0$,
+    $\mathcal{D}\leftarrow\emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+                \State Sample $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$
+                conditioned on $c_j$ and set
+                $R_{j,k}\leftarrow R(\mathbf{x}_0^{j,k},c_j)$.
+
+            \EndFor
+
+            \State Compute global reward mean
+            $\bar{R}\leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}R_{j,k}$.
+            \State Compute global reward scale
+            $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2}.$
+
+            \For{\text{each prompt $c_j\sim p(c)$, $j=1,\dots,C$}}
+
+                \State Set the mass-shift center to the prompt-group mean:
+                $b_j\leftarrow K^{-1}\sum_{k=1}^{K}R_{j,k}$.
+                \State Within this prompt group, compute
+                \[
+                    % a_j^-\leftarrow\max_{R_{j,k}<b_j}|R_{j,k}-b_j|,
+                    % \quad
+                    % a_j^+\leftarrow\max_{R_{j,k}>b_j}|R_{j,k}-b_j|,
+                    % \quad
+                    \Delta_{j,k}\leftarrow
+                    \frac{1}{\Delta_{\mathrm{clip}}}
+                    \operatorname{clip}\!\left(
+                        \frac{R_{j,k}-b_j}{\sigma_R},
+                        -\Delta_{\mathrm{clip}},
+                        \Delta_{\mathrm{clip}}
+                    \right)
+                \]
+                \State Sort the $K$ samples so that
+                $\Delta_{j,1}\le\cdots\le\Delta_{j,q_j}\le0
+                \le\Delta_{j,q_j+1}\le\cdots\le\Delta_{j,K}$.
+                \State Select the positive strong-tail boundary:
+                \[
+                    M_j^+\leftarrow\sum_{k=q_j+1}^{K}\Delta_{j,k},
+                    \qquad
+                    h_{j,\rho}\leftarrow
+                    \arg\min_{q_j+1\le h\le K}
+                    \left|\sum_{k=h}^{K}\Delta_{j,k}-\rho M_j^+\right|.
+                \]
+                \State Keep all negative samples and the positive strong signal samples:
+                \[
+                    s_{j,k}\leftarrow
+                    \begin{cases}
+                        \Delta_{j,k},&k\le q_j,\\
+                        0,&q_j<k<h_{j,\rho},\\
+                        \Delta_{j,k},&k\ge h_{j,\rho}.
+                    \end{cases}
+                \]
+                \State Normalize the selected mass within this prompt group:
+                \[
+                    % m_j^-\leftarrow\sum_{s_{j,k}<0}(-s_{j,k}),\quad
+                    % m_j^+\leftarrow\sum_{s_{j,k}>0}s_{j,k},\quad
+                    % w_{j,k}-1\leftarrow
+                    % \begin{cases}
+                    %     s_{j,k}/m_j^-,&s_{j,k}<0,\\
+                    %     0,&s_{j,k}=0,\\
+                    %     s_{j,k}/m_j^+,&s_{j,k}>0.
+                    % \end{cases}
+                    w_{j,k}-1\leftarrow
+                    \begin{cases}
+                        s_{j,k},&s_{j,k}<0,\\
+                        0,&s_{j,k}=0,\\
+                        s_{j,k}/\rho,&s_{j,k}>0.
+                    \end{cases}                    
+                \]
+                \State Store
+                $\mathcal{D}\leftarrow\mathcal{D}\cup
+                \{(c_j,\mathbf{x}_0^{j,k},w_{j,k})\}_{k=1}^{K}$.
+            \EndFor
+
+            \For{\text{each mini batch }
+            $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
+                \State Sample $t_i\sim\mathcal{U}(0,1)$,
+                $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$;
+                set $\mathbf{x}_i^{t_i}\leftarrow
+                (1-t_i)\mathbf{x}_i^0+t_i\boldsymbol{\epsilon}_i$.
+                \State Predict $\mathbf{x}_i^\theta$,
+                $\mathbf{x}_i^{\mathrm{old}}$, and $\mathbf{x}_i^{\mathrm{ref}}$
+                from $(\mathbf{x}_i^{t_i},c_i,t_i)$ with
+                $\theta$, $\theta_{\mathrm{old}}$, and $\theta_{\mathrm{ref}}$.
+                \State $\mathbf{x}_i^{\mathrm{target}}\leftarrow
+                \mathbf{x}_i^{\mathrm{old}}+
+                \beta(w_i-1)(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}})$.
+                \State Compute
+                \[
+                    \begin{aligned}
+                    \mathcal{L}_{\mathrm{policy}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \frac{\|\mathbf{x}_i^\theta-\mathbf{x}_i^{\mathrm{target}}\|_2^2}
+                    {\operatorname{sg}[\operatorname{mean}
+                    |\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}|]},\\
+                    \mathcal{L}_{\mathrm{ref}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \|\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}\|_2^2.
+                    \end{aligned}
+                \]
+                \State Backpropagate
+                $(\Delta_{\mathrm{clip}}\mathcal{L}_{\mathrm{policy}}+
+                \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})/N_{\mathrm{acc}}$.
+            \EndFor
+            \State Update $\theta$; set
+            $\theta_{\mathrm{old}}\leftarrow
+            \eta\theta_{\mathrm{old}}+(1-\eta)\theta$ and
+            $\mathcal{D}\leftarrow\emptyset$.
+        \EndFor
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{x}_\theta$
+\end{algorithm}
+
+
+We now use Algorithm~\ref{alg:x-prediction-asymmetric-hard-selection} to study how raw rewards
+should determine the probability ratio $w$. For one prompt, let $R_1,\ldots,R_K$ be the rewards
+of its $K$ samples. Consider the group-wise empirical distribution, the old probability of
+each sample is $1/K$. A nonnegative weight with group mean equal to one defines
+the new probability $w_i/K$ for each sample, so
+\begin{equation}
+w_i=\frac{\pi^{\mathrm{n}}(\mathbf z_i)}
+{\pi^{\mathrm{o}}(\mathbf z_i)},
+\qquad w_i\ge0,\qquad \frac1K\sum_{i=1}^{K}w_i=1.
+\label{eq:group-probability-ratio}
+\end{equation}
+The current target uses $\beta(w_i-1)$ in
+Eq.~\eqref{eq:implemented-v-target}, and $\beta$ control the step size of target shift. 
+
+\subsection{Concentrate the confident positive updates}
+
+\paragraph{Base signal.}
+Let $\bar R=K^{-1}\sum_{i=1}^{K}R_i$:
+\begin{equation}
+\Delta_i=\frac{1}{\Delta_{\mathrm{clip}}}
+\operatorname{clip}\!\left(
+\frac{R_i-\bar R}{\sigma_R},
+-\Delta_{\mathrm{clip}},\Delta_{\mathrm{clip}}\right).
+\label{eq:selection-base-signal}
+\end{equation}
+Here $\bar R$ is the prompt-group mean, while $\sigma_R$ is the reward
+standard deviation over the full rollout samples, as in the DiffusionNFT
+implementation. The base rule is $w_i-1=\Delta_i$. Positive signals pull
+toward above-average samples and negative signals push away from
+below-average samples linearly.
+
+\paragraph{Selection scheme: Keep all negative signals, select strong positive signals.}
+The idea is to move positive update strength from slightly above-average
+samples to better samples. Sort the positive $\Delta_i$ from largest to
+smallest and retain a fraction $\rho\in(0,1]$ of their total signal mass.
+Let $s_i$ be the retained positive signal. We keep
+samples up to the boundary closest to the desired mass. Stronger positive samples have $s_i=\Delta_i$; weaker ones have $s_i=0$. So that
+\begin{equation}
+\sum_{i:\Delta_i>0}s_i
+=\rho\sum_{i:\Delta_i>0}\Delta_i.
+\label{eq:selection-retained-mass}
+\end{equation}
+
+Finally sets
+\begin{equation}
+w_i-1=
+\begin{cases}
+\Delta_i, & \Delta_i\le0,\\
+s_i/\rho, & \Delta_i>0.
+\end{cases}
+\label{eq:scheme-c-update}
+\end{equation}
+Dividing by $\rho$ restores the total positive signal after
+selection. The negative side is unchanged. When $\rho=1$, this reduces to
+the base scheme. An unselected positive sample has $w_i=1$: its target
+stays at the old prediction. This scheme tests whether
+positive updates benefit from more selective allocation.
+
+\paragraph{Evidence at larger $\beta$.}
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{imgs/ablation-selection-setting-search-for-schemeC.png}
+    \caption{Ablation for selection scheme on Pickscore.}
+    \label{fig:placeholder}
+\end{figure}
+
+\newpage
+
+
+
+
+
+\subsection{From simple selection to reward mappings}
+
+
+
+
+\begin{algorithm}[H]
+    \caption{Exploration of reward mappings to probability ratio $w$}
+    \label{alg:velocity-add-delete}
+    \textbf{Require:} Initial model $\theta_0$, reward function $R$, prompt distribution $p(c)$, number of prompts per iteration $C$, rollout size per prompt $K$, batch size $B$, total samples per iteration $D = KC$, rollout coverage coefficient $\beta$, mass-shift clip $\Delta_{\mathrm{clip}}$, reference regularization $\lambda_{\mathrm{ref}}$, EMA rate $\eta$, reward-scale constant $\epsilon_R$, numerical constant $\epsilon_{\mathrm{alg}}$, gradient accumulation steps $N_{\mathrm{acc}}$.\\
+    \textbf{Initialize:} Training policy $\theta \leftarrow \theta_0$, old policy $\theta_{\mathrm{old}} \leftarrow \theta_0$, reference policy $\theta_{\mathrm{ref}} \leftarrow \theta_0$, data buffer $\mathcal{D} \leftarrow \emptyset$.
+    \begin{algorithmic}[1]
+        \For{\text{each iteration}}
+            \For{\text{each prompt $c_j \sim p(c)$, $j = 1, \dots, C$}} \Comment{Rollout Step, Data Collection}
+                \State Sample $K$ clean images $\{\mathbf{x}_0^{j,k}\}_{k=1}^{K}$ with $\theta$ conditioned on $c_j$.
+                \State Evaluate rewards $R_{j,k} \leftarrow R(\mathbf{x}_0^{j,k}, c_j)$ for $k = 1, \dots, K$.
+            \EndFor
+
+            % \State Compute prompt-wise reward means
+            % $\bar{R}_{c_j} \leftarrow \frac{1}{K}\sum_{k=1}^{K} R_{j,k}$ for $j = 1, \dots, C$.
+
+            % \State Compute global reward mean
+            % $\bar{R} \leftarrow \frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K} R_{j,k}$.
+
+            % \State Compute global reward scale
+            % $\sigma_R \leftarrow \sqrt{\frac{1}{D}\sum_{j=1}^{C}\sum_{k=1}^{K}(R_{j,k} - \bar{R})^2}.$
+
+            \For{\text{each prompt $c_j$, $j = 1, \dots, C$}}
+                \State Compute normalized weights
+                \[
+                    w_{j,k} \leftarrow \frac{f(R_{j,k})}{\frac{1}{K}\sum_{k=1}^{K}f(R_{j,k})},
+                    \quad k = 1, \dots, K.
+                \]
+
+                \State Store
+                $\mathcal{D}\leftarrow\mathcal{D}\cup
+                \{(c_j,\mathbf{x}_0^{j,k},w_{j,k})\}_{k=1}^{K}$.
+            \EndFor
+
+            \For{\text{each mini batch }
+            $\{(c_i,\mathbf{x}_i^0,w_i)\}_{i=1}^{B}\subset\mathcal{D}$}
+                \State Sample $t_i\sim\mathcal{U}(0,1)$,
+                $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$;
+                set $\mathbf{x}_i^{t_i}\leftarrow
+                (1-t_i)\mathbf{x}_i^0+t_i\boldsymbol{\epsilon}_i$.
+                \State Predict $\mathbf{x}_i^\theta$,
+                $\mathbf{x}_i^{\mathrm{old}}$, and $\mathbf{x}_i^{\mathrm{ref}}$
+                from $(\mathbf{x}_i^{t_i},c_i,t_i)$ with
+                $\theta$, $\theta_{\mathrm{old}}$, and $\theta_{\mathrm{ref}}$.
+                \State $\mathbf{x}_i^{\mathrm{target}}\leftarrow
+                \mathbf{x}_i^{\mathrm{old}}+
+                \beta(w_i-1)(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}})$.
+                \State Compute
+                \[
+                    \begin{aligned}
+                    \mathcal{L}_{\mathrm{policy}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \frac{\|\mathbf{x}_i^\theta-\mathbf{x}_i^{\mathrm{target}}\|_2^2}
+                    {\operatorname{sg}[\operatorname{mean}
+                    |\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}|]},\\
+                    \mathcal{L}_{\mathrm{ref}}
+                    &\leftarrow\frac{1}{B}\sum_{i=1}^{B}
+                    \|\mathbf{v}_i^\theta-\mathbf{v}_i^{\mathrm{ref}}\|_2^2.
+                    \end{aligned}
+                \]
+                \State Backpropagate
+                $(\Delta_{clip}\mathcal{L}_{\mathrm{policy}}+
+                \lambda_{\mathrm{ref}}\mathcal{L}_{\mathrm{ref}})/N_{\mathrm{acc}}$.
+            \EndFor
+            \State Update $\theta$; set
+            $\theta_{\mathrm{old}}\leftarrow
+            \eta\theta_{\mathrm{old}}+(1-\eta)\theta$ and
+            $\mathcal{D}\leftarrow\emptyset$.
+        \EndFor
+    \end{algorithmic}
+    \textbf{Output:} $\mathbf{v}_\theta$
+\end{algorithm}
+
+
+
+We extend the selection idea by using a reward map $f$ to define the new
+probability of each sample. For a fixed prompt $c_j$, consider its $K$
+samples with rewards $R_{j,1},\ldots,R_{j,K}$. As in
+Eq.~\eqref{eq:group-probability-ratio}, we work with the empirical group
+distribution and omit the prompt conditioning from $\pi$:
+\begin{equation}
+\pi^{\mathrm{o}}(\mathbf z_i)=\frac1K,
+\qquad
+\pi^{\mathrm{n}}(\mathbf z_i)
+=\frac{f(R_{j,i})}{\sum_{\ell=1}^{K}f(R_{j,\ell})}.
+\end{equation}
+The corresponding probability ratio is therefore
+\begin{equation}
+w_{j,i}
+=\frac{\pi^{\mathrm{n}}(\mathbf z_i)}{\pi^{\mathrm{o}}(\mathbf z_i)}
+=\frac{f(R_{j,i})}{\frac1K\sum_{\ell=1}^{K}f(R_{j,\ell})}.
+\label{eq:normalized-reward-map}
+\end{equation}
+For nonnegative $f$ with a positive sum, this construction gives
+$w_{j,i}\ge0$ and $K^{-1}\sum_i w_{j,i}=1$. Thus, $w_{j,i}$ is a
+probability ratio, while $w_{j,i}/K$ is the new sample probability.
+The signed change $w_{j,i}-1$ controls the target correction:
+$w_{j,i}>1$ increases the sample's probability in the desired distribution,
+$w_{j,i}<1$ decreases it, and $w_{j,i}=1$ leaves it unchanged.
+If all mapped rewards are zero, we keep the old uniform distribution
+by setting $w_{j,i}=1$ for all samples.
+
+For mappings that depend on the reward statistics of each prompt group,
+we define
+\[
+\bar R_{c_j}=\frac1K\sum_{i=1}^{K}R_{j,i},
+\qquad
+\sigma_{c_j}=\sqrt{\frac1K\sum_{i=1}^{K}
+\bigl(R_{j,i}-\bar R_{c_j}\bigr)^2}.
+\]
+Unless stated otherwise, the experiments below normalize mapped rewards
+within each prompt using
+Eq.~\eqref{eq:normalized-reward-map}.
+
+
+
+\paragraph{Motivation and experiment plan.}
+We want to understand why the softmax weights in FlowAWR can lead to fast
+convergence. Under \eqref{eq:normalized-reward-map}, they give more of each group's total
+weight to samples with higher rewards. We test whether this focus on better
+samples is the main reason.
+
+Experiment A pushes this idea to the extreme situation. A one-hot rule gives all weight to
+the top sample(s) and zero to the rest. This sharp choice may make training
+unstable, so we also give weight to samples within \(cR_j^{\max}\) of the top
+reward, without using the group standard deviation for this threshold.
+If no reward in the group is positive, we use uniform weights and apply no
+reward-driven target shift to that group.
+
+Experiment B straightly tests the idea with softmax. Compared with \(c=1\),
+\(c<1\) puts more weight on high-reward samples, while \(c>1\) spreads weight
+more evenly. If \(c<1\) works better, it supports our idea.
+
+Experiment C uses the unshifted linear mapping as a baseline. Experiment D
+compares sigmoid with linear within each group: depending on \(c\) and the
+rewards, sigmoid can yield either sharper or flatter normalized weights.
+We test whether smaller \(c\) helps, whether \(c=0.3\) underperforms, and
+whether a small-\(c\) sigmoid is preferable to the softmax-style mappings.
+
+Experiment E changes the power \(p\) to
+test whether steeper or flatter maps work better. It is another view to test our idea.
+
+Experiment F uses an L1
+scale. Its weight curve looks much like the softmax curve in Exp.B, so it is
+less important and may be skipped.
+
+
+
+\paragraph{Experiment A: One-hot and near-maximum threshold.}
+
+Let
+\[
+R_j^{\max}=\max_i R_{j,i},\qquad
+T_j(c)=R_j^{\max}-cR_j^{\max}=(1-c)R_j^{\max}.
+\]
+\[
+S_j(c)=\{i:R_{j,i}\ge T_j(c)\}\qquad\text{for }R_j^{\max}>0.
+\]
+Set
+\[
+w_{j,i}(c)
+\;=\;
+\begin{cases}
+\displaystyle\frac{K}{|S_j(c)|}\,\mathbbm{1}[i\in S_j(c)],
+& R_j^{\max}>0,\\[6pt]
+1, & R_j^{\max}\le0,
+\end{cases}
+\qquad c\in\{0,0.05,0.1,0.25\}.
+\]
+For \(R_j^{\max}>0\), when the maximum is unique, \(c=0\) is one-hot with weight \(K\) on the
+max-reward sample. If several samples are equal-reward at the maximum, they share the
+K mass equally. Increasing \(c\) includes samples
+within a larger fraction of the maximum reward. 
+
+For \(R_j^{\max}\le0\),
+all $w_{j,i}(c)$ equal \(1\), so the probability for each sample in this group $c_j$ will not change. While other loss terms like mse between $v_{\theta}$ and $v_{old}$ and KL terms still apply.
+
+\textbf{Target}: Test whether assigning most or all of each group's weight
+mass to its best-reward samples is the main source of the gain from
+softmax weighting.
+% \subparagraph{Soft Top-$k$ with boundary ties.}
+% As a complementary fixed-size concentration rule, solve
+% \[
+% \max_{\{w_{j,i}\}}\sum_{i=1}^{K}w_{j,i}R_{j,i}
+% \quad\text{s.t.}\quad
+% \sum_{i=1}^{K}w_{j,i}=K,\qquad
+% 0\le w_{j,i}\le\frac{K}{k}.
+% \]
+% Let \(R_{j,(1)}\ge\cdots\ge R_{j,(K)}\),
+% \(\tau_j=R_{j,(k)}\),
+% \(n_{>,j}=|\{i:R_{j,i}>\tau_j\}|\), and
+% \(n_{=,j}=|\{i:R_{j,i}=\tau_j\}|\). The weights are
+% \[
+% w_{j,i}^{\mathrm{top}\text{-}k}=\begin{cases}
+% K/k, & R_{j,i}>\tau_j,\\[3pt]
+% (K/k)(k-n_{>,j})/n_{=,j}, & R_{j,i}=\tau_j,\\[3pt]
+% 0, & R_{j,i}<\tau_j.
+% \end{cases}
+% \]
+% For \(K=24\), use \(k\in\{1,3,6,12\}\). With distinct rewards this is
+% hard Top-$k$; only a tie at the boundary receives fractional weights. Both
+% rules satisfy \(\sum_i w_{j,i}=K\). Compare performance across \(c\) and
+% \(k\) to test how much concentration on the best samples helps.
+
+\paragraph{Experiment B: Softmax with standard-deviation temperature.}
+
+\[
+f_c(R_{j,i})=\exp\!\left(\frac{R_{j,i}}{c\sigma_{c_j}}\right),
+\qquad c\in\{0.5,0.75,1.0,1.5\}.
+\]
+For \(\sigma_{c_j}>0\), smaller \(c\) yields a steeper mapping and more
+concentrated weights; larger \(c\) gives a flatter mapping.
+
+\textbf{Target}: This exp tests
+the trade-off between concentrating on high rewards and keeping a flatter
+training signal. We want to test whether more concentrating or flat than classical softmax is better for optimize.
+
+\paragraph{Experiment C: Linear baseline.}
+\[
+f_{\mathrm{lin}}(R)=[R]_+,
+\qquad
+f_{\mathrm{lin,shift}}(R)=[1+R]_+,
+\qquad [x]_+=\max(x,0).
+\]
+Only \(f_{\mathrm{lin}}(R)=[R]_+\) is included in the planned sweep;
+the shifted mapping is shown for comparison, not run as an experiment.
+
+\textbf{Target}: Linear reward mapping acts as baseline variant. Expect to be worse than softmax and one-hot.
+
+\paragraph{Experiment D: Sigmoid mapping.}
+\[
+f_{\mathrm{sig},c}(R_{j,i})
+=\frac{1}{1+\exp(-(R_{j,i}-0.5)/c)},
+\qquad c\in\{0.01,0.1,0.3\}.
+\]
+
+The smaller \(c\) is, the sharper the transition around \(R=0.5\).
+After within-group normalization, the sigmoid may be sharper or flatter
+than linear, depending on the reward range; its saturation also limits
+how much the highest rewards can dominate.
+
+\textbf{Target}: Compare sigmoid with the linear baseline within each group.
+Test whether smaller \(c\) improves performance, whether the flatter
+\(c=0.3\) setting underperforms, and whether a small-\(c\) sigmoid is a
+better choice than the softmax-style mappings in Experiment B.
+
+
+\paragraph{Experiment E: Power mapping.}
+
+\[
+f_p(R_{j,i})=\bigl[R_{j,i}\bigr]_+^p.
+\]
+
+We condider \(p\in\{0.5,2.0\}\).
+
+\textbf{Target}: Compare with the linear \(p=1\) to test
+whether the stronger emphasis on high rewards gives better behavior (similar
+performance with softmax).
+
+\paragraph{Experiment F: Softmax with L1 scale.}
+Define
+\[
+||R_{j,i}-\bar{R}_{c_j}||_1=\frac{1}{K}\sum_{i=1}^{K}
+\bigl|R_{j,i}-\bar R_{c_j}\bigr|.
+\]
+Then
+\[
+f_{c,1}(R_{j,i})
+=\exp\!\left(\frac{R_{j,i}}{c||R_{j,i}-\bar{R}_{c_j}||_1}\right),
+\qquad c\in\{0.5,0.75,1.0,1.5\}.
+\]
+
+
+\textbf{Target}: This is a variant for softmax. It is similiar with softmax with std temperature as shown in following figure. So we expect a similar performance with Experiment B. This exp can be skipped if nessesary.
+
+\paragraph{Experiment G: Exponential on positive excess with mass-preserving rescaling.}
+As in Experiment C, we use the linear mapping
+\[
+w_{j,i}=
+\begin{cases}
+\displaystyle
+\frac{[R_{j,i}]_+}{\frac{1}{K}\sum_{k=1}^{K}[R_{j,k}]_+},
+& \displaystyle \sum_{k=1}^{K}[R_{j,k}]_+>0,\\[10pt]
+1, & \displaystyle \sum_{k=1}^{K}[R_{j,k}]_+=0,
+\end{cases}
+\]
+so that \(\frac{1}{K}\sum_{i=1}^{K}w_{j,i}=1\). We
+apply an exponential only to the positive excess, while leaving the
+non-positive excess unchanged:
+\[
+h_{j,i}(\alpha)
+=
+\begin{cases}
+\exp\!\bigl(\alpha\, (w_{j,i}-1)\bigr), & w_{j,i}-1>0,\\[4pt]
+w_{j,i}-1, & w_{j,i}-1\le 0,
+\end{cases}
+\qquad
+\alpha\in\{1.0,5.0,10.0,20.0\}.
+\]
+Because the exponential changes the total positive mass, we rescale the
+positive part so that its sum is preserved:
+\[
+S_j^{+}=\sum_{i:\,w_{j,i}-1>0} (w_{j,i}-1),
+\qquad
+\widetilde{S}_j^{+}(\alpha)=\sum_{i:\,w_{j,i}-1>0} h_{j,i}(\alpha),
+\]
+\[
+\tilde w_{j,i}
+=
+\begin{cases}
+\displaystyle
+\frac{S_j^{+}}{\widetilde{S}_j^{+}(\alpha)}\, h_{j,i}(\alpha),
+& w_{j,i}-1>0,\\[10pt]
+w_{j,i}-1, & w_{j,i}-1\le 0.
+\end{cases}
+\]
+Since \(\sum_{i:\,w_{j,i}-1>0}\tilde w_{j,i}=S_j^{+}\) and the
+negative part is untouched, we still have
+\(\sum_{i=1}^{K}\tilde w_{j,i}=0\). The target shift then uses
+the same form as the algorithm:
+\[
+\mathbf{x}_i^{\mathrm{target}}
+=
+\mathbf{x}_i^{\mathrm{old}}
++
+\beta\,\tilde w_{j,i}(\mathbf{x}_i^0-\mathbf{x}_i^{\mathrm{old}}).
+\]
+
+
+\begin{figure}[thbp]
+    \centering
+    \includegraphics[width=1\linewidth]{imgs/weight_variants_normalized.png}
+    \caption{Illustration of the temperature multiplier $c$ with
+    $\bar R_{c_j}=0.3$, $\sigma_{c_j}=0.5$, and mean centered L1 deviation
+    $d_{1,c_j}=0.4$.}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[thbp]
+    \centering
+    \includegraphics[width=1\linewidth]{imgs/weight_excess_variants.png}
+    \caption{Comparison Chart of Curves from Experiment G}
+    \label{fig:placeholder}
+\end{figure}
+
+
+
+
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=1.0\linewidth]{imgs/softmax-variant-example.png}
+%     \caption{Enter Caption}
+%     \label{fig:placeholder}
+% \end{figure}
+
+\begin{table}[H]
+    \centering
+    \caption{Planned reward-to-weight experiments in execution order.}
+    \label{tab:weight-variant-planned-sweep}
+    \footnotesize
+    \setlength{\tabcolsep}{5pt}
+    \renewcommand{\arraystretch}{0.95}
+    \begin{tabular}{@{}c l l c@{}}
+        \toprule
+        Run & Experiment & Configuration & Status \\
+        \midrule
+        01 & \multirow{4}{*}{A: near-max one-hot, $cR_j^{\max}$} & $c=0$  & - \\
+        02 & & $c=0.05$ & - \\
+        03 & & $c=0.1$ & - \\
+        04 & & $c=0.25$ & - \\
+        \midrule
+        05 & \multirow{4}{*}{B: softmax, $c\sigma_{c_j}$} & $c=0.5$ & - \\
+        06 & & $c=0.75$ & - \\
+        07 & & $c=1.0$ & - \\
+        08 & & $c=1.5$ & - \\
+        \midrule
+        09 & C: linear & $f(R)=[R]_+$ & - \\
+        \midrule
+        10 & \multirow{3}{*}{D: sigmoid, $(R-0.5)/c$} & $c=0.01$ & - \\
+        11 & & $c=0.1$ & - \\
+        12 & & $c=0.3$ & - \\
+        \midrule
+        13 & \multirow{2}{*}{E: power} & $f(R)=[R]_+^{0.5}$ & - \\
+        14 & & $f(R)=[R]_+^{2.0}$ & - \\
+        \midrule
+        15 & \multirow{4}{*}{F: softmax, L1 scale} & $c=0.5$ & - \\
+        16 & & $c=0.75$ & - \\
+        17 & & $c=1.0$ & - \\
+        18 & & $c=1.5$ & - \\
+        \midrule
+        19 & \multirow{4}{*}{G: positive excess} & $\alpha=1.0$ & - \\
+        20 & & $\alpha=5.0$ & - \\
+        21 & & $\alpha=10.0$ & - \\
+        22 & & $\alpha=20.0$ & - \\
+        \bottomrule
+    \end{tabular}
+
+    \vspace{0.3em}
+    \scriptsize
+    $\checkmark$ running\qquad - waiting\qquad $\bullet$ finished
+\end{table}
+
+
+\end{document}
