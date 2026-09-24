@@ -1,17 +1,18 @@
 # Step 1 linear 实验交付
 
 [Excel 表格](Step1_linear_experiment_tracker.xlsx) 和 [TSV 表格](Step1_linear_experiment_tracker.tsv)
-使用指定的 15 列。Run 01 是当前默认配置；Run 02 是另一种已有 AWR 对照配置，
-按可用资源选择对应项即可。两项均未启动，训练步数为 0，eval reward 留空。
+使用指定的 15 列。Run 01 使用 H200 8 卡，Run 02 使用 4090 16 卡，
+两项的 KL 均为 1e-4，分别运行各自的启动脚本。两项均未启动，训练步数为 0，
+eval reward 留空。本次不安排 KL=0 实验。
 Run 编号只在这份交付表内计数。
 
 本地 **8×A100 缩量验证已通过**：真实训练、reward、评估、参数更新及 checkpoint
-验收均成功。
+验收均成功。该历史验证使用 KL=0，不代表本次 KL=1e-4 配置已完成 GPU 验证。
 
-| Run | AWR_PRESET | 硬件 | reference/KL 系数 | 对应的已有 AWR 日志目录（`logs/public/flowawr/` 下） |
+| Run | 启动脚本（`scripts/` 下） | 硬件 | reference/KL 系数 | AWR 对照 |
 | --- | --- | --- | --- | --- |
-| 01 | `h200_8gpu_kl0` | H200，1×8 卡 | 0 | `sd35_pickscore_h200_8gpu_flowawr_kl0-r1`、`-r2` |
-| 02 | `4090_16gpu_kl1e-4` | 4090，2×8 卡 | 1e-4 | `sd35_pickscore_4090_16gpu_flowawr_kl1e-4-r1`、`-r2` |
+| 01 | `run_sd3_h200_8gpu_step1_linear_kl1e-4.sh` | H200，1×8 卡 | 1e-4 | 对齐 H200/KL=1e-4 的 AWR 启动配置；repo 暂无同配置结果日志 |
+| 02 | `run_sd3_4090_16gpu_step1_linear_kl1e-4.sh` | 4090，2×8 卡 | 1e-4 | 已有 `sd35_pickscore_4090_16gpu_flowawr_kl1e-4-r1`、`-r2` 日志 |
 
 ## 交付执行命令
 
@@ -20,15 +21,19 @@ Run 编号只在这份交付表内计数。
 
 ```bash
 # Run 01：单节点执行
-TASK=pickscore AWR_PRESET=h200_8gpu_kl0 PER_DEVICE_BATCH=6 AWR_VARIANCE_GATE=false \
-  bash scripts/run_sd3_step1_linear.sh
+bash scripts/run_sd3_h200_8gpu_step1_linear_kl1e-4.sh
 
-# Run 02：在两个节点分别执行，设置各自 NODE_RANK=0 / 1
-# MASTER_ADDR 使用节点 0 的实际地址，两个节点必须一致
-TASK=pickscore AWR_PRESET=4090_16gpu_kl1e-4 NNODES=2 NPROC_PER_NODE=8 \
-  NODE_RANK=0 MASTER_ADDR=<节点0地址> PER_DEVICE_BATCH=6 AWR_VARIANCE_GATE=false \
-  bash scripts/run_sd3_step1_linear.sh
+# Run 02：下面两条分别在节点 0 / 1 执行
+# 将 10.0.0.1 替换为节点 0 的实际地址，两个节点必须一致
+NODE_RANK=0 MASTER_ADDR=10.0.0.1 \
+  bash scripts/run_sd3_4090_16gpu_step1_linear_kl1e-4.sh
+NODE_RANK=1 MASTER_ADDR=10.0.0.1 \
+  bash scripts/run_sd3_4090_16gpu_step1_linear_kl1e-4.sh
 ```
+
+两个入口都默认使用 PickScore、每卡 batch=6、variance gate=false，并自动设置
+`REWARD_MAPPING=linear`。4090 入口默认双机各 8 卡，可从平台环境读取节点布局。
+不再通过 `AWR_PRESET` 选择实验；原统一入口已移除。
 
 每项的 checkpoint 写入 `outputs/step1_linear/<保存名称>/checkpoints/`，
 TensorBoard 写入 `logs/step1_linear/<保存名称>_<时间戳>/`。表中保存名称是基础名称，
@@ -37,7 +42,7 @@ TensorBoard 写入 `logs/step1_linear/<保存名称>_<时间戳>/`。表中保�
 
 ## 配置对齐范围
 
-每个 linear preset 直接调用对应的 AWR launcher 和同一 trainer，只将
+每个 linear 入口直接调用对应的 **KL=1e-4** AWR launcher 和同一 trainer，只将
 `reward_mapping` 从 `exponential` 改成 `linear`，另设独立输出名称。
 代码中的目标和损失为：
 
@@ -50,11 +55,12 @@ L = MSE(v_theta, v_target) + lambda_ref * MSE(v_theta, v_ref)
 ```
 
 不使用 trajectory alpha 或外部 t 权重；target 修正系数为 1。
-`config.train.beta` 在此入口表示 `lambda_ref`，分别取 0 / 1e-4。
+`config.train.beta` 在此入口表示 `lambda_ref`，两项均取 1e-4。
 两项均关闭 PickScore variance gate。
 
-| 项目 | Run 01（与 H200 AWR 相同） | Run 02（与 4090 AWR 相同） |
+| 项目 | Run 01（H200/KL=1e-4 配置） | Run 02（4090/KL=1e-4 配置） |
 | --- | --- | --- |
+| reference/KL 系数 | 1e-4 | 1e-4 |
 | 模型 / 分辨率 | SD3.5-medium / 512×512 | 同左 |
 | 训练、评估数据 | `dataset/pickscore/train.txt`、`test.txt` | 同左 |
 | 每轮样本 | 48 组 × 24 图 = 1152 | 同左 |
@@ -73,7 +79,8 @@ L = MSE(v_theta, v_target) + lambda_ref * MSE(v_theta, v_ref)
 
 这里的“对齐”指 repo 当前 AWR 配置和训练实现。历史运行如果额外传过 CLI 参数、
 环境覆盖、不同模型/奖励权重或使用不同代码版本，需把对应设置同步给 linear。
-不要把 H200/KL=0 与 4090/KL=1e-4 的结果直接当成只改 f 的对照。
+已有 H200/KL=0 日志仅保留作历史记录，不能作为本次 H200/KL=1e-4 的
+严格“只改 f”对照；要作这种比较，需要同配置的 H200 AWR/KL=1e-4 结果。
 
 已读取四份 AWR TensorBoard 日志：均记录 `group_count=48`、`variance_gate=0`、
 每轮 `gradient_update_times=1`，评估每 10 步。日志未保存完整 config/启动命令，
