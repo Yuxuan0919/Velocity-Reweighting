@@ -559,7 +559,6 @@ def main(_):
         log_dir = os.path.join(config.logdir, config.run_name)
         os.makedirs(log_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=log_dir)
-        writer.add_text("config", f"```text\n{config}\n```", 0)
     logger.info(f"\n{config}")
 
     set_seed(config.seed, rank)  # Pass rank for different seeds per process

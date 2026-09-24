@@ -1,6 +1,6 @@
 # PickScore softmax variants
 
-对应 `assets/softmax_variant/variants.tex` 的伪代码和末尾待做实验表，共 A–F 六组、18 个配置。六份 `train_nft_sd3_*.py` 均复制自 `scripts/train_nft_sd3_ours-1.singleloss-alpha.py`，替换的原代码保留为注释。公共权重公式在 `weight_mappings.py`，实验编号及启动入口在 `experiments.json`。
+对应 `assets/softmax_variant/variants.tex` 的伪代码和末尾待做实验表，共 A–F 六组、18 个配置。六份 `train_nft_sd3_*.py` 以 `scripts/alpha_exps/train_nft_sd3_ours-1.singleloss-alpha.py` 为 x-prediction 基线，并按照 `scripts/alpha_exps/train_nft_sd3_ours-1.singleloss-alpha-vloss.py` 换成等价的 v-prediction loss；替换的原代码保留为注释。公共权重公式在 `weight_mappings.py`，实验编号及启动入口在 `experiments.json`。
 
 ## 实验与入口
 
@@ -51,14 +51,16 @@
 3. 每次训练 mini-batch 用新的均匀随机 `t∈[0,1)` 覆盖时间步缓冲；插值和三个模型 forward 都使用同一组 t。沿用基础脚本每图的训练次数及梯度累积方式。
 4. 强制 trajectory-alpha 使用 `old_prediction`，与伪代码的分母一致。保留基础脚本的 `1e-5` 数值保护。
 
-目标与损失仍沿用基础代码：
+目标与损失使用 velocity 空间的等价形式。记 `v_clean=noise-x0`：
 
 ```text
-x_target = x_old + config.beta * (w - 1) * (x0 - x_old)
-alpha = 1 / (stop_gradient(mean(abs(x0 - x_old))) + 1e-5)
-loss = config.train.adv_clip_max * mean(alpha * (x_theta - x_target)^2)
+v_target = v_old + config.beta * (w - 1) * (v_clean - v_old)
+alpha_v = 1 / (stop_gradient(mean(abs(v_clean - v_old))) + 1e-5)
+loss = config.train.adv_clip_max * mean(t * alpha_v * (v_theta - v_target)^2)
        + config.train.beta * mean((v_theta - v_ref)^2)
 ```
+
+其中额外的 `t` 因子来自 `x_theta=xt-t*v_theta`：x 空间的平方误差带来 `t^2`，而 x 空间 trajectory-alpha 的分母带来一个 `t`，约去后得到 velocity loss 前的单个 `t`。KL/reference 正则原本就在 velocity 空间，因此不变。
 
 这里 `config.train.adv_clip_max` 作为伪代码中的 Δ_clip 损失倍率保留，默认 5，已不用于裁剪 w。`config.beta` 为目标位移系数，启动器默认 1.0（沿用参考公共启动器）；`config.train.beta=1e-4` 为 reference 正则系数。训练日志包含 `weight_mapping` 参数和全局权重统计。
 

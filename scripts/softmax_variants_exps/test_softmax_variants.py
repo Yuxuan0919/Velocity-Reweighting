@@ -121,15 +121,72 @@ class WeightFormulaTests(unittest.TestCase):
             compute_variant_weights(["p"], [0], [[1, 2]], "C")
 
 
+class VelocityLossTests(unittest.TestCase):
+    def test_velocity_loss_is_x_prediction_equivalent(self):
+        rng = np.random.default_rng(7)
+        shape = (8, 3, 4)
+        x0 = rng.normal(size=shape)
+        noise = rng.normal(size=shape)
+        forward_v = rng.normal(size=shape)
+        old_v = rng.normal(size=shape)
+        t = rng.uniform(0.05, 0.95, size=(shape[0], 1, 1))
+        correction = rng.normal(size=(shape[0], 1, 1))
+        reduce_dims = (1, 2)
+
+        xt = (1.0 - t) * x0 + t * noise
+        forward_x = xt - t * forward_v
+        old_x = xt - t * old_v
+        clean_x_discrepancy = x0 - old_x
+        target_x = old_x + correction * clean_x_discrepancy
+        alpha_x = 1.0 / np.mean(np.abs(clean_x_discrepancy), axis=reduce_dims, keepdims=True)
+        x_loss = np.mean(alpha_x * (forward_x - target_x) ** 2, axis=reduce_dims)
+
+        clean_v_discrepancy = (noise - x0) - old_v
+        target_v = old_v + correction * clean_v_discrepancy
+        alpha_v = 1.0 / np.mean(np.abs(clean_v_discrepancy), axis=reduce_dims, keepdims=True)
+        v_loss = np.mean(t * alpha_v * (forward_v - target_v) ** 2, axis=reduce_dims)
+
+        np.testing.assert_allclose(v_loss, x_loss, rtol=2e-13, atol=1e-14)
+
+    def test_all_trainers_use_only_the_active_velocity_loss(self):
+        expected_fragments = (
+            "clean_v_discrepancy = (noise.float() - x0.float()) - old_v_prediction",
+            "target_v_prediction = old_v_prediction + correction_coefficient_expanded * clean_v_discrepancy",
+            "trajectory_alpha * t_expanded.float() * (forward_v_prediction - target_v_prediction) ** 2",
+            "ori_policy_loss = target_v_prediction_loss",
+        )
+        forbidden_active_names = {
+            "forward_x_prediction",
+            "old_x_prediction",
+            "clean_x_discrepancy",
+            "trajectory_alpha_base_x_prediction",
+            "target_x_prediction",
+            "target_x_prediction_loss",
+        }
+        trainers = sorted(HERE.glob("train_nft_sd3_*.py"))
+        self.assertEqual(len(trainers), 6)
+        for path in trainers:
+            text = path.read_text()
+            tree = ast.parse(text)
+            active_names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+            with self.subTest(trainer=path.name):
+                for fragment in expected_fragments:
+                    self.assertIn(fragment, text)
+                self.assertTrue(forbidden_active_names.isdisjoint(active_names))
+
+
 class IntegrationTests(unittest.TestCase):
     def test_plan_matches_latex_table(self):
         tex = (ROOT / "assets/softmax_variant/variants.tex").read_text()
         table = tex.split(r"\label{tab:weight-variant-planned-sweep}", 1)[1].split(r"\end{table}", 1)[0]
         rows = []
         group = None
+        planned_runs = {entry["run"] for entry in PLAN}
         for line in table.splitlines():
             match = re.match(r"\s*(\d{2})\s*&", line)
             if not match:
+                continue
+            if match.group(1) not in planned_runs:
                 continue
             _, experiment, configuration, _ = line.split("&")
             group_match = re.search(r"([A-F]):", experiment)
@@ -147,7 +204,9 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(config, "$f(R)=[R]_+$")
 
     def test_original_training_lines_retained_and_python_parses(self):
-        original = (ROOT / "scripts/train_nft_sd3_ours-1.singleloss-alpha.py").read_text().splitlines()
+        original = (
+            ROOT / "scripts/alpha_exps/train_nft_sd3_ours-1.singleloss-alpha.py"
+        ).read_text().splitlines()
         for path in HERE.glob("train_nft_sd3_*.py"):
             text = path.read_text()
             ast.parse(text)

@@ -1241,18 +1241,25 @@ def main(_):
 
                     importance_weight = train_sample_batch["importance_weights"].float()
                     prompt_normalizer = train_sample_batch["prompt_normalizers"].float()
-                    forward_x_prediction = xt.float() - t_expanded.float() * forward_prediction.float()
+                    # forward_x_prediction = xt.float() - t_expanded.float() * forward_prediction.float()
+                    forward_v_prediction = forward_prediction.float()
                     with torch.no_grad():
-                        old_x_prediction = xt.float() - t_expanded.float() * old_prediction.detach().float()
-                        clean_x_discrepancy = x0.float() - old_x_prediction
-                        trajectory_alpha_base_x_prediction = (
-                            forward_x_prediction
+                        # old_x_prediction = xt.float() - t_expanded.float() * old_prediction.detach().float()
+                        old_v_prediction = old_prediction.detach().float()
+                        # clean_x_discrepancy = x0.float() - old_x_prediction
+                        clean_v_discrepancy = (noise.float() - x0.float()) - old_v_prediction
+                        # trajectory_alpha_base_x_prediction = (
+                        trajectory_alpha_base_v_prediction = (
+                            # forward_x_prediction
+                            forward_v_prediction
                             if trajectory_alpha_prediction == "forward_prediction"
-                            else old_x_prediction
+                            # else old_x_prediction
+                            else old_v_prediction
                         )
                         trajectory_alpha = 1.0 / (
                             torch.abs(
-                                x0.float() - trajectory_alpha_base_x_prediction.float()
+                                # x0.float() - trajectory_alpha_base_x_prediction.float()
+                                (noise.float() - x0.float()) - trajectory_alpha_base_v_prediction
                             ).mean(
                                 dim=tuple(range(1, x0.ndim)), keepdim=True
                             )
@@ -1263,13 +1270,16 @@ def main(_):
                         correction_coefficient_expanded = correction_coefficient.view(
                             -1, *([1] * (x0.ndim - 1))
                         )
-                        target_x_prediction = old_x_prediction + correction_coefficient_expanded * clean_x_discrepancy
+                        # target_x_prediction = old_x_prediction + correction_coefficient_expanded * clean_x_discrepancy
+                        target_v_prediction = old_v_prediction + correction_coefficient_expanded * clean_v_discrepancy
 
-                    target_x_prediction_loss = (trajectory_alpha * (forward_x_prediction - target_x_prediction) ** 2).mean(
+                    # target_x_prediction_loss = (trajectory_alpha * (forward_x_prediction - target_x_prediction) ** 2).mean(
+                    target_v_prediction_loss = (trajectory_alpha * t_expanded.float() * (forward_v_prediction - target_v_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
                     )
 
-                    ori_policy_loss = target_x_prediction_loss
+                    # ori_policy_loss = target_x_prediction_loss
+                    ori_policy_loss = target_v_prediction_loss
 
                     policy_loss = float(config.train.adv_clip_max) * ori_policy_loss.mean()
 
