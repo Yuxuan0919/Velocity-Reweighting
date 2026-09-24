@@ -47,10 +47,17 @@ tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/base.py", "Training configuration.")
+flags.DEFINE_enum(
+    "reward_mapping",
+    "exponential",
+    ["exponential", "linear"],
+    "Reward mapping f: FlowAWR exp(r/std) or Step 1 max(r, 0). Only f changes.",
+)
 flags.DEFINE_bool(
     "awr_variance_gate",
     True,
-    "Normalize FlowAWR advantages by their rollout-batch std for OCR/GenEval.",
+    "Normalize advantages by their rollout-batch std for OCR/GenEval. "
+    "Disable for the raw Step 1 mass shift; keep the same setting in AWR comparisons.",
 )
 flags.DEFINE_float("awr_variance_floor", 1e-2, "Lower bound for the advantage std in variance gating.")
 flags.DEFINE_float("awr_gamma_floor", 1e-6, "Numerical lower bound for the rollout reward std.")
@@ -300,12 +307,16 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 
 def compute_flowawr_advantages(
     rewards, rollout_batch_ids, prompt_indices, group_size, gamma_floor=1e-6,
-    variance_gate=False, variance_floor=1e-2,
+    variance_gate=False, variance_floor=1e-2, reward_mapping="exponential",
 ):
-    """Eq. (11): A_i = exp(R_i/gamma) / mean_group(exp(R/gamma)) - 1.
+    """Return Delta w = f(R) / mean_group(f(R)) - 1 in gathered order.
+
+    Exponential is the unchanged FlowAWR mapping, with rollout-wide gamma.
+    Linear follows jingdong_experiment_plan.tex, Eq. (linear-weight):
+    f(R) = max(R, 0), with Delta w = 0 when the whole group maps to zero.
 
     The optional variance gate is an explicit implementation choice for the
-    rule-based tasks; the paper describes it but does not specify its formula.
+    rule-based tasks; leave it disabled for the raw Step 1 mass shift.
     """
     rewards = np.asarray(rewards, dtype=np.float64).reshape(-1)
     rollout_batch_ids = np.asarray(rollout_batch_ids).reshape(-1)
@@ -318,28 +329,41 @@ def compute_flowawr_advantages(
         raise ValueError("FlowAWR requires finite rewards")
     if group_size < 2 or gamma_floor <= 0 or variance_floor <= 0:
         raise ValueError("group_size must be at least 2 and numerical floors must be positive")
+    if reward_mapping not in ("exponential", "linear"):
+        raise ValueError(f"Unknown reward mapping: {reward_mapping!r}")
 
-    gamma = max(float(rewards.std()), gamma_floor)
+    gamma = max(float(rewards.std()), gamma_floor) if reward_mapping == "exponential" else None
     advantages = np.empty_like(rewards)
     groups = defaultdict(list)
     for sample_idx, key in enumerate(zip(rollout_batch_ids, prompt_indices, strict=True)):
         groups[(int(key[0]), int(key[1]))].append(sample_idx)
 
     zero_std_groups = 0
+    zero_weight_groups = 0
     for key, indices in groups.items():
         if len(indices) != group_size:
             raise ValueError(f"FlowAWR group {key} has {len(indices)} samples; expected {group_size}")
         group_rewards = rewards[indices]
         zero_std_groups += int(np.all(group_rewards == group_rewards[0]))
-        logits = group_rewards / gamma
-        weights = np.exp(logits - logits.max())
+        if reward_mapping == "exponential":
+            logits = group_rewards / gamma
+            weights = np.exp(logits - logits.max())
+        else:
+            weights = np.maximum(group_rewards, 0.0)
+            maximum = weights.max()
+            if maximum == 0.0:
+                # w = 1, Delta w = 0: still regress to the old-policy target.
+                zero_weight_groups += 1
+                weights = np.ones_like(weights)
+            else:
+                # Common scaling cancels in w; avoid overflow/underflow in mean.
+                weights = weights / maximum
         advantages[indices] = weights / weights.mean() - 1.0
 
     raw_advantage_std = float(advantages.std())
     if variance_gate:
         advantages /= max(raw_advantage_std, variance_floor)
     stats = {
-        "gamma": gamma,
         "raw_advantage_std": raw_advantage_std,
         "advantage_mean": float(advantages.mean()),
         "advantage_std": float(advantages.std()),
@@ -349,6 +373,11 @@ def compute_flowawr_advantages(
         "group_count": len(groups),
         "variance_gate": int(variance_gate),
     }
+    if reward_mapping == "exponential":
+        stats["gamma"] = gamma
+    else:
+        stats["negative_reward_ratio"] = float(np.mean(rewards < 0.0))
+        stats["zero_weight_group_ratio"] = zero_weight_groups / len(groups)
     return advantages.astype(np.float32), stats
 
 
@@ -559,6 +588,7 @@ def main(_):
         log_dir = os.path.join(config.logdir, config.run_name)
         os.makedirs(log_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=log_dir)
+        writer.add_text("reward_mapping", FLAGS.reward_mapping, 0)
     logger.info(f"\n{config}")
 
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
@@ -705,6 +735,7 @@ def main(_):
     logger.info(f"  Number of gradient updates per inner epoch = {samples_per_epoch // total_train_batch_size}")
     logger.info(f"  Number of inner epochs = {config.train.num_inner_epochs}")
     logger.info("  FlowAWR variance gate = %s (rule reward = %s)", variance_gate, rule_reward)
+    logger.info("  Reward mapping = %s", FLAGS.reward_mapping)
 
     reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
     eval_reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
@@ -985,6 +1016,7 @@ def main(_):
             gamma_floor=FLAGS.awr_gamma_floor,
             variance_gate=variance_gate,
             variance_floor=FLAGS.awr_variance_floor,
+            reward_mapping=FLAGS.reward_mapping,
         )
 
         if stat_tracker is not None:
@@ -1016,7 +1048,7 @@ def main(_):
 
         if is_main_process(rank):
             log_scalars(writer, {f"awr/{key}": value for key, value in awr_stats.items()}, global_step)
-            logger.info("FlowAWR rollout: %s", awr_stats)
+            logger.info("FlowAWR (%s mapping) rollout: %s", FLAGS.reward_mapping, awr_stats)
 
         # Every rank sees the same gathered order: rank-major, then local sample order.
         samples_per_gpu = collated_samples["timesteps"].shape[0]

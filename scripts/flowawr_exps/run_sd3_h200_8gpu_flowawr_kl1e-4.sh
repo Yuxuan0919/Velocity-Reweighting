@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm/project/chineseculture/public/yuxuan/miniconda3}"
 CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
@@ -9,6 +9,7 @@ SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
 # TASK may be geneval, ocr, or pickscore. Enable variance gating by default
 # for the rule-based tasks, and disable it for PickScore.
 TASK="${TASK:-pickscore}"
+REWARD_MAPPING="${REWARD_MAPPING:-exponential}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-6}"
 
 case "${TASK}" in
@@ -16,6 +17,10 @@ case "${TASK}" in
   geneval) OPTIMIZER_STEPS_PER_ROUND=1; DEFAULT_AWR_VARIANCE_GATE=true ;;
   ocr) OPTIMIZER_STEPS_PER_ROUND=2; DEFAULT_AWR_VARIANCE_GATE=true ;;
   *) echo "TASK must be geneval, ocr, or pickscore" >&2; exit 2 ;;
+esac
+case "${REWARD_MAPPING}" in
+  exponential|linear) ;;
+  *) echo "REWARD_MAPPING must be exponential or linear" >&2; exit 2 ;;
 esac
 AWR_VARIANCE_GATE="${AWR_VARIANCE_GATE:-${DEFAULT_AWR_VARIANCE_GATE}}"
 case "${PER_DEVICE_BATCH}" in
@@ -43,9 +48,15 @@ if ((NUM_BATCHES_PER_ROUND % OPTIMIZER_STEPS_PER_ROUND != 0)); then
 fi
 GRADIENT_ACCUMULATION_STEPS=$((NUM_BATCHES_PER_ROUND / OPTIMIZER_STEPS_PER_ROUND))
 
-LOGDIR="${LOGDIR:-${REPO_DIR}/logs/flowawr}"
-SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/flowawr/sd35_${TASK}_h200_8gpu}"
-RUN_NAME="${RUN_NAME:-sd35_${TASK}_h200_8gpu_flowawr}"
+if [[ "${REWARD_MAPPING}" == linear ]]; then
+  LOGDIR="${LOGDIR:-${REPO_DIR}/logs/step1_linear}"
+  SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/step1_linear/sd35_${TASK}_h200_8gpu_linear_kl1e-4}"
+  RUN_NAME="${RUN_NAME:-sd35_${TASK}_h200_8gpu_linear_kl1e-4}"
+else
+  LOGDIR="${LOGDIR:-${REPO_DIR}/logs/flowawr}"
+  SAVE_DIR="${SAVE_DIR:-${REPO_DIR}/outputs/flowawr/sd35_${TASK}_h200_8gpu}"
+  RUN_NAME="${RUN_NAME:-sd35_${TASK}_h200_8gpu_flowawr}"
+fi
 mkdir -p "${LOGDIR}" "${SAVE_DIR}" "${REPO_DIR}/.cache"
 
 source "${CONDA_ROOT}/bin/activate" "${CONDA_ENV}"
@@ -64,9 +75,9 @@ export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
 export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
 export DIFFUSERS_CACHE="${HF_HOME}/diffusers"
 
-echo "FlowAWR: task=${TASK}, GPUs=8, per-device batch=${PER_DEVICE_BATCH}, rollout batches=${NUM_BATCHES_PER_ROUND}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, variance gate=${AWR_VARIANCE_GATE}"
+echo "FlowAWR: task=${TASK}, mapping=${REWARD_MAPPING}, GPUs=8, per-device batch=${PER_DEVICE_BATCH}, rollout batches=${NUM_BATCHES_PER_ROUND}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, variance gate=${AWR_VARIANCE_GATE}"
 
-torchrun --standalone --nnodes=1 --nproc_per_node=8 scripts/train_nft_sd3_ours-singleloss-AWR.py \
+torchrun --standalone --nnodes=1 --nproc_per_node=8 scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py \
   --config="config/nft.py:sd3_${TASK}" \
   --config.pretrained.model="${SD3_MODEL}" \
   --config.logdir="${LOGDIR}" \
@@ -79,5 +90,6 @@ torchrun --standalone --nnodes=1 --nproc_per_node=8 scripts/train_nft_sd3_ours-s
   --config.train.gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}" \
   --config.train.timestep_fraction=1.0 \
   --config.train.beta=0.0001 \
+  --reward_mapping="${REWARD_MAPPING}" \
   --awr_variance_gate="${AWR_VARIANCE_GATE}" \
   "$@"
