@@ -53,6 +53,12 @@ flags.DEFINE_enum(
     ["exponential", "linear"],
     "Reward mapping f: FlowAWR exp(r/std) or Step 1 max(r, 0). Only f changes.",
 )
+flags.DEFINE_float(
+    "linear_target_scale",
+    1.0,
+    "Multiplier c on the Linear velocity-target correction (Step 1.1). "
+    "1 preserves Step 1; other values require reward_mapping=linear.",
+)
 flags.DEFINE_bool(
     "awr_variance_gate",
     True,
@@ -153,6 +159,21 @@ def _find_latest_checkpoint(search_dir, config):
     return ""
 
 
+def _validate_resume_objective(training_state, reward_mapping, linear_target_scale):
+    # Legacy checkpoints predate target scaling, so their scale is 1.
+    saved_scale = training_state.get("linear_target_scale", 1.0)
+    saved_mapping = training_state.get("reward_mapping")
+    if saved_scale != linear_target_scale or (
+        saved_mapping is not None and saved_mapping != reward_mapping
+    ):
+        raise ValueError(
+            "Checkpoint objective does not match this run: "
+            f"saved reward_mapping={saved_mapping}, linear_target_scale={saved_scale}; "
+            f"requested reward_mapping={reward_mapping}, linear_target_scale={linear_target_scale}. "
+            "Use a separate save_dir and clear resume_from to start a new experiment."
+        )
+
+
 def resolve_resume_checkpoint(config, rank):
     requested_path = str(config.resume_from).strip()
     search_dir = requested_path or config.save_dir
@@ -164,6 +185,13 @@ def resolve_resume_checkpoint(config, rank):
             if requested_path and not checkpoint_path:
                 resolution["error"] = f"No complete checkpoint found at or under: {requested_path}"
             else:
+                if checkpoint_path:
+                    training_state = torch.load(
+                        os.path.join(checkpoint_path, "training_state.pt"), map_location="cpu"
+                    )
+                    _validate_resume_objective(
+                        training_state, FLAGS.reward_mapping, FLAGS.linear_target_scale
+                    )
                 resolution["path"] = checkpoint_path
         except Exception as error:
             resolution["error"] = f"Failed to resolve resume checkpoint from {search_dir}: {error}"
@@ -535,6 +563,8 @@ def save_ckpt(
         training_state = {
             "epoch": epoch,
             "global_step": global_step,
+            "reward_mapping": FLAGS.reward_mapping,
+            "linear_target_scale": FLAGS.linear_target_scale,
         }
         torch.save(training_state, os.path.join(save_root, "training_state.pt"))
 
@@ -557,6 +587,11 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
+    linear_target_scale = FLAGS.linear_target_scale
+    if not np.isfinite(linear_target_scale) or linear_target_scale <= 0:
+        raise ValueError("linear_target_scale must be finite and strictly positive")
+    if FLAGS.reward_mapping != "linear" and linear_target_scale != 1.0:
+        raise ValueError("linear_target_scale != 1 requires reward_mapping=linear")
     if not config.use_lora:
         raise ValueError("This FlowAWR script requires LoRA for the old-policy adapter")
     if config.sample.guidance_scale != 1.0 or not config.sample.deterministic:
@@ -589,6 +624,7 @@ def main(_):
         os.makedirs(log_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=log_dir)
         writer.add_text("reward_mapping", FLAGS.reward_mapping, 0)
+        writer.add_scalar("linear_target_scale", linear_target_scale, 0)
     logger.info(f"\n{config}")
 
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
@@ -736,6 +772,7 @@ def main(_):
     logger.info(f"  Number of inner epochs = {config.train.num_inner_epochs}")
     logger.info("  FlowAWR variance gate = %s (rule reward = %s)", variance_gate, rule_reward)
     logger.info("  Reward mapping = %s", FLAGS.reward_mapping)
+    logger.info("  Linear target scale = %s", linear_target_scale)
 
     reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
     eval_reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
@@ -1186,6 +1223,9 @@ def main(_):
                         correction = advantage.view(-1, *([1] * (x0.ndim - 1))) * (
                             conditional_velocity - old_velocity
                         )
+                        # Step 1.1: scale only the target correction, not weights or loss.
+                        if linear_target_scale != 1.0:
+                            correction = linear_target_scale * correction
                         target_velocity = old_velocity + correction
 
                     # Negating all three velocities gives the paper's forward-time
