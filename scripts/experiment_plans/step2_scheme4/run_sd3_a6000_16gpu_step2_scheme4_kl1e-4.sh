@@ -8,12 +8,12 @@ export AWR_VARIANCE_GATE=false
 export NNODES="${NNODES:-${SENSECORE_PYTORCH_NNODES:-2}}"
 export NPROC_PER_NODE="${NPROC_PER_NODE:-${SENSECORE_ACCELERATE_DEVICE_COUNT:-8}}"
 case "${NPROC_PER_NODE}" in
-  6|8) ;;
-  *) echo "NPROC_PER_NODE must be 8, or 6 for the optional 2x6 layout" >&2; exit 2 ;;
+  8) ;;
+  *) echo "NPROC_PER_NODE must be 8 for the A6000 2x8 layout" >&2; exit 2 ;;
 esac
 case "${NNODES}" in
-  1|2) ;;
-  *) echo "NNODES must be 1 or 2" >&2; exit 2 ;;
+  2) ;;
+  *) echo "NNODES must be 2 for the A6000 2x8 layout" >&2; exit 2 ;;
 esac
 WORLD_SIZE=$((NNODES * NPROC_PER_NODE))
 

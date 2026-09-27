@@ -36,9 +36,9 @@ v_target = v_old + transformed_shift * (u - v_old), u = noise - x0
 
 空符号侧跳过；单样本侧或幅值全相等的侧保持原值，全零组保持全零。
 
-两个入口复用原 Step 1 launcher，默认 PickScore、KL=1e-4、每卡 batch=6、
+本方案入口复用原 Step 1 的 A6000 launcher，默认 PickScore、KL=1e-4、每卡 batch=6、
 48组×24图=1152图/轮、训练/评估采样10/40步、`timestep_fraction=1.0`。
-H200 8卡的 rollout batches / 梯度累积为24，A6000 16卡为12；默认每轮一次
+A6000 固定双机各8卡，rollout batches / 梯度累积均为12；默认每轮一次
 optimizer step，`lr=3e-4`、`seed=42`、`fp16`，loss 沿用 Step 1。
 
 ```bash
@@ -46,9 +46,6 @@ optimizer step，`lr=3e-4`、`seed=42`、`fp16`，loss 沿用 Step 1。
 # 将 ... 替换为主节点地址
 NODE_RANK=0 MASTER_ADDR=... \
   bash scripts/experiment_plans/step2_scheme4/run_sd3_a6000_16gpu_step2_scheme4_kl1e-4.sh
-
-# H200，单机 8 卡
-bash scripts/experiment_plans/step2_scheme4/run_sd3_h200_8gpu_step2_scheme4_kl1e-4.sh
 ```
 
 入口继承 Step 1 的基础设施设置：`CONDA_ROOT` 默认指向
@@ -60,8 +57,9 @@ A6000 多机运行需要各节点能访问同一 `MASTER_ADDR` 和 `MASTER_PORT`
 原 launcher 的分布式网络条件；脚本不会配置网络或下载依赖。
 
 其他普通环境变量和命令行参数继续透传，包括 `TASK`、`PER_DEVICE_BATCH`
-和 `--config.seed`。A6000 沿用 `NNODES`、`NPROC_PER_NODE` 及 SenseCore
-环境变量规则，输出名称使用实际 GPU 总数。入口在其他参数之后固定：
+和 `--config.seed`。入口读取 `NNODES`、`NPROC_PER_NODE` 及 SenseCore
+环境变量，并要求 `NNODES=2`、`NPROC_PER_NODE=8`；其他卡数会明确报错。
+入口在其他参数之后固定：
 
 ```text
 --reward_mapping=linear --linear_target_scale=1
@@ -91,6 +89,6 @@ TensorBoard 的 `awr/shift/` 下，`gamma_positive_mean` 和
 核心代码为 `flow_grpo/mass_shift.py` 和共享入口
 `scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py`。
 交付实验表：[Step2_scheme4_experiment_tracker.tsv](../../../assets/step2_scheme4/Step2_scheme4_experiment_tracker.tsv)。
-表格使用11个有名列和 UTF-8 BOM，E1为 A6000 16卡（优先级0），E2为
-H200 8卡（优先级1），初始状态均为“待开始”。“保存名称”与默认 `RUN_NAME`
-一致，配置列另外列出日志和 checkpoint 目录。
+表格使用11个有名列和 UTF-8 BOM，仅保留 E1：A6000 16卡（优先级0），
+初始状态为“待开始”。“保存名称”与默认 `RUN_NAME` 一致，配置列另外
+列出日志和 checkpoint 目录。
