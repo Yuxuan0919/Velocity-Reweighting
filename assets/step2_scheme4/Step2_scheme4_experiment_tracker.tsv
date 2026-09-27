@@ -1,0 +1,23 @@
+﻿标识号码	类别	Git分支	评估指标	方法说明	配置（按实际条件修改）	对应核心代码	启动脚本	保存名称	状态	优先级
+E1	Step 2 Scheme 4（双侧指数）	experiment/step2-exp-both	PickScore / eval_reward/pickscore（原始分数÷26）	Scheme 4：正侧exp归一化保留S+；负侧Δw_tilde=−min(1,τ·exp(γ−|Δw|))，逐组令Σ负min(1,τ·exp(γ−|Δw|))=S−；γ−由原始负幅值计算且求τ时固定；c=1	"A6000 2×8卡；PickScore；KL=1e-4；c=1
+lr=3e-4；seed=42；fp16
+训练/评估采样10/40步；timestep_fraction=1.0
+--mass_shift_transform=exp_both
+--mass_shift_gamma_prime=1；--mass_shift_epsilon=1e-6
+γ_s=γ′/max(MAD_s,ε)，MAD_s=mean_side(|a−mean_side(a)|)，a=|原始Δw|；正负侧独立，求τ时γ−固定
+每卡batch=6；组大小K=24；48组×24图=1152图/轮
+rollout batches=12；梯度累积=12（含10时刻为120次backward）
+1 optimizer step/轮；--awr_variance_gate=false
+logs=logs/public/experiment_plans/step2_scheme4/
+outputs=outputs/step2_scheme4/sd35_pickscore_a6000_16gpu_step2_scheme4_kl1e-4/"	flow_grpo/mass_shift.py；scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/step2_scheme4/run_sd3_a6000_16gpu_step2_scheme4_kl1e-4.sh	sd35_pickscore_a6000_16gpu_step2_scheme4_kl1e-4	待开始	0
+E2	Step 2 Scheme 4（双侧指数）	experiment/step2-exp-both	PickScore / eval_reward/pickscore（原始分数÷26）	Scheme 4：正侧exp归一化保留S+；负侧Δw_tilde=−min(1,τ·exp(γ−|Δw|))，逐组令Σ负min(1,τ·exp(γ−|Δw|))=S−；γ−由原始负幅值计算且求τ时固定；c=1	"H200 1×8卡；PickScore；KL=1e-4；c=1
+lr=3e-4；seed=42；fp16
+训练/评估采样10/40步；timestep_fraction=1.0
+--mass_shift_transform=exp_both
+--mass_shift_gamma_prime=1；--mass_shift_epsilon=1e-6
+γ_s=γ′/max(MAD_s,ε)，MAD_s=mean_side(|a−mean_side(a)|)，a=|原始Δw|；正负侧独立，求τ时γ−固定
+每卡batch=6；组大小K=24；48组×24图=1152图/轮
+rollout batches=24；梯度累积=24（含10时刻为240次backward）
+1 optimizer step/轮；--awr_variance_gate=false
+logs=logs/public/experiment_plans/step2_scheme4/
+outputs=outputs/step2_scheme4/sd35_pickscore_h200_8gpu_step2_scheme4_kl1e-4/"	flow_grpo/mass_shift.py；scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/step2_scheme4/run_sd3_h200_8gpu_step2_scheme4_kl1e-4.sh	sd35_pickscore_h200_8gpu_step2_scheme4_kl1e-4	待开始	1

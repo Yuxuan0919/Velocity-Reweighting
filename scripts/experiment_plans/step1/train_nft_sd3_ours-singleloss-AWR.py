@@ -39,6 +39,7 @@ from peft import LoraConfig, get_peft_model, PeftModel
 import random
 from torch.utils.data import Dataset, DataLoader, Sampler
 from flow_grpo.ema import EMAModuleWrapper
+from flow_grpo.mass_shift import exponential_both_sides, l1_exponential_weights
 from ml_collections import config_flags
 from torch.cuda.amp import GradScaler, autocast as torch_autocast
 
@@ -51,13 +52,28 @@ flags.DEFINE_enum(
     "reward_mapping",
     "exponential",
     ["exponential", "linear"],
-    "Reward mapping f: FlowAWR exp(r/std) or Step 1 max(r, 0). Only f changes.",
+    "Reward mapping f: FlowAWR exp(r/std) or Linear max(r, 0).",
 )
 flags.DEFINE_float(
     "linear_target_scale",
     1.0,
     "Multiplier c on the Linear velocity-target correction (Step 1.1). "
     "1 preserves Step 1; other values require reward_mapping=linear.",
+)
+flags.DEFINE_enum(
+    "mass_shift_transform",
+    "none",
+    ["none", "exp_both"],
+    "Step 2 Scheme 4: L1-adaptive exponential shifts on both signs within each prompt group, preserving "
+    "each sign's mass and bounding negative shifts at -1. none preserves Step 1.",
+)
+flags.DEFINE_float(
+    "mass_shift_gamma_prime", 1.0,
+    "Gamma prime for L1-adaptive exponential mass shifts; each sign uses its own MAD.",
+)
+flags.DEFINE_float(
+    "mass_shift_epsilon", 1e-6,
+    "Positive floor on each sign's mean absolute deviation for exponential mass shifts.",
 )
 flags.DEFINE_bool(
     "awr_variance_gate",
@@ -159,17 +175,32 @@ def _find_latest_checkpoint(search_dir, config):
     return ""
 
 
-def _validate_resume_objective(training_state, reward_mapping, linear_target_scale):
+def _validate_resume_objective(
+    training_state, reward_mapping, linear_target_scale, mass_shift_transform="none",
+    mass_shift_gamma_prime=1.0, mass_shift_epsilon=1e-6,
+):
     # Legacy checkpoints predate target scaling, so their scale is 1.
     saved_scale = training_state.get("linear_target_scale", 1.0)
     saved_mapping = training_state.get("reward_mapping")
-    if saved_scale != linear_target_scale or (
-        saved_mapping is not None and saved_mapping != reward_mapping
+    saved_transform = training_state.get("mass_shift_transform", "none")
+    saved_gamma_prime = training_state.get("mass_shift_gamma_prime")
+    saved_epsilon = training_state.get("mass_shift_epsilon")
+    if (
+        saved_scale != linear_target_scale
+        or saved_transform != mass_shift_transform
+        or (mass_shift_transform != "none" and (
+            saved_gamma_prime != mass_shift_gamma_prime or saved_epsilon != mass_shift_epsilon
+        ))
+        or (saved_mapping is not None and saved_mapping != reward_mapping)
     ):
         raise ValueError(
             "Checkpoint objective does not match this run: "
-            f"saved reward_mapping={saved_mapping}, linear_target_scale={saved_scale}; "
-            f"requested reward_mapping={reward_mapping}, linear_target_scale={linear_target_scale}. "
+            f"saved reward_mapping={saved_mapping}, linear_target_scale={saved_scale}, "
+            f"mass_shift_transform={saved_transform}, mass_shift_gamma_prime={saved_gamma_prime}, "
+            f"mass_shift_epsilon={saved_epsilon}; "
+            f"requested reward_mapping={reward_mapping}, linear_target_scale={linear_target_scale}, "
+            f"mass_shift_transform={mass_shift_transform}, "
+            f"mass_shift_gamma_prime={mass_shift_gamma_prime}, mass_shift_epsilon={mass_shift_epsilon}. "
             "Use a separate save_dir and clear resume_from to start a new experiment."
         )
 
@@ -190,7 +221,9 @@ def resolve_resume_checkpoint(config, rank):
                         os.path.join(checkpoint_path, "training_state.pt"), map_location="cpu"
                     )
                     _validate_resume_objective(
-                        training_state, FLAGS.reward_mapping, FLAGS.linear_target_scale
+                        training_state, FLAGS.reward_mapping, FLAGS.linear_target_scale,
+                        FLAGS.mass_shift_transform,
+                        FLAGS.mass_shift_gamma_prime, FLAGS.mass_shift_epsilon,
                     )
                 resolution["path"] = checkpoint_path
         except Exception as error:
@@ -336,8 +369,9 @@ def calculate_zero_std_ratio(prompts, gathered_rewards):
 def compute_flowawr_advantages(
     rewards, rollout_batch_ids, prompt_indices, group_size, gamma_floor=1e-6,
     variance_gate=False, variance_floor=1e-2, reward_mapping="exponential",
+    mass_shift_transform="none", mass_shift_gamma_prime=1.0, mass_shift_epsilon=1e-6,
 ):
-    """Return Delta w = f(R) / mean_group(f(R)) - 1 in gathered order.
+    """Return raw or processed Delta w in gathered order.
 
     Exponential is the unchanged FlowAWR mapping, with rollout-wide gamma.
     Linear follows jingdong_experiment_plan.tex, Eq. (linear-weight):
@@ -345,6 +379,8 @@ def compute_flowawr_advantages(
 
     The optional variance gate is an explicit implementation choice for the
     rule-based tasks; leave it disabled for the raw Step 1 mass shift.
+    Scheme 4 transforms each complete group's shifts in float64 before the
+    final float32 cast, and requires linear weights without variance gating.
     """
     rewards = np.asarray(rewards, dtype=np.float64).reshape(-1)
     rollout_batch_ids = np.asarray(rollout_batch_ids).reshape(-1)
@@ -359,6 +395,15 @@ def compute_flowawr_advantages(
         raise ValueError("group_size must be at least 2 and numerical floors must be positive")
     if reward_mapping not in ("exponential", "linear"):
         raise ValueError(f"Unknown reward mapping: {reward_mapping!r}")
+    if mass_shift_transform not in ("none", "exp_both"):
+        raise ValueError(f"Unknown mass shift transform: {mass_shift_transform!r}")
+    if mass_shift_transform == "exp_both" and (reward_mapping != "linear" or variance_gate):
+        raise ValueError("exp_both requires reward_mapping=linear and variance_gate=False")
+    if mass_shift_transform != "none":
+        for name, value in (("mass_shift_gamma_prime", mass_shift_gamma_prime),
+                            ("mass_shift_epsilon", mass_shift_epsilon)):
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and strictly positive")
 
     gamma = max(float(rewards.std()), gamma_floor) if reward_mapping == "exponential" else None
     advantages = np.empty_like(rewards)
@@ -389,6 +434,57 @@ def compute_flowawr_advantages(
         advantages[indices] = weights / weights.mean() - 1.0
 
     raw_advantage_std = float(advantages.std())
+    shift_stats = {}
+    if mass_shift_transform == "exp_both":
+        raw_advantages = advantages.copy()
+        positive_mass_error = negative_mass_error = zero_sum_error = 0.0
+        scale_diagnostics = defaultdict(list)
+        for indices in groups.values():
+            original = raw_advantages[indices]
+            transformed = exponential_both_sides(
+                original, gamma_prime=mass_shift_gamma_prime, epsilon=mass_shift_epsilon,
+            )
+            # Measure scales on the original complete sign sets, including fixed entries.
+            for side, magnitudes in (
+                ("positive", original[original > 0]),
+                ("negative", -original[original < 0]),
+            ):
+                if magnitudes.size:
+                    _, side_gamma, side_mad = l1_exponential_weights(
+                        magnitudes, gamma_prime=mass_shift_gamma_prime, epsilon=mass_shift_epsilon,
+                    )
+                    scale_diagnostics[f"gamma_{side}"].append(side_gamma)
+                    scale_diagnostics[f"mad_{side}"].append(side_mad)
+                    scale_diagnostics[f"mad_floor_{side}"].append(side_mad <= mass_shift_epsilon)
+            advantages[indices] = transformed
+            positive_mass_error = max(
+                positive_mass_error,
+                abs(np.maximum(transformed, 0).sum() - np.maximum(original, 0).sum()),
+            )
+            negative_mass_error = max(
+                negative_mass_error,
+                abs(np.maximum(-transformed, 0).sum() - np.maximum(-original, 0).sum()),
+            )
+            zero_sum_error = max(zero_sum_error, abs(transformed.sum()))
+        negative_mask = raw_advantages < 0
+        # Mass/error diagnostics use float64, before the final training cast.
+        # Negative mass is a positive magnitude; saturation is over negatives only.
+        shift_stats = {
+            "shift/positive_mass_before_mean": float(np.maximum(raw_advantages, 0).sum() / len(groups)),
+            "shift/positive_mass_after_mean": float(np.maximum(advantages, 0).sum() / len(groups)),
+            "shift/negative_mass_before_mean": float(np.maximum(-raw_advantages, 0).sum() / len(groups)),
+            "shift/negative_mass_after_mean": float(np.maximum(-advantages, 0).sum() / len(groups)),
+            "shift/positive_mass_error_max": float(positive_mass_error),
+            "shift/negative_mass_error_max": float(negative_mass_error),
+            "shift/zero_sum_error_max": float(zero_sum_error),
+            "shift/negative_bound_fraction": (
+                float(np.mean(advantages[negative_mask] == -1.0)) if negative_mask.any() else 0.0
+            ),
+        }
+        for name, values in scale_diagnostics.items():
+            shift_stats[f"shift/{name}_mean"] = float(np.mean(values))
+            if not name.startswith("mad_floor_"):
+                shift_stats[f"shift/{name}_max"] = float(np.max(values))
     if variance_gate:
         advantages /= max(raw_advantage_std, variance_floor)
     stats = {
@@ -406,6 +502,7 @@ def compute_flowawr_advantages(
     else:
         stats["negative_reward_ratio"] = float(np.mean(rewards < 0.0))
         stats["zero_weight_group_ratio"] = zero_weight_groups / len(groups)
+    stats.update(shift_stats)
     return advantages.astype(np.float32), stats
 
 
@@ -565,6 +662,9 @@ def save_ckpt(
             "global_step": global_step,
             "reward_mapping": FLAGS.reward_mapping,
             "linear_target_scale": FLAGS.linear_target_scale,
+            "mass_shift_transform": FLAGS.mass_shift_transform,
+            "mass_shift_gamma_prime": FLAGS.mass_shift_gamma_prime,
+            "mass_shift_epsilon": FLAGS.mass_shift_epsilon,
         }
         torch.save(training_state, os.path.join(save_root, "training_state.pt"))
 
@@ -602,6 +702,18 @@ def main(_):
         raise ValueError("train.timestep_fraction must be in (0, 1]")
     rule_reward = any(name in config.reward_fn for name in ("ocr", "geneval"))
     variance_gate = FLAGS.awr_variance_gate and rule_reward
+    if FLAGS.mass_shift_transform == "exp_both":
+        if FLAGS.reward_mapping != "linear" or linear_target_scale != 1.0 or variance_gate:
+            raise ValueError(
+                "exp_both requires reward_mapping=linear, linear_target_scale=1, "
+                "and disabled variance gating to preserve mass and the -1 bound"
+            )
+
+    if FLAGS.mass_shift_transform != "none":
+        for name, value in (("mass_shift_gamma_prime", FLAGS.mass_shift_gamma_prime),
+                            ("mass_shift_epsilon", FLAGS.mass_shift_epsilon)):
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and strictly positive")
 
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
@@ -625,6 +737,10 @@ def main(_):
         writer = SummaryWriter(log_dir=log_dir)
         writer.add_text("reward_mapping", FLAGS.reward_mapping, 0)
         writer.add_scalar("linear_target_scale", linear_target_scale, 0)
+        writer.add_text("mass_shift_transform", FLAGS.mass_shift_transform, 0)
+        if FLAGS.mass_shift_transform != "none":
+            writer.add_scalar("mass_shift_gamma_prime", FLAGS.mass_shift_gamma_prime, 0)
+            writer.add_scalar("mass_shift_epsilon", FLAGS.mass_shift_epsilon, 0)
     logger.info(f"\n{config}")
 
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
@@ -773,6 +889,10 @@ def main(_):
     logger.info("  FlowAWR variance gate = %s (rule reward = %s)", variance_gate, rule_reward)
     logger.info("  Reward mapping = %s", FLAGS.reward_mapping)
     logger.info("  Linear target scale = %s", linear_target_scale)
+    logger.info("  Mass shift transform = %s", FLAGS.mass_shift_transform)
+    if FLAGS.mass_shift_transform != "none":
+        logger.info("  Mass shift gamma prime / MAD floor = %s / %s",
+                    FLAGS.mass_shift_gamma_prime, FLAGS.mass_shift_epsilon)
 
     reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
     eval_reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
@@ -1054,6 +1174,9 @@ def main(_):
             variance_gate=variance_gate,
             variance_floor=FLAGS.awr_variance_floor,
             reward_mapping=FLAGS.reward_mapping,
+            mass_shift_transform=FLAGS.mass_shift_transform,
+            mass_shift_gamma_prime=FLAGS.mass_shift_gamma_prime,
+            mass_shift_epsilon=FLAGS.mass_shift_epsilon,
         )
 
         if stat_tracker is not None:
