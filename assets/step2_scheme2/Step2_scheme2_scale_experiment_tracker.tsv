@@ -1,0 +1,57 @@
+﻿标识号码	类别	Git分支	评估指标	方法说明	配置（按实际条件修改）	对应核心代码	启动脚本	保存名称	状态	优先级
+C2-c10	Step 2 Scheme 2: Target Scale Ablation	experiment/step2-square-both	PickScore	在Scheme 2正负两侧平方重分配、负侧守住-1的映射上，仅将目标修正整体放大c=10（正负样本均乘c）	"A6000 16卡（2节点×8卡）
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=10（linear_target_scale=10）
+reward_mapping=linear; mass_shift_transform=square_both
+variance gate=false
+每卡batch=6; rollout batches=12; 梯度累积=12（10时刻共120次backward）
+48组×24图=1152图/轮; 每轮1次optimizer step
+v_target=v_old+10*Δw_tilde*(u-v_old), u=noise-x0
+先按原始Δw对正负两侧平方重分配，负侧守住-1并保持原负质量；再对全部目标修正乘c
+c不参与重分配或tau求解；不对c*Δw_tilde再次裁剪
+其他配置与本分支A6000 c=1对照一致；独立初始化，不从其他c的checkpoint续训"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/step2_scheme2/run_sd3_a6000_16gpu_step2_scheme2_scale10_kl1e-4.sh	sd35_pickscore_a6000_16gpu_step2_scheme2_scale10_kl1e-4	待开始	0
+C2-c15	Step 2 Scheme 2: Target Scale Ablation	experiment/step2-square-both	PickScore	在Scheme 2正负两侧平方重分配、负侧守住-1的映射上，仅将目标修正整体放大c=15（正负样本均乘c）	"A6000 16卡（2节点×8卡）
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=15（linear_target_scale=15）
+reward_mapping=linear; mass_shift_transform=square_both
+variance gate=false
+每卡batch=6; rollout batches=12; 梯度累积=12（10时刻共120次backward）
+48组×24图=1152图/轮; 每轮1次optimizer step
+v_target=v_old+15*Δw_tilde*(u-v_old), u=noise-x0
+先按原始Δw对正负两侧平方重分配，负侧守住-1并保持原负质量；再对全部目标修正乘c
+c不参与重分配或tau求解；不对c*Δw_tilde再次裁剪
+其他配置与本分支A6000 c=1对照一致；独立初始化，不从其他c的checkpoint续训"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/step2_scheme2/run_sd3_a6000_16gpu_step2_scheme2_scale15_kl1e-4.sh	sd35_pickscore_a6000_16gpu_step2_scheme2_scale15_kl1e-4	待开始	0
+C2-c5	Step 2 Scheme 2: Target Scale Ablation	experiment/step2-square-both	PickScore	在Scheme 2正负两侧平方重分配、负侧守住-1的映射上，仅将目标修正整体放大c=5（正负样本均乘c）	"H200 8卡（1节点×8卡）
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=5（linear_target_scale=5）
+reward_mapping=linear; mass_shift_transform=square_both
+variance gate=false
+每卡batch=6; rollout batches=24; 梯度累积=24（10时刻共240次backward）
+48组×24图=1152图/轮; 每轮1次optimizer step
+v_target=v_old+5*Δw_tilde*(u-v_old), u=noise-x0
+先按原始Δw对正负两侧平方重分配，负侧守住-1并保持原负质量；再对全部目标修正乘c
+c不参与重分配或tau求解；不对c*Δw_tilde再次裁剪
+其他配置与本分支H200 c=1对照一致；独立初始化，不从其他c的checkpoint续训"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale5_kl1e-4.sh	sd35_pickscore_h200_8gpu_step2_scheme2_scale5_kl1e-4	待开始	0
+C2-c20	Step 2 Scheme 2: Target Scale Ablation	experiment/step2-square-both	PickScore	在Scheme 2正负两侧平方重分配、负侧守住-1的映射上，仅将目标修正整体放大c=20（正负样本均乘c）	"H200 8卡（1节点×8卡）
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=20（linear_target_scale=20）
+reward_mapping=linear; mass_shift_transform=square_both
+variance gate=false
+每卡batch=6; rollout batches=24; 梯度累积=24（10时刻共240次backward）
+48组×24图=1152图/轮; 每轮1次optimizer step
+v_target=v_old+20*Δw_tilde*(u-v_old), u=noise-x0
+先按原始Δw对正负两侧平方重分配，负侧守住-1并保持原负质量；再对全部目标修正乘c
+c不参与重分配或tau求解；不对c*Δw_tilde再次裁剪
+其他配置与本分支H200 c=1对照一致；独立初始化，不从其他c的checkpoint续训"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale20_kl1e-4.sh	sd35_pickscore_h200_8gpu_step2_scheme2_scale20_kl1e-4	待开始	0

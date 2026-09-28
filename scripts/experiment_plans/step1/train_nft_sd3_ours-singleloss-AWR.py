@@ -57,8 +57,8 @@ flags.DEFINE_enum(
 flags.DEFINE_float(
     "linear_target_scale",
     1.0,
-    "Multiplier c on the Linear velocity-target correction (Step 1.1). "
-    "1 preserves Step 1; other values require reward_mapping=linear.",
+    "Multiplier c on the Linear velocity-target correction, after any mass-shift transform. "
+    "1 leaves the correction unscaled; other values require reward_mapping=linear.",
 )
 flags.DEFINE_enum(
     "mass_shift_transform",
@@ -660,9 +660,9 @@ def main(_):
     rule_reward = any(name in config.reward_fn for name in ("ocr", "geneval"))
     variance_gate = FLAGS.awr_variance_gate and rule_reward
     if FLAGS.mass_shift_transform == "square_both":
-        if FLAGS.reward_mapping != "linear" or linear_target_scale != 1.0 or variance_gate:
+        if FLAGS.reward_mapping != "linear" or variance_gate:
             raise ValueError(
-                "square_both requires reward_mapping=linear, linear_target_scale=1, "
+                "square_both requires reward_mapping=linear "
                 "and disabled variance gating to preserve mass and the -1 bound"
             )
 
@@ -1289,7 +1289,7 @@ def main(_):
                         correction = advantage.view(-1, *([1] * (x0.ndim - 1))) * (
                             conditional_velocity - old_velocity
                         )
-                        # Step 1.1: scale only the target correction, not weights or loss.
+                        # Scale the target correction after any shift transform, not weights or loss.
                         if linear_target_scale != 1.0:
                             correction = linear_target_scale * correction
                         target_velocity = old_velocity + correction
