@@ -1,0 +1,171 @@
+﻿标识号码,类别,Git分支,评估指标,方法说明,配置（按实际条件修改）,对应核心代码,启动脚本,保存名称,,,,,,,状态,优先级,结果说明,,,
+A1,"Step1: 
+AWRbased-Linear Baseline",master,PickScore,"在AWR复现代码上仅替换f=exp(r/gamma) 为 f=max(r,0)","h200 8卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step1/run_sd3_h200_8gpu_step1_linear_kl1e-4.sh,logs/public/experiment_plans/step1_linear/sd35_pickscore_a6000_16gpu_linear_kl1e-4,,,,,,,未开始,1,,,,
+A2,,,PickScore,"在AWR复现代码上仅替换f=exp(r/gamma) 为 f=max(r,0)","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step1/run_sd3_a6000_8gpu_step1_linear_kl1e-4.sh,logs/public/experiment_plans/step1_linear/sd35_pickscore_h200_8gpu_linear_kl1e-4,,,,,,,进行中,1,AWR > NFT > LinearBaseline(Step 450),,,
+B,"Step1 Ablation:
+LinearBaseline
+Scale Adjested",experiment/step1-linear-scale,PickScore,"在Step 1的基础上仅放大Scale, c=15","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=15",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step1_1/run_sd3_a6000_16gpu_step1_linear_scale15_kl1e-4.sh,sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4,,,,,,,待开始,0,,,,
+C1,Step 2 Square Positive Shifts, experiment/step2-positive-square,PickScore,在Step 1的基础上(c=1)，正侧平方，负侧保持不变,"A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=1
+mass_shift_transform=square_positive
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step2_scheme1/run_sd3_a6000_16gpu_step2_scheme1_kl1e-4.sh,sd35_pickscore_a6000_16gpu_step2_scheme1_kl1e-4,,,,,,,待开始,0,,,,
+C2,Step 2 Square Both Sides,experiment/step2-square-both,PickScore,在Step 1的基础上(c=1)，正侧平方，负侧守住-1也平方重分配,"A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=1
+mass_shift_transform=square_both
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step2_scheme2/run_sd3_a6000_16gpu_step2_scheme2_kl1e-4.sh,sd35_pickscore_a6000_16gpu_step2_scheme2_kl1e-4,,,,,,,待开始,0,,,,
+C3,Step 2 Exp Positive shifts,experiment/step2-positive-exp,PickScore,在Step 1的基础上(c=1)，正侧exp，负侧保持不变,"A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=1
+mass_shift_transform=exp_positive
+mass_shift_gamma_prime=1
+mass_shift_epsilon=1e-6
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step2_scheme3/run_sd3_a6000_16gpu_step2_scheme3_kl1e-4.sh,sd35_pickscore_a6000_16gpu_step2_scheme3_kl1e-4,,,,,,,待开始,0,,,,
+C4,Step 2 Exp Both Sides,experiment/step2-exp-both,PickScore,在Step 1的基础上(c=1)，正侧exp，负侧也exp,"A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=1
+mass_shift_transform=exp_both
+mass_shift_gamma_prime=1
+mass_shift_epsilon=1e-6
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step2_scheme4/run_sd3_a6000_16gpu_step2_scheme4_kl1e-4.sh,sd35_pickscore_a6000_16gpu_step2_scheme4_kl1e-4,,,,,,,待开始,0,,,,
+C2.1,Step 2 Square Both Sides with c=10,experiment/step2-square-both,PickScore,"在C2的基础上，正侧平方，负侧守住-1也平方重分配, c=10","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=10
+mass_shift_transform=square_both
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step2_scheme2/run_sd3_a6000_16gpu_step2_scheme2_scale10_kl1e-4.sh,sd35_pickscore_a6000_16gpu_step2_scheme1_scale10_kl1e-4,,,,,,,,,,,,
+C2.2,Step 2 Square Both Sides with c=15,experiment/step2-square-both,PickScore,"在C2的基础上，正侧平方，负侧守住-1也平方重分配, c=15","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=15
+mass_shift_transform=square_both
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step2_scheme2/run_sd3_a6000_16gpu_step2_scheme2_scale15_kl1e-4.sh,sd35_pickscore_a6000_16gpu_step2_scheme1_scale15_kl1e-4,,,,,,,,,,,,
+C2.3,Step 2 Square Both Sides with c=5,experiment/step2-square-both,PickScore,"在C2的基础上，正侧平方，负侧守住-1也平方重分配, c=5","h200 8卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=5
+mass_shift_transform=square_both",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale5_kl1e-4.sh,sd35_pickscore_h200_8gpu_step2_scheme2_scale5_kl1e-4,,,,,,,,,,,,
+C2.4,Step 2 Square Both Sides with c=20,experiment/step2-square-both,PickScore,"在C2的基础上，正侧平方，负侧守住-1也平方重分配, c=20","h200 8卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=20
+mass_shift_transform=square_both",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale20_kl1e-4.sh,sd35_pickscore_h200_8gpu_step2_scheme2_scale20_kl1e-4,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+B.1,Linear c=5,experiment/linear-square-ablation,PickScore,"在Step 1的基础上仅放大Scale, c=5","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=5",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan01_linear_scale5.sh,sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4,,,,,,,,,,,,
+B（Resume）,"Step1 Ablation:
+LinearBaseline
+Scale Adjested",experiment/linear-square-ablation,PickScore,"在Step 1的基础上仅放大Scale, c=15","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=15",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan02_linear_scale15_resume.sh,sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4,,,,,,,待开始,0,,,,
+B.2 ,Linear c=20,experiment/linear-square-ablation,PickScore,"在Step 1的基础上仅放大Scale, c=20","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=20",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan03_linear_scale20.sh,sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4,,,,,,,,,,,,
+B.3,Linear c=30,experiment/linear-square-ablation,PickScore,"在Step 1的基础上仅放大Scale, c=30","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=30",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan04_linear_scale30.sh,sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4,,,,,,,,,,,,
+C2.3（yuxuan在跑）,,,,,,,,,,,,,,,,,,,,
+C2.4 （yuxuan在跑）,,,,,,,,,,,,,,,,,,,,
+B.4,Linear c=15 -> 7.5,experiment/linear-square-ablation,PickScore,"在Step 1的基础上仅放大Scale, 但c前期15到后期7.5","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=15 -> 7.5; 400-600步线性衰减，之后固定",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan07_linear_decay15to7p5.sh,sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4,,,,,,,,,,,,
+B.5,Linear c=15 -> 5,experiment/linear-square-ablation,PickScore,"在Step 1的基础上仅放大Scale, 但c前期15到后期5","A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=15 -> 5; 400-600步线性衰减，之后固定",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan08_linear_decay15to5.sh,sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4,,,,,,,,,,,,
+C1.1,正侧平方、负侧不变（线性） c=5,experiment/linear-square-ablation,PickScore,在Step 1的基础上(c=5)，正侧平方，负侧保持不变(线性),"A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=5
+mass_shift_transform=square_positive
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan09_square_positive_scale5.sh,sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4,,,,,,,,,,,,
+C1.2,正侧平方、负侧不变（线性） c=20,experiment/linear-square-ablation,PickScore,在Step 1的基础上(c=20)，正侧平方，负侧保持不变（线性）,"A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=20
+mass_shift_transform=square_positive
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan10_square_positive_scale20.sh,sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4,,,,,,,,,,,,
+D1,正侧平方、负侧均匀 c=5,experiment/linear-square-ablation,PickScore,在Step 1的基础上(c=5)，正侧平方，负侧相同权重,"A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=5
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan11_square_positive_uniform_negative_scale5.sh,sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4,,,,,,,,,,,,
+D2,正侧平方、负侧均匀 c=20,experiment/linear-square-ablation,PickScore,在Step 1的基础上(c=20)，正侧平方，负侧相同权重,"A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=20
+variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan12_square_positive_uniform_negative_scale20.sh,sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4,,,,,,,,,,,,
+B.6,Linear c=15 -> 5（checkpoint-420分叉）,experiment/linear-square-ablation,PickScore,从原B实验Linear恒定c=15的完整checkpoint-420分叉，下一轮立即固定c=5；仅改变c，恢复current/old LoRA、optimizer动量、scaler、EMA和训练状态；保持学习率与KL不变，使用独立输出目录研究回撤。区别于B.5的400-600步渐降。,"A6000 16卡
+KL=1e-4
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40
+timestep_fraction=1.0
+c=5 constant（源c=15、global step=420）
+全局step 420续至1000，最多追加580次更新尝试；eval/save每10/30步
+每轮48组×24图=1152图；batch=6；rollout/accumulation=12；variance gate=false",scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py,scripts/experiment_plans/linear_square_ablation/run_plan13_linear_fork420_scale5.sh,sd35_pickscore_a6000_16gpu_plan13_linear_fork420_scale5_kl1e-4,,,,,,,待开始,0,尚无结果。需确认源checkpoint-420完整且带_SUCCESS；默认源outputs/step1_1_linear_scale15/sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4/checkpoints/checkpoint-420，可用--fork_from_checkpoint指定绝对路径。重新启动优先续跑本实验子checkpoint，不覆盖源实验。比较500-560步回撤、恢复时间和850/1000步分数；旧checkpoint缺完整RNG状态，不能精确重放历史轨迹。,,,

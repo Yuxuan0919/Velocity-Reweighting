@@ -27,6 +27,9 @@ def get_config():
     # containing checkpoints, in which case the latest one will be used. `config.use_lora` must be set to the same value
     # as the run that generated the saved checkpoint.
     config.resume_from = ""
+    # Populated by the explicit checkpoint-fork resolver before training.
+    # Declare this field before DEFINE_config_file locks the ConfigDict.
+    config.checkpoint_fork = None
     # whether or not to use LoRA.
     config.use_lora = True
     config.dataset = ""

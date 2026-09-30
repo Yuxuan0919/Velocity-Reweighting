@@ -18,6 +18,11 @@ def resolved_path(value):
     return str(Path(value).expanduser().resolve())
 
 
+def paths_overlap(first, second):
+    first, second = Path(first), Path(second)
+    return first == second or first in second.parents or second in first.parents
+
+
 def resolve_arguments(argv=None):
     parser = argparse.ArgumentParser(
         description="Fixed Linear / square ablations; --dry-run has no launch side effects.",
@@ -30,11 +35,17 @@ def resolve_arguments(argv=None):
     parser.add_argument("--config.resume_from", dest="resume_from")
     parser.add_argument("--config.save_dir", dest="save_dir")
     parser.add_argument("--config.logdir", dest="logdir")
+    parser.add_argument("--fork_from_checkpoint")
     args = parser.parse_args(argv)
     if args.resume_from and not Path(args.resume_from).expanduser().is_absolute():
         parser.error("--config.resume_from must be an absolute, complete checkpoint directory path")
 
     run = RUNS[args.run_id]
+    is_fork = run["action"] == "fork"
+    if args.fork_from_checkpoint is not None and not is_fork:
+        parser.error("--fork_from_checkpoint is only accepted by Plan13 (B.6)")
+    if args.fork_from_checkpoint is not None and not Path(args.fork_from_checkpoint).expanduser().is_absolute():
+        parser.error("--fork_from_checkpoint must be an absolute path to checkpoint-420")
     layout = args.layout or run["default_layout"]
     variant = run["layout_variants"][layout]
     repo = Path(os.environ.get("REPO_DIR") or DIRECTORY.parents[2]).expanduser().resolve()
@@ -46,6 +57,19 @@ def resolve_arguments(argv=None):
     batches = variant["rollout_batches"]
     accumulation = variant["gradient_accumulation_steps"]
     require_resume = run["require_resume"]
+    fork_source = None
+    if is_fork:
+        fork_source = resolved_path(args.fork_from_checkpoint or repo / run["fork_from_checkpoint"])
+        source = Path(fork_source)
+        if source.name != "checkpoint-420":
+            parser.error("Plan13 requires the exact checkpoint-420 directory")
+        source_run_dir = source.parent.parent if source.parent.name == "checkpoints" else source.parent
+        if any(paths_overlap(directory, source_run_dir) for directory in (save_dir, logdir)):
+            parser.error("Plan13 save/log directories must be independent of the source checkpoint run directory")
+        if paths_overlap(save_dir, logdir):
+            parser.error("Plan13 save/log directories must be independent of each other")
+        if resume_from and paths_overlap(resume_from, source_run_dir):
+            parser.error("Plan13 --config.resume_from must select a child checkpoint; set the c=15 source with --fork_from_checkpoint")
 
     env = dict(os.environ)
     env.update(
@@ -82,6 +106,8 @@ def resolve_arguments(argv=None):
     ]
     if run["schedule"] == "linear_decay":
         protocol.append(f"--target_scale_final={run['target_scale_final']}")
+    if fork_source:
+        protocol.append(f"--fork_from_checkpoint={fork_source}")
     protocol.extend([
         f"--target_scale_decay_start={run['target_scale_decay_start']}",
         f"--target_scale_decay_end={run['target_scale_decay_end']}",
@@ -150,6 +176,21 @@ def resolve_arguments(argv=None):
         "command": shlex.join(["torchrun", *torchrun_args]),
         "environment": {key: env[key] for key in ("TASK", "PER_DEVICE_BATCH", "AWR_VARIANCE_GATE", "NNODES", "NPROC_PER_NODE", "LOGDIR", "SAVE_DIR", "RUN_NAME")},
     }
+    if is_fork:
+        result.update(
+            fork_from_checkpoint=fork_source,
+            fork_source_exists=Path(fork_source).is_dir(),
+            fork_source_scale=run["fork_source_scale"],
+            fork_source_step=run["fork_source_step"],
+            training_budget={
+                "initial_global_step": run["fork_source_step"],
+                "final_global_step": fixed["num_epochs"],
+                "maximum_additional_update_attempts": fixed["num_epochs"] - run["fork_source_step"],
+            },
+            resume_note=("Resume this fork's own compatible checkpoint first; otherwise fork the complete c=15 "
+                         "checkpoint-420. The trainer validates completeness and fork provenance. "
+                         "Legacy RNG state is unavailable; this is not an exact replay of the historical run."),
+        )
     return parser, args, result, env
 
 
@@ -160,7 +201,9 @@ def main():
         return
     if result["resume_from"] and not result["resume_directory_exists"]:
         parser.error(f"Checkpoint directory does not exist: {result['resume_from']}; pass --config.resume_from=/absolute/path/to/a/complete/checkpoint")
-    if result["require_resume"] and not result["resume_directory_exists"]:
+    if result["action"] == "fork" and not (result["resume_directory_exists"] or result["fork_source_exists"]):
+        parser.error(f"Plan13 requires checkpoint-420 or an existing child checkpoint directory. Source missing: {result['fork_from_checkpoint']}; pass --fork_from_checkpoint=/absolute/path/to/checkpoint-420. No new training was started.")
+    if result["require_resume"] and result["action"] != "fork" and not result["resume_directory_exists"]:
         parser.error(f"Resume is required, but the historical checkpoint directory is missing: {result['resume_search_dir']}; pass --config.resume_from=/absolute/path/to/a/complete/checkpoint. No new training was started.")
     if result["launcher_requirements"]:
         parser.error("; ".join(result["launcher_requirements"]))
@@ -168,7 +211,9 @@ def main():
         parser.error(f"Step 1 launcher not found: {result['base_launcher']}")
     if result["do_not_restart_running_job"]:
         print("Optional continuation: use only after the original C2 job has stopped; do not start a second copy of a running job.", file=sys.stderr)
-    if result["require_resume"]:
+    if result["action"] == "fork":
+        print(f"Plan13: resume child from {result['resume_from'] or result['resume_search_dir']}, or fork source {result['fork_from_checkpoint']}; c=5, lr=3e-4, stop at global step 1000.", file=sys.stderr)
+    elif result["require_resume"]:
         print(f"Resume required; checkpoint search: {result['resume_from'] or result['resume_search_dir']}. Use --config.resume_from for an explicit complete checkpoint path.", file=sys.stderr)
     os.execvpe("bash", ["bash", result["base_launcher"], *result["base_launcher_args"]], env)
 

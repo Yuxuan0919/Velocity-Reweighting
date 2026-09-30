@@ -513,6 +513,49 @@
       "require_resume": false,
       "resume_search_dir": null,
       "final_eval_and_save": true
+    },
+    {
+      "run_id": "13",
+      "sheet_id": "B.6",
+      "label": "Linear checkpoint-420 分叉 c=15→5",
+      "transform": "none",
+      "c": 5,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan13_linear_fork420_scale5.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan13_linear_fork420_scale5_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "fork",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan13_linear_fork420_scale5_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan13_linear_fork420_scale5_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan13_linear_fork420_scale5_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan13_linear_fork420_scale5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan13_linear_fork420_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan13_linear_fork420_scale5_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan13_linear_fork420_scale5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan13_linear_fork420_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan13_linear_fork420_scale5_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": true,
+      "resume_search_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan13_linear_fork420_scale5_kl1e-4",
+      "final_eval_and_save": true,
+      "fork_from_checkpoint": "outputs/step1_1_linear_scale15/sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4/checkpoints/checkpoint-420",
+      "fork_source_scale": 15,
+      "fork_source_step": 420
     }
   ]
 }

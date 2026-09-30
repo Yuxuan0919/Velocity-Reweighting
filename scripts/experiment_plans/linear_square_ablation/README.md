@@ -5,7 +5,7 @@
 每10步评估、每30步保存，训练结束再做一次最终评估和完整保存。训练/评估采样
 为10/40步、`timestep_fraction=1.0`、每卡batch=6、variance gate关闭。
 每轮48组×24图=1152图、一次 optimizer 更新尝试。全局step包含AMP跳过的
-更新尝试，实际成功更新数另记为 `successful_optimizer_updates`。9组新实验默认
+更新尝试，实际成功更新数另记为 `successful_optimizer_updates`。新实验默认
 A6000 双机各8卡，共16卡，rollout batches和梯度累积均为12；
 显式选择 H200 单机8卡时均为24。
 
@@ -25,6 +25,7 @@ A6000 双机各8卡，共16卡，rollout batches和梯度累积均为12；
 | 10 | [C1.2](run_plan10_square_positive_scale20.sh) | square_positive / 20 | `a6000_16gpu` | 新组 |
 | 11 | [D1](run_plan11_square_positive_uniform_negative_scale5.sh) | square_positive_uniform_negative / 5 | `a6000_16gpu` | 新组 |
 | 12 | [D2](run_plan12_square_positive_uniform_negative_scale20.sh) | square_positive_uniform_negative / 20 | `a6000_16gpu` | 新组 |
+| 13 | [B.6](run_plan13_linear_fork420_scale5.sh) | none / 15→5，step420后立即切换 | `a6000_16gpu` | 从原B的checkpoint-420分叉 |
 
 Linear 使用 `f(r)=max(r,0)`、组内均值归一化和 `Delta_w=w-1`。
 `square_positive` 对正侧平方后重新归一化以保留正质量，负侧逐样本不变；
@@ -69,6 +70,7 @@ bash scripts/experiment_plans/linear_square_ablation/run_plan01_linear_scale5.sh
 - `--config.pretrained.model`：模型路径或模型ID。
 - `--config.resume_from`：完整checkpoint目录的绝对路径。
 - `--config.save_dir`、`--config.logdir`：显式指定本实验的存储位置。
+- `--fork_from_checkpoint`：仅Plan13接受，指定原B实验的绝对路径，目录名必须为 `checkpoint-420`。
 
 其他参数（包括方法、c、seed和 `--config.num_epochs`）会报错；总步数固定1000。
 固定训练参数和方法flags位于转交给base launcher的参数末尾。
@@ -91,7 +93,51 @@ NODE_RANK=0 MASTER_ADDR=... bash scripts/experiment_plans/linear_square_ablation
 若目录缺失会明确报错并提示传入实际checkpoint路径；目录存在但没有完整
 可兼容checkpoint时由trainer报错，不能从头误跑。显式改为H200布局时仍搜索
 原A6000历史目录，新的run/log名称反映实际布局。新组也可自动恢复自己目录中
-的完整checkpoint；不能跨c、shape或schedule续跑。
+的完整checkpoint；普通续跑不能跨c、shape或schedule。Plan13的显式分叉只允许
+从原Linear恒定c=15、step420变更为恒定c=5。
+
+## B.6：从Linear c=15的checkpoint-420分叉到c=5
+
+Plan13用于检查回落前降低c是否减轻后续回撤。读取原B的完整 `checkpoint-420`，
+从下一轮训练开始立即固定c=5，保持lr=3e-4、KL=1e-4和其他训练设置；
+它与B.5 / Plan08从头训练并在400–600步逐渐降低c的方案不同。
+全局step继续从420计数，训练至1000，最多增加580次更新尝试。
+重点比较500–560步附近及之后的回撤、current–old偏差、目标修正尖峰和850/1000步分数；
+已有c=15历史曲线只作为初步对照，当前无新增实验结果。
+
+两个布局默认都从原A6000实验读取：
+
+```text
+${REPO_DIR}/outputs/step1_1_linear_scale15/sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4/checkpoints/checkpoint-420
+```
+
+```bash
+# 即使checkpoint不在当前机器上，也可核对配置；不会创建目录或启动训练
+bash scripts/experiment_plans/linear_square_ablation/run_plan13_linear_fork420_scale5.sh --dry-run
+
+# A6000双机各8卡：两个节点分别用NODE_RANK=0 / 1，主节点地址保持相同
+NODE_RANK=0 MASTER_ADDR=... bash scripts/experiment_plans/linear_square_ablation/run_plan13_linear_fork420_scale5.sh --fork_from_checkpoint=/absolute/path/to/checkpoints/checkpoint-420
+
+# 显式选择H200单机8卡；源checkpoint仍为同一个A6000 checkpoint-420
+bash scripts/experiment_plans/linear_square_ablation/run_plan13_linear_fork420_scale5.sh --layout h200_8gpu --fork_from_checkpoint=/absolute/path/to/checkpoints/checkpoint-420
+```
+
+首次分叉要求源checkpoint包含 `_SUCCESS`、current/old LoRA、optimizer、
+scaler、EMA、training state和prompt stat tracker等完整状态；trainer核对
+step=420、原目标为Linear恒定c=15。恢复optimizer动量及其原学习率，
+加载后验证lr=3e-4，不自动重置optimizer。源checkpoint只读，保存和日志使用
+独立Plan13目录；显式路径也不能与源实验目录或彼此重叠。
+
+再次执行同一入口，会优先恢复Plan13自己目录下带有相同分叉来源的完整c=5
+checkpoint，即使源checkpoint已离线也可继续。也可用 `--config.resume_from`
+指定此分叉的子checkpoint；此参数不能用来指定c=15的源checkpoint。
+目标目录已有内容但没有完整可续跑checkpoint时会报错，防止重新从420启动。
+`require_resume=true`；源/子checkpoint缺失或不完整时不得从头训练。
+
+旧checkpoint未保存完整随机数状态，分叉会按seed=42初始化随机数流，
+因此不能精确重放原实验420步之后的样本轨迹。若跨A6000/H200布局，
+每轮图数和更新次数保持不变，但分布式随机数和数值差异仍会影响对照。
+dry-run JSON列出源路径、源目录是否存在、子checkpoint搜索路径及剩余训练预算。
 
 ## C2.3 / C2.4：保留正在运行的任务
 

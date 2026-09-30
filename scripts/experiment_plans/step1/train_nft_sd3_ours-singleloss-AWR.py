@@ -39,6 +39,7 @@ from peft import LoraConfig, get_peft_model, PeftModel
 import random
 from torch.utils.data import Dataset, DataLoader, Sampler
 from flow_grpo.ema import EMAModuleWrapper
+from flow_grpo.checkpoint_fork import resolve_linear_fork_checkpoint
 from flow_grpo.mass_shift import square_both_sides, square_positive_shifts, square_positive_uniform_negative
 from flow_grpo.target_scale import TargetScaleSchedule, validate_resume_schedule
 from ml_collections import config_flags
@@ -75,6 +76,11 @@ flags.DEFINE_integer("target_scale_decay_start", 400, "First global step of targ
 flags.DEFINE_integer("target_scale_decay_end", 600, "Global step at which target-scale decay ends.")
 flags.DEFINE_bool("final_eval_and_save", False, "Evaluate and save after the last training epoch.")
 flags.DEFINE_bool("require_resume", False, "Fail if no complete checkpoint is available to resume.")
+flags.DEFINE_string(
+    "fork_from_checkpoint", "",
+    "Explicit Linear c=15 checkpoint-420 source for a separate constant-c=5 experiment. "
+    "An existing checkpoint from this fork's save_dir resumes the c=5 child instead.",
+)
 flags.DEFINE_bool(
     "awr_variance_gate",
     True,
@@ -209,10 +215,27 @@ def resolve_resume_checkpoint(config, rank, target_scale_schedule=None):
 
     if is_main_process(rank):
         try:
-            checkpoint_path = _find_latest_checkpoint(search_dir, config)
-            if (requested_path or FLAGS.require_resume) and not checkpoint_path:
-                resolution["error"] = f"No complete checkpoint found at or under: {search_dir}"
+            fork_source = getattr(FLAGS, "fork_from_checkpoint", "").strip()
+            if fork_source:
+                checkpoint_path, training_state, provenance = resolve_linear_fork_checkpoint(
+                    fork_source, config.save_dir, config.logdir, requested_path,
+                    reward_mapping=FLAGS.reward_mapping,
+                    mass_shift_transform=FLAGS.mass_shift_transform,
+                    target_scale_schedule=(target_scale_schedule or TargetScaleSchedule(FLAGS.linear_target_scale)),
+                    find_checkpoint=lambda directory: _find_latest_checkpoint(directory, config),
+                    is_complete=lambda directory: _is_resumable_checkpoint(directory, config),
+                    load_state=lambda directory: torch.load(
+                        os.path.join(directory, "training_state.pt"), map_location="cpu"
+                    ),
+                )
+                resolution.update(path=checkpoint_path, fork=provenance)
+                if training_state["epoch"] > config.num_epochs:
+                    raise ValueError("Fork checkpoint exceeds the requested training budget")
             else:
+                checkpoint_path = _find_latest_checkpoint(search_dir, config)
+            if not fork_source and (requested_path or FLAGS.require_resume) and not checkpoint_path:
+                resolution["error"] = f"No complete checkpoint found at or under: {search_dir}"
+            elif not fork_source:
                 if checkpoint_path:
                     training_state = torch.load(
                         os.path.join(checkpoint_path, "training_state.pt"), map_location="cpu"
@@ -227,6 +250,11 @@ def resolve_resume_checkpoint(config, rank, target_scale_schedule=None):
                             f"Checkpoint epoch {training_state['epoch']} exceeds the requested "
                             f"training budget of {config.num_epochs} epochs"
                         )
+                    if training_state.get("checkpoint_fork"):
+                        raise ValueError(
+                            "A fork continuation requires --fork_from_checkpoint with its original source path; "
+                            "use the Plan13 launcher to retain source-directory protection"
+                        )
                 resolution["path"] = checkpoint_path
         except Exception as error:
             resolution["error"] = f"Failed to resolve resume checkpoint from {search_dir}: {error}"
@@ -240,11 +268,13 @@ def resolve_resume_checkpoint(config, rank, target_scale_schedule=None):
     resolution = payload[0]
     if resolution["error"]:
         raise FileNotFoundError(resolution["error"])
+    if resolution.get("fork"):
+        config.checkpoint_fork = resolution["fork"]
 
     checkpoint_path = resolution["path"]
     if is_main_process(rank):
         if checkpoint_path:
-            mode = "explicit" if requested_path else "automatic"
+            mode = "fork/continuation" if resolution.get("fork") else ("explicit" if requested_path else "automatic")
             logger.info("Using %s resume checkpoint: %s", mode, checkpoint_path)
         else:
             logger.info("No checkpoint found in %s; starting a new training run.", search_dir)
@@ -668,6 +698,8 @@ def save_ckpt(
             "successful_optimizer_updates": successful_optimizer_updates,
             "optimizer_count_start_step": optimizer_count_start_step,
         }
+        if getattr(config, "checkpoint_fork", None):
+            training_state["checkpoint_fork"] = dict(config.checkpoint_fork)
         torch.save(training_state, os.path.join(save_root, "training_state.pt"))
 
         # 保存 EMA 影子参数
@@ -807,6 +839,12 @@ def main(_):
         writer.add_scalar("linear_target_scale", linear_target_scale, 0)
         writer.add_text("mass_shift_transform", FLAGS.mass_shift_transform, 0)
         writer.add_text("target_scale_schedule", json.dumps(target_scale_schedule.metadata(), sort_keys=True), 0)
+        if getattr(config, "checkpoint_fork", None):
+            writer.add_text("checkpoint_fork", json.dumps(dict(config.checkpoint_fork), sort_keys=True), 420)
+            logger.info(
+                "Linear fork: c=15 -> c=5 from step 420. Restoring model/old/optimizer/scaler/EMA; "
+                "the legacy source has no full RNG state, so this is not an exact historical replay."
+            )
         writer.add_text(
             "diagnostics/parameter_update_l2",
             "Every 10 optimizer-attempt steps, rank 0 clones every trainable LoRA parameter "
@@ -1028,6 +1066,18 @@ def main(_):
         opt_path = os.path.join(config.resume_from, "optimizer.pt")
         if os.path.exists(opt_path):
             optimizer.load_state_dict(torch.load(opt_path, map_location=device))
+            if getattr(config, "checkpoint_fork", None):
+                restored_rates = [float(group["lr"]) for group in optimizer.param_groups]
+                if not restored_rates or any(
+                    not np.isclose(rate, config.train.learning_rate, rtol=0, atol=1e-12)
+                    for rate in restored_rates
+                ):
+                    raise ValueError(
+                        f"Fork checkpoint optimizer learning rates {restored_rates} differ from "
+                        f"the unchanged experiment learning rate {config.train.learning_rate}. "
+                        "The fork will not override optimizer hyperparameters."
+                    )
+                logger.info("Fork keeps restored optimizer learning rates and moments: %s", restored_rates)
 
         # 加载 scaler
         scaler_path = os.path.join(config.resume_from, "scaler.pt")
