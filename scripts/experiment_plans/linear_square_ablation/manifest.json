@@ -1,0 +1,518 @@
+{
+  "schema_version": 1,
+  "code_branch": "experiment/linear-square-ablation",
+  "publication_status": "local_pending_review",
+  "fixed_config": {
+    "task": "pickscore",
+    "seed": 42,
+    "mixed_precision": "fp16",
+    "learning_rate": 0.0003,
+    "beta": 0.0001,
+    "num_epochs": 1000,
+    "eval_freq": 10,
+    "save_freq": 30,
+    "sample_num_steps": 10,
+    "sample_eval_num_steps": 40,
+    "timestep_fraction": 1.0,
+    "per_device_batch": 6,
+    "group_size": 24,
+    "prompt_groups_per_round": 48,
+    "images_per_round": 1152,
+    "optimizer_steps_per_round": 1,
+    "reward_mapping": "linear",
+    "awr_variance_gate": false,
+    "final_eval_and_save": true
+  },
+  "runs": [
+    {
+      "run_id": "01",
+      "sheet_id": "B.1",
+      "label": "Linear c=5",
+      "transform": "none",
+      "c": 5,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan01_linear_scale5.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "new",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan01_linear_scale5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan01_linear_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan01_linear_scale5_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": false,
+      "resume_search_dir": null,
+      "final_eval_and_save": true
+    },
+    {
+      "run_id": "02",
+      "sheet_id": "B",
+      "label": "续跑 Linear c=15",
+      "transform": "none",
+      "c": 15,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan02_linear_scale15_resume.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "resume",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan02_linear_scale15_resume_kl1e-4",
+      "default_save_dir": "outputs/step1_1_linear_scale15/sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan02_linear_scale15_resume_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan02_linear_scale15_resume_kl1e-4",
+          "save_dir": "outputs/step1_1_linear_scale15/sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan02_linear_scale15_resume_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan02_linear_scale15_resume_kl1e-4",
+          "save_dir": "outputs/step1_1_linear_scale15/sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan02_linear_scale15_resume_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": true,
+      "resume_search_dir": "outputs/step1_1_linear_scale15/sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4",
+      "final_eval_and_save": true
+    },
+    {
+      "run_id": "03",
+      "sheet_id": "B.2",
+      "label": "Linear c=20",
+      "transform": "none",
+      "c": 20,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan03_linear_scale20.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "new",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan03_linear_scale20_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan03_linear_scale20_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan03_linear_scale20_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": false,
+      "resume_search_dir": null,
+      "final_eval_and_save": true
+    },
+    {
+      "run_id": "04",
+      "sheet_id": "B.3",
+      "label": "Linear c=30",
+      "transform": "none",
+      "c": 30,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan04_linear_scale30.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "new",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan04_linear_scale30_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan04_linear_scale30_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan04_linear_scale30_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": false,
+      "resume_search_dir": null,
+      "final_eval_and_save": true
+    },
+    {
+      "run_id": "05",
+      "sheet_id": "C2.3",
+      "label": "继续正在运行的 Square Both c=5",
+      "transform": "square_both",
+      "c": 5,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale5_kl1e-4.sh",
+      "save_name": "sd35_pickscore_h200_8gpu_step2_scheme2_scale5_kl1e-4",
+      "default_layout": "h200_8gpu",
+      "action": "continue",
+      "code_branch": "experiment/step2-square-both",
+      "default_run_name": "sd35_pickscore_h200_8gpu_plan05_square_both_scale5_resume_kl1e-4",
+      "default_save_dir": "outputs/step2_scheme2_scale5/sd35_pickscore_h200_8gpu_step2_scheme2_scale5_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan05_square_both_scale5_resume_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan05_square_both_scale5_resume_kl1e-4",
+          "save_dir": "outputs/step2_scheme2_scale5/sd35_pickscore_h200_8gpu_step2_scheme2_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan05_square_both_scale5_resume_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan05_square_both_scale5_resume_kl1e-4",
+          "save_dir": "outputs/step2_scheme2_scale5/sd35_pickscore_h200_8gpu_step2_scheme2_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan05_square_both_scale5_resume_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": true,
+      "resume_search_dir": "outputs/step2_scheme2_scale5/sd35_pickscore_h200_8gpu_step2_scheme2_scale5_kl1e-4",
+      "final_eval_and_save": null,
+      "original_script": "scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale5_kl1e-4.sh",
+      "optional_resume_script": "scripts/experiment_plans/linear_square_ablation/run_plan05_square_both_scale5_resume.sh",
+      "optional_resume_code_branch": "experiment/linear-square-ablation",
+      "optional_resume_final_eval_and_save": true,
+      "note": "正在运行时不重新启动；可选续跑入口仅供原任务停止后从完整checkpoint补至1000步并末次eval/save。"
+    },
+    {
+      "run_id": "06",
+      "sheet_id": "C2.4",
+      "label": "继续正在运行的 Square Both c=20",
+      "transform": "square_both",
+      "c": 20,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale20_kl1e-4.sh",
+      "save_name": "sd35_pickscore_h200_8gpu_step2_scheme2_scale20_kl1e-4",
+      "default_layout": "h200_8gpu",
+      "action": "continue",
+      "code_branch": "experiment/step2-square-both",
+      "default_run_name": "sd35_pickscore_h200_8gpu_plan06_square_both_scale20_resume_kl1e-4",
+      "default_save_dir": "outputs/step2_scheme2_scale20/sd35_pickscore_h200_8gpu_step2_scheme2_scale20_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan06_square_both_scale20_resume_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan06_square_both_scale20_resume_kl1e-4",
+          "save_dir": "outputs/step2_scheme2_scale20/sd35_pickscore_h200_8gpu_step2_scheme2_scale20_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan06_square_both_scale20_resume_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan06_square_both_scale20_resume_kl1e-4",
+          "save_dir": "outputs/step2_scheme2_scale20/sd35_pickscore_h200_8gpu_step2_scheme2_scale20_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan06_square_both_scale20_resume_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": true,
+      "resume_search_dir": "outputs/step2_scheme2_scale20/sd35_pickscore_h200_8gpu_step2_scheme2_scale20_kl1e-4",
+      "final_eval_and_save": null,
+      "original_script": "scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale20_kl1e-4.sh",
+      "optional_resume_script": "scripts/experiment_plans/linear_square_ablation/run_plan06_square_both_scale20_resume.sh",
+      "optional_resume_code_branch": "experiment/linear-square-ablation",
+      "optional_resume_final_eval_and_save": true,
+      "note": "正在运行时不重新启动；可选续跑入口仅供原任务停止后从完整checkpoint补至1000步并末次eval/save。"
+    },
+    {
+      "run_id": "07",
+      "sheet_id": "B.4",
+      "label": "Linear c=15→7.5",
+      "transform": "none",
+      "c": 15,
+      "schedule": "linear_decay",
+      "target_scale_final": 7.5,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan07_linear_decay15to7p5.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "new",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan07_linear_decay15to7p5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan07_linear_decay15to7p5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan07_linear_decay15to7p5_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": false,
+      "resume_search_dir": null,
+      "final_eval_and_save": true
+    },
+    {
+      "run_id": "08",
+      "sheet_id": "B.5",
+      "label": "Linear c=15→5",
+      "transform": "none",
+      "c": 15,
+      "schedule": "linear_decay",
+      "target_scale_final": 5,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan08_linear_decay15to5.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "new",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan08_linear_decay15to5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan08_linear_decay15to5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan08_linear_decay15to5_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": false,
+      "resume_search_dir": null,
+      "final_eval_and_save": true
+    },
+    {
+      "run_id": "09",
+      "sheet_id": "C1.1",
+      "label": "正侧平方、负侧不变 c=5",
+      "transform": "square_positive",
+      "c": 5,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan09_square_positive_scale5.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "new",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan09_square_positive_scale5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan09_square_positive_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan09_square_positive_scale5_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": false,
+      "resume_search_dir": null,
+      "final_eval_and_save": true
+    },
+    {
+      "run_id": "10",
+      "sheet_id": "C1.2",
+      "label": "正侧平方、负侧不变 c=20",
+      "transform": "square_positive",
+      "c": 20,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan10_square_positive_scale20.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "new",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan10_square_positive_scale20_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan10_square_positive_scale20_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan10_square_positive_scale20_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": false,
+      "resume_search_dir": null,
+      "final_eval_and_save": true
+    },
+    {
+      "run_id": "11",
+      "sheet_id": "D1",
+      "label": "正侧平方、负侧均匀 c=5",
+      "transform": "square_positive_uniform_negative",
+      "c": 5,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan11_square_positive_uniform_negative_scale5.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "new",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": false,
+      "resume_search_dir": null,
+      "final_eval_and_save": true
+    },
+    {
+      "run_id": "12",
+      "sheet_id": "D2",
+      "label": "正侧平方、负侧均匀 c=20",
+      "transform": "square_positive_uniform_negative",
+      "c": 20,
+      "schedule": "constant",
+      "target_scale_final": null,
+      "target_scale_decay_start": 400,
+      "target_scale_decay_end": 600,
+      "script": "scripts/experiment_plans/linear_square_ablation/run_plan12_square_positive_uniform_negative_scale20.sh",
+      "save_name": "sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+      "default_layout": "a6000_16gpu",
+      "action": "new",
+      "code_branch": "experiment/linear-square-ablation",
+      "default_run_name": "sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+      "default_save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+      "default_logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+      "layout_variants": {
+        "h200_8gpu": {
+          "run_name": "sd35_pickscore_h200_8gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_h200_8gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+          "num_gpus": 8,
+          "rollout_batches": 24,
+          "gradient_accumulation_steps": 24
+        },
+        "a6000_16gpu": {
+          "run_name": "sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+          "save_dir": "outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+          "logdir": "logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4",
+          "num_gpus": 16,
+          "rollout_batches": 12,
+          "gradient_accumulation_steps": 12
+        }
+      },
+      "require_resume": false,
+      "resume_search_dir": null,
+      "final_eval_and_save": true
+    }
+  ]
+}

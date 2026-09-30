@@ -1,0 +1,109 @@
+﻿标识号码	类别	Git分支	评估指标	方法说明	配置（按实际条件修改）	对应核心代码	启动脚本	保存名称	文档Run	安排	启动命令	保存目录（相对repo）	日志目录（相对repo）	代码状态	实验状态	优先级	备注
+B.1	Linear c=5	experiment/linear-square-ablation	PickScore	Linear：f(r)=max(r,0)，组内归一化得Δw=w−1，正负shift保持原样，目标修正再乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=5"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan01_linear_scale5.sh	sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4	01	新实验	bash scripts/experiment_plans/linear_square_ablation/run_plan01_linear_scale5.sh	outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan01_linear_scale5_kl1e-4	本地待审阅，尚未提交推送	待运行	高	"设计原因：检验较小c；与Run05同c比较Linear和正负平方。
+同一预训练模型起跑；同配置已有完整checkpoint时自动续跑。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"
+B	续跑 Linear c=15	experiment/linear-square-ablation	PickScore	Linear：f(r)=max(r,0)，组内归一化得Δw=w−1，正负shift保持原样，目标修正再乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=15"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan02_linear_scale15_resume.sh	sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4	02	恢复已有B；计入Run02	bash scripts/experiment_plans/linear_square_ablation/run_plan02_linear_scale15_resume.sh	outputs/step1_1_linear_scale15/sd35_pickscore_a6000_16gpu_step1_1_linear_scale15_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan02_linear_scale15_resume_kl1e-4	本地待审阅，尚未提交推送	待恢复	高	"设计原因：保留已有较强的Linear c15基准，作为固定c和后期衰减的对照。
+保留原c=15和历史保存目录；默认搜索完整checkpoint，找不到即报错，不从头跑。若原checkpoint不在默认目录，追加 --config.resume_from=/实际checkpoint或父目录。最近上传eval850；恢复步数以完整checkpoint为准。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"
+B.2	Linear c=20	experiment/linear-square-ablation	PickScore	Linear：f(r)=max(r,0)，组内归一化得Δw=w−1，正负shift保持原样，目标修正再乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=20"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan03_linear_scale20.sh	sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4	03	新实验	bash scripts/experiment_plans/linear_square_ablation/run_plan03_linear_scale20.sh	outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan03_linear_scale20_kl1e-4	本地待审阅，尚未提交推送	待运行	高	"设计原因：与Run06同c比较Linear和正负平方。
+同一预训练模型起跑；同配置已有完整checkpoint时自动续跑。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"
+B.3	Linear c=30	experiment/linear-square-ablation	PickScore	Linear：f(r)=max(r,0)，组内归一化得Δw=w−1，正负shift保持原样，目标修正再乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=30"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan04_linear_scale30.sh	sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4	04	新实验	bash scripts/experiment_plans/linear_square_ablation/run_plan04_linear_scale30.sh	outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan04_linear_scale30_kl1e-4	本地待审阅，尚未提交推送	待运行	中	"设计原因：把c15加倍，检验增幅收益是否饱和或更不稳定。
+同一预训练模型起跑；同配置已有完整checkpoint时自动续跑。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"
+C2.3	继续正在运行的 Square Both c=5	experiment/step2-square-both	PickScore	正侧按平方分配S+；负侧−min(1,τ|Δw|²)，保持原S−；映射后统一乘c。	"默认H200 8卡（单机）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=24；梯度累积=24
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=5"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale5_kl1e-4.sh	sd35_pickscore_h200_8gpu_step2_scheme2_scale5_kl1e-4	05	继续现有任务，不重复启动	无需新命令：保持当前任务运行。	outputs/step2_scheme2_scale5/sd35_pickscore_h200_8gpu_step2_scheme2_scale5_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan05_square_both_scale5_resume_kl1e-4	原分支已发布；现有任务继续运行	运行中（用户确认）	高	"设计原因：补足既有平方c5的观察时长；与Run01/09/11比较。
+最近上传eval270，不代表实时进度。原启动脚本未启用本次新增的末次eval功能。如任务中断，或需从完整checkpoint补到1000并保存/评估末步，可在 experiment/linear-square-ablation 发布后运行：bash scripts/experiment_plans/linear_square_ablation/run_plan05_square_both_scale5_resume.sh。正在运行时勿重复启动。"
+C2.4	继续正在运行的 Square Both c=20	experiment/step2-square-both	PickScore	正侧按平方分配S+；负侧−min(1,τ|Δw|²)，保持原S−；映射后统一乘c。	"默认H200 8卡（单机）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=24；梯度累积=24
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=20"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/step2_scheme2/run_sd3_h200_8gpu_step2_scheme2_scale20_kl1e-4.sh	sd35_pickscore_h200_8gpu_step2_scheme2_scale20_kl1e-4	06	继续现有任务，不重复启动	无需新命令：保持当前任务运行。	outputs/step2_scheme2_scale20/sd35_pickscore_h200_8gpu_step2_scheme2_scale20_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_h200_8gpu_plan06_square_both_scale20_resume_kl1e-4	原分支已发布；现有任务继续运行	运行中（用户确认）	高	"设计原因：补足既有平方c20的观察时长，观察平台或回撤；与Run03/10/12比较。
+最近上传eval270，不代表实时进度。原启动脚本未启用本次新增的末次eval功能。如任务中断，或需从完整checkpoint补到1000并保存/评估末步，可在 experiment/linear-square-ablation 发布后运行：bash scripts/experiment_plans/linear_square_ablation/run_plan06_square_both_scale20_resume.sh。正在运行时勿重复启动。"
+B.4	Linear c=15→7.5	experiment/linear-square-ablation	PickScore	Linear：f(r)=max(r,0)，组内归一化得Δw=w−1，正负shift保持原样，目标修正再乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=15→7.5；400–600步线性衰减，之后固定"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan07_linear_decay15to7p5.sh	sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4	07	新实验	bash scripts/experiment_plans/linear_square_ablation/run_plan07_linear_decay15to7p5.sh	outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan07_linear_decay15to7p5_kl1e-4	本地待审阅，尚未提交推送	待运行	高	"设计原因：与固定c15比较，检验后期适度减小目标修正能否缓解回撤。
+同一预训练模型起跑；同配置已有完整checkpoint时自动续跑。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"
+B.5	Linear c=15→5	experiment/linear-square-ablation	PickScore	Linear：f(r)=max(r,0)，组内归一化得Δw=w−1，正负shift保持原样，目标修正再乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=15→5；400–600步线性衰减，之后固定"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan08_linear_decay15to5.sh	sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4	08	新实验	bash scripts/experiment_plans/linear_square_ablation/run_plan08_linear_decay15to5.sh	outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan08_linear_decay15to5_kl1e-4	本地待审阅，尚未提交推送	待运行	中	"设计原因：检验更强衰减；与Run07和全程c5的Run01比较。
+同一预训练模型起跑；同配置已有完整checkpoint时自动续跑。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"
+C1.1	正侧平方、负侧不变 c=5	experiment/linear-square-ablation	PickScore	正侧按平方分配S+；负侧保留原Δw；映射后统一乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=5"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan09_square_positive_scale5.sh	sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4	09	新实验	bash scripts/experiment_plans/linear_square_ablation/run_plan09_square_positive_scale5.sh	outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan09_square_positive_scale5_kl1e-4	本地待审阅，尚未提交推送	待运行	高	"设计原因：与Run01比较正侧平方；与Run05比较负侧保留原值还是平方。
+同一预训练模型起跑；同配置已有完整checkpoint时自动续跑。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"
+C1.2	正侧平方、负侧不变 c=20	experiment/linear-square-ablation	PickScore	正侧按平方分配S+；负侧保留原Δw；映射后统一乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=20"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan10_square_positive_scale20.sh	sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4	10	新实验	bash scripts/experiment_plans/linear_square_ablation/run_plan10_square_positive_scale20.sh	outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan10_square_positive_scale20_kl1e-4	本地待审阅，尚未提交推送	待运行	高	"设计原因：在c20重复上述负侧比较，检查形状与c的耦合。
+同一预训练模型起跑；同配置已有完整checkpoint时自动续跑。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"
+D1	正侧平方、负侧均匀 c=5	experiment/linear-square-ablation	PickScore	正侧按平方分配S+；原负样本各取−S−/n−，不改变正负划分；映射后统一乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=5"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan11_square_positive_uniform_negative_scale5.sh	sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4	11	新实验	bash scripts/experiment_plans/linear_square_ablation/run_plan11_square_positive_uniform_negative_scale5.sh	outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan11_square_positive_uniform_negative_scale5_kl1e-4	本地待审阅，尚未提交推送	待运行	中	"设计原因：与Run09/05比较负侧均匀、原值、平方三种分配，正侧和c均相同。
+同一预训练模型起跑；同配置已有完整checkpoint时自动续跑。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"
+D2	正侧平方、负侧均匀 c=20	experiment/linear-square-ablation	PickScore	正侧按平方分配S+；原负样本各取−S−/n−，不改变正负划分；映射后统一乘c。	"默认A6000 16卡（双机各8卡）；可通过--layout切换
+KL=1e-4; lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+variance gate=false; 每卡batch=6
+48组×24图=1152图/轮；每轮1次更新尝试
+rollout batches=12；梯度累积=12
+总步数1000（global_step，含AMP跳过的尝试）；eval每10步/save每30步
+c=20"	scripts/experiment_plans/step1/train_nft_sd3_ours-singleloss-AWR.py	scripts/experiment_plans/linear_square_ablation/run_plan12_square_positive_uniform_negative_scale20.sh	sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4	12	新实验	bash scripts/experiment_plans/linear_square_ablation/run_plan12_square_positive_uniform_negative_scale20.sh	outputs/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4	logs/public/experiment_plans/linear_square_ablation/sd35_pickscore_a6000_16gpu_plan12_square_positive_uniform_negative_scale20_kl1e-4	本地待审阅，尚未提交推送	待运行	中	"设计原因：在c20重复负侧三种分配比较，与Run10/06对照。
+同一预训练模型起跑；同配置已有完整checkpoint时自动续跑。 新入口完成训练后额外执行末次eval并保存完整checkpoint。"

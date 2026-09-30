@@ -39,7 +39,8 @@ from peft import LoraConfig, get_peft_model, PeftModel
 import random
 from torch.utils.data import Dataset, DataLoader, Sampler
 from flow_grpo.ema import EMAModuleWrapper
-from flow_grpo.mass_shift import square_both_sides
+from flow_grpo.mass_shift import square_both_sides, square_positive_shifts, square_positive_uniform_negative
+from flow_grpo.target_scale import TargetScaleSchedule, validate_resume_schedule
 from ml_collections import config_flags
 from torch.cuda.amp import GradScaler, autocast as torch_autocast
 
@@ -63,10 +64,17 @@ flags.DEFINE_float(
 flags.DEFINE_enum(
     "mass_shift_transform",
     "none",
-    ["none", "square_both"],
-    "Step 2 Scheme 2: square both signs within each prompt group, preserving "
-    "each sign's mass and bounding negative shifts at -1. none preserves Step 1.",
+    ["none", "square_both", "square_positive", "square_positive_uniform_negative"],
+    "Groupwise mass redistribution: square both signs, square positives only, "
+    "or square positives and uniformly allocate negative mass. none preserves Step 1.",
 )
+flags.DEFINE_enum("target_scale_schedule", "constant", ["constant", "linear_decay"],
+                  "Schedule for c indexed by global optimizer-attempt step, including AMP skips.")
+flags.DEFINE_float("target_scale_final", None, "Final c for the linear_decay schedule.")
+flags.DEFINE_integer("target_scale_decay_start", 400, "First global step of target-scale decay.")
+flags.DEFINE_integer("target_scale_decay_end", 600, "Global step at which target-scale decay ends.")
+flags.DEFINE_bool("final_eval_and_save", False, "Evaluate and save after the last training epoch.")
+flags.DEFINE_bool("require_resume", False, "Fail if no complete checkpoint is available to resume.")
 flags.DEFINE_bool(
     "awr_variance_gate",
     True,
@@ -168,7 +176,8 @@ def _find_latest_checkpoint(search_dir, config):
 
 
 def _validate_resume_objective(
-    training_state, reward_mapping, linear_target_scale, mass_shift_transform="none"
+    training_state, reward_mapping, linear_target_scale, mass_shift_transform="none",
+    target_scale_schedule=None,
 ):
     # Legacy checkpoints predate target scaling, so their scale is 1.
     saved_scale = training_state.get("linear_target_scale", 1.0)
@@ -187,9 +196,13 @@ def _validate_resume_objective(
             f"mass_shift_transform={mass_shift_transform}. "
             "Use a separate save_dir and clear resume_from to start a new experiment."
         )
+    validate_resume_schedule(
+        training_state,
+        target_scale_schedule if target_scale_schedule is not None else TargetScaleSchedule(linear_target_scale),
+    )
 
 
-def resolve_resume_checkpoint(config, rank):
+def resolve_resume_checkpoint(config, rank, target_scale_schedule=None):
     requested_path = str(config.resume_from).strip()
     search_dir = requested_path or config.save_dir
     resolution = {"path": "", "error": ""}
@@ -197,8 +210,8 @@ def resolve_resume_checkpoint(config, rank):
     if is_main_process(rank):
         try:
             checkpoint_path = _find_latest_checkpoint(search_dir, config)
-            if requested_path and not checkpoint_path:
-                resolution["error"] = f"No complete checkpoint found at or under: {requested_path}"
+            if (requested_path or FLAGS.require_resume) and not checkpoint_path:
+                resolution["error"] = f"No complete checkpoint found at or under: {search_dir}"
             else:
                 if checkpoint_path:
                     training_state = torch.load(
@@ -207,7 +220,13 @@ def resolve_resume_checkpoint(config, rank):
                     _validate_resume_objective(
                         training_state, FLAGS.reward_mapping, FLAGS.linear_target_scale,
                         FLAGS.mass_shift_transform,
+                        target_scale_schedule,
                     )
+                    if training_state.get("epoch", 0) > config.num_epochs:
+                        raise ValueError(
+                            f"Checkpoint epoch {training_state['epoch']} exceeds the requested "
+                            f"training budget of {config.num_epochs} epochs"
+                        )
                 resolution["path"] = checkpoint_path
         except Exception as error:
             resolution["error"] = f"Failed to resolve resume checkpoint from {search_dir}: {error}"
@@ -378,10 +397,15 @@ def compute_flowawr_advantages(
         raise ValueError("group_size must be at least 2 and numerical floors must be positive")
     if reward_mapping not in ("exponential", "linear"):
         raise ValueError(f"Unknown reward mapping: {reward_mapping!r}")
-    if mass_shift_transform not in ("none", "square_both"):
+    transforms = {
+        "square_both": square_both_sides,
+        "square_positive": square_positive_shifts,
+        "square_positive_uniform_negative": square_positive_uniform_negative,
+    }
+    if mass_shift_transform != "none" and mass_shift_transform not in transforms:
         raise ValueError(f"Unknown mass shift transform: {mass_shift_transform!r}")
-    if mass_shift_transform == "square_both" and (reward_mapping != "linear" or variance_gate):
-        raise ValueError("square_both requires reward_mapping=linear and variance_gate=False")
+    if mass_shift_transform != "none" and (reward_mapping != "linear" or variance_gate):
+        raise ValueError(f"{mass_shift_transform} requires reward_mapping=linear and variance_gate=False")
 
     gamma = max(float(rewards.std()), gamma_floor) if reward_mapping == "exponential" else None
     advantages = np.empty_like(rewards)
@@ -413,12 +437,12 @@ def compute_flowawr_advantages(
 
     raw_advantage_std = float(advantages.std())
     shift_stats = {}
-    if mass_shift_transform == "square_both":
+    if mass_shift_transform != "none":
         raw_advantages = advantages.copy()
         positive_mass_error = negative_mass_error = zero_sum_error = 0.0
         for indices in groups.values():
             original = raw_advantages[indices]
-            transformed = square_both_sides(original)
+            transformed = transforms[mass_shift_transform](original)
             advantages[indices] = transformed
             positive_mass_error = max(
                 positive_mass_error,
@@ -462,6 +486,20 @@ def compute_flowawr_advantages(
         stats["negative_reward_ratio"] = float(np.mean(rewards < 0.0))
         stats["zero_weight_group_ratio"] = zero_weight_groups / len(groups)
     stats.update(shift_stats)
+    # Compute these from globally gathered, transformed shifts, for every
+    # variant. A side with no mass contributes zero to the mean top-1 share.
+    # The target coefficient c is applied later, so it scales side mass but
+    # leaves each side's normalized top-1 share unchanged.
+    for side, sign in (("positive", 1.0), ("negative", -1.0)):
+        masses, top1_shares = [], []
+        for indices in groups.values():
+            magnitudes = np.maximum(sign * advantages[indices], 0.0)
+            mass = float(magnitudes.sum())
+            masses.append(mass)
+            top1_shares.append(float(magnitudes.max() / mass) if mass > 0.0 else 0.0)
+        stats[f"shift/{side}_mass_mean"] = float(np.mean(masses))
+        stats[f"shift/{side}_top1_share_mean"] = float(np.mean(top1_shares))
+        stats[f"shift/empty_{side}_group_ratio"] = float(np.mean(np.asarray(masses) == 0.0))
     return advantages.astype(np.float32), stats
 
 
@@ -585,7 +623,8 @@ def eval_fn(
 
 
 def save_ckpt(
-    save_dir, transformer_ddp, global_step, rank, ema, config, optimizer, scaler, epoch, stat_tracker=None
+    save_dir, transformer_ddp, global_step, rank, ema, config, optimizer, scaler, epoch, stat_tracker=None,
+    target_scale_schedule=None, successful_optimizer_updates=0, optimizer_count_start_step=0,
 ):
     if is_main_process(rank):
         save_root = os.path.join(save_dir, "checkpoints", f"checkpoint-{global_step}")
@@ -622,6 +661,12 @@ def save_ckpt(
             "reward_mapping": FLAGS.reward_mapping,
             "linear_target_scale": FLAGS.linear_target_scale,
             "mass_shift_transform": FLAGS.mass_shift_transform,
+            "target_scale_schedule": (
+                target_scale_schedule if target_scale_schedule is not None
+                else TargetScaleSchedule(FLAGS.linear_target_scale)
+            ).metadata(),
+            "successful_optimizer_updates": successful_optimizer_updates,
+            "optimizer_count_start_step": optimizer_count_start_step,
         }
         torch.save(training_state, os.path.join(save_root, "training_state.pt"))
 
@@ -642,6 +687,69 @@ def save_ckpt(
         logger.info(f"Saved checkpoint to {save_root}")
 
 
+def _optimizer_step_with_diagnostics(
+    transformer_ddp, trainable_parameters, optimizer, scaler, mixed_precision_dtype,
+    max_grad_norm, global_step, rank,
+):
+    """Perform the original unscale/clip/step sequence and measure its result.
+
+    DDP has already averaged the gradients. Parameter snapshots cover all
+    optimized parameters on rank 0 every ten attempt steps, adding one device
+    copy of the trainable LoRA parameters on those steps. No forward graph is
+    retained. The returned parameter-update norm is only present on rank 0.
+    """
+    uses_scaler = mixed_precision_dtype == torch.float16
+    scale_before = float(scaler.get_scale()) if uses_scaler else 1.0
+    if uses_scaler:
+        scaler.unscale_(optimizer)
+    # Preserve the original parameter iterator and exactly one clipping call.
+    grad_norm = torch.nn.utils.clip_grad_norm_(transformer_ddp.module.parameters(), max_grad_norm)
+    clip_factor = (max_grad_norm / (grad_norm.detach() + 1e-6)).clamp(max=1.0)
+    before = None
+    if is_main_process(rank) and global_step % 10 == 0:
+        before = [parameter.detach().clone() for parameter in trainable_parameters]
+    if uses_scaler:
+        scaler.step(optimizer)
+    else:
+        optimizer.step()
+    if uses_scaler:
+        scaler.update()
+    scale_after = float(scaler.get_scale()) if uses_scaler else 1.0
+    # Standard GradScaler backs its scale off exactly when it skips a step.
+    step_skipped = uses_scaler and scale_after < scale_before
+    parameter_update_l2 = None
+    if before is not None:
+        with torch.no_grad():
+            squared_updates = [
+                (parameter.detach().float() - previous.float()).square().sum(dtype=torch.float64)
+                for parameter, previous in zip(trainable_parameters, before, strict=True)
+            ]
+            parameter_update_l2 = torch.stack(squared_updates).sum().sqrt().detach()
+        del before
+    optimizer.zero_grad()
+    return {
+        "grad_norm_before_clip": grad_norm.detach(),
+        "grad_clip_factor": clip_factor.detach(),
+        "grad_clip_applied": (clip_factor < 1.0).float().detach(),
+        "grad_nonfinite": (~torch.isfinite(grad_norm)).float().detach(),
+        "amp_scale_before": scale_before,
+        "amp_scale": scale_after,
+        "amp_step_skipped": float(step_skipped),
+    }, parameter_update_l2
+
+
+def _complete_update_metrics(reduced_log_info, successful_optimizer_updates):
+    """Complete diagnostics after means have been reduced across all ranks."""
+    # Taking sqrt of the global correction MSE gives the global RMS; an
+    # average of rank-local RMSs would report a different quantity.
+    reduced_log_info["correction_rms"] = float(np.sqrt(reduced_log_info["correction_norm"]))
+    skip_fraction = reduced_log_info["amp_step_skipped"]
+    reduced_log_info["amp_skip_rank_fraction"] = skip_fraction
+    any_rank_skipped = skip_fraction > 0.0
+    reduced_log_info["amp_step_skipped"] = int(any_rank_skipped)
+    return successful_optimizer_updates + int(not any_rank_skipped)
+
+
 def main(_):
     config = FLAGS.config
     linear_target_scale = FLAGS.linear_target_scale
@@ -649,6 +757,15 @@ def main(_):
         raise ValueError("linear_target_scale must be finite and strictly positive")
     if FLAGS.reward_mapping != "linear" and linear_target_scale != 1.0:
         raise ValueError("linear_target_scale != 1 requires reward_mapping=linear")
+    target_scale_schedule = TargetScaleSchedule(
+        initial_scale=linear_target_scale,
+        mode=FLAGS.target_scale_schedule,
+        final_scale=FLAGS.target_scale_final,
+        start_step=FLAGS.target_scale_decay_start,
+        end_step=FLAGS.target_scale_decay_end,
+    )
+    if FLAGS.reward_mapping != "linear" and FLAGS.target_scale_schedule != "constant":
+        raise ValueError("A nonconstant target-scale schedule requires reward_mapping=linear")
     if not config.use_lora:
         raise ValueError("This FlowAWR script requires LoRA for the old-policy adapter")
     if config.sample.guidance_scale != 1.0 or not config.sample.deterministic:
@@ -659,10 +776,10 @@ def main(_):
         raise ValueError("train.timestep_fraction must be in (0, 1]")
     rule_reward = any(name in config.reward_fn for name in ("ocr", "geneval"))
     variance_gate = FLAGS.awr_variance_gate and rule_reward
-    if FLAGS.mass_shift_transform == "square_both":
+    if FLAGS.mass_shift_transform != "none":
         if FLAGS.reward_mapping != "linear" or variance_gate:
             raise ValueError(
-                "square_both requires reward_mapping=linear "
+                f"{FLAGS.mass_shift_transform} requires reward_mapping=linear "
                 "and disabled variance gating to preserve mass and the -1 bound"
             )
 
@@ -672,7 +789,7 @@ def main(_):
     local_rank = int(os.environ["LOCAL_RANK"])
 
     setup_distributed(rank, local_rank, world_size)
-    config.resume_from = resolve_resume_checkpoint(config, rank)
+    config.resume_from = resolve_resume_checkpoint(config, rank, target_scale_schedule)
     device = torch.device(f"cuda:{local_rank}")
 
     unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
@@ -689,6 +806,22 @@ def main(_):
         writer.add_text("reward_mapping", FLAGS.reward_mapping, 0)
         writer.add_scalar("linear_target_scale", linear_target_scale, 0)
         writer.add_text("mass_shift_transform", FLAGS.mass_shift_transform, 0)
+        writer.add_text("target_scale_schedule", json.dumps(target_scale_schedule.metadata(), sort_keys=True), 0)
+        writer.add_text(
+            "diagnostics/parameter_update_l2",
+            "Every 10 optimizer-attempt steps, rank 0 clones every trainable LoRA parameter "
+            "on device before stepping. This adds one trainable-parameter copy at those steps; "
+            "the measured L2 norm includes the actual AdamW update and is zero on AMP skips.",
+            0,
+        )
+        writer.add_text(
+            "diagnostics/sign_mass",
+            "Side masses and top-1 shares are means over globally gathered prompt groups. "
+            "Top-1 share is max(abs(shift)) / sum(abs(shift)) within that sign; an empty "
+            "side contributes 0. Rollout target masses include the current c; side shares "
+            "are unchanged by positive c.",
+            0,
+        )
     logger.info(f"\n{config}")
 
     set_seed(config.seed, rank)  # Pass rank for different seeds per process
@@ -837,6 +970,7 @@ def main(_):
     logger.info("  FlowAWR variance gate = %s (rule reward = %s)", variance_gate, rule_reward)
     logger.info("  Reward mapping = %s", FLAGS.reward_mapping)
     logger.info("  Linear target scale = %s", linear_target_scale)
+    logger.info("  Target-scale schedule = %s", target_scale_schedule.metadata())
     logger.info("  Mass shift transform = %s", FLAGS.mass_shift_transform)
 
     reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
@@ -849,6 +983,8 @@ def main(_):
     # --- Resume from checkpoint ---
     first_epoch = 0
     global_step = 0
+    successful_optimizer_updates = 0
+    optimizer_count_start_step = 0
     if config.resume_from:
         logger.info(f"Resuming from {config.resume_from}")
         # 加载 default 适配器
@@ -905,6 +1041,10 @@ def main(_):
             # Checkpoints are saved before sampling/training the recorded epoch.
             first_epoch = training_state.get("epoch", 0)
             global_step = training_state.get("global_step", 0)
+            successful_optimizer_updates = training_state.get("successful_optimizer_updates", 0)
+            # Legacy checkpoints do not record skipped AMP steps. Start a known
+            # counter here rather than treating all historical attempts as successes.
+            optimizer_count_start_step = training_state.get("optimizer_count_start_step", global_step)
             logger.info(f"Resuming from epoch={first_epoch}, global_step={global_step}")
         else:
             # 尝试从 checkpoint 目录名解析 global_step
@@ -1022,6 +1162,9 @@ def main(_):
                     scaler,
                     epoch,  # 新增参数
                     stat_tracker=stat_tracker if config.per_prompt_stat_tracking else None,
+                    target_scale_schedule=target_scale_schedule,
+                    successful_optimizer_updates=successful_optimizer_updates,
+                    optimizer_count_start_step=optimizer_count_start_step,
                 )
 
             transformer_ddp.module.set_adapter("old")
@@ -1214,6 +1357,9 @@ def main(_):
                 disable=not is_main_process(rank),
             ):
                 current_micro_batch_size = len(train_sample_batch["prompt_embeds"])
+                # global_step advances only after an optimizer attempt, so c is
+                # fixed throughout all microbatches/timesteps in its accumulation.
+                effective_target_scale = target_scale_schedule.value_at(global_step)
 
                 if config.sample.guidance_scale > 1.0:
                     embeds = torch.cat(
@@ -1290,8 +1436,8 @@ def main(_):
                             conditional_velocity - old_velocity
                         )
                         # Scale the target correction after any shift transform, not weights or loss.
-                        if linear_target_scale != 1.0:
-                            correction = linear_target_scale * correction
+                        if effective_target_scale != 1.0:
+                            correction = effective_target_scale * correction
                         target_velocity = old_velocity + correction
 
                     # Negating all three velocities gives the paper's forward-time
@@ -1308,6 +1454,9 @@ def main(_):
                         "old_deviate": (forward_prediction.float() - old_velocity).square().mean().detach(),
                         "correction_norm": correction.square().mean().detach(),
                         "advantage_abs_mean": advantage.abs().mean().detach(),
+                        "target_coefficient_abs_mean": (
+                            effective_target_scale * advantage
+                        ).abs().mean().detach(),
                         "sigma_mean": sigma.mean().detach(),
                     }
 
@@ -1323,23 +1472,23 @@ def main(_):
                         info_accumulated[k_info].append(v_info)
 
                     if current_accumulated_steps % effective_grad_accum_steps == 0:
-                        if mixed_precision_dtype == torch.float16:
-                            scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(transformer_ddp.module.parameters(), config.train.max_grad_norm)
-                        if mixed_precision_dtype == torch.float16:
-                            scaler.step(optimizer)
-                        else:
-                            optimizer.step()
+                        optimizer_diagnostics, parameter_update_l2 = _optimizer_step_with_diagnostics(
+                            transformer_ddp, transformer_trainable_parameters, optimizer, scaler,
+                            mixed_precision_dtype, config.train.max_grad_norm, global_step, rank,
+                        )
                         gradient_update_times += 1
-                        if mixed_precision_dtype == torch.float16:
-                            scaler.update()
-                        optimizer.zero_grad()
 
                         log_info = {k: torch.mean(torch.stack(v_list)).item() for k, v_list in info_accumulated.items()}
+                        log_info.update({key: float(value) for key, value in optimizer_diagnostics.items()})
                         info_tensor = torch.tensor([log_info[k] for k in sorted(log_info.keys())], device=device)
                         dist.all_reduce(info_tensor, op=dist.ReduceOp.AVG)
                         reduced_log_info = {k: info_tensor[ki].item() for ki, k in enumerate(sorted(log_info.keys()))}
+                        successful_optimizer_updates = _complete_update_metrics(
+                            reduced_log_info, successful_optimizer_updates,
+                        )
                         if is_main_process(rank):
+                            if parameter_update_l2 is not None:
+                                reduced_log_info["parameter_update_l2"] = parameter_update_l2
                             log_scalars(
                                 writer,
                                 {
@@ -1347,6 +1496,17 @@ def main(_):
                                     "gradient_update_times": gradient_update_times,
                                     "epoch": epoch,
                                     "inner_epoch": inner_epoch,
+                                    "effective_target_scale": effective_target_scale,
+                                    "successful_optimizer_updates": successful_optimizer_updates,
+                                    "optimizer_count_start_step": optimizer_count_start_step,
+                                    # These are whole-rollout extrema computed
+                                    # from globally gathered advantages.
+                                    "rollout_target_coefficient_min": effective_target_scale * awr_stats["advantage_min"],
+                                    "rollout_target_coefficient_max": effective_target_scale * awr_stats["advantage_max"],
+                                    "rollout_target_positive_mass_mean": effective_target_scale * awr_stats["shift/positive_mass_mean"],
+                                    "rollout_target_negative_mass_mean": effective_target_scale * awr_stats["shift/negative_mass_mean"],
+                                    "rollout_target_positive_top1_share_mean": awr_stats["shift/positive_top1_share_mean"],
+                                    "rollout_target_negative_top1_share_mean": awr_stats["shift/negative_top1_share_mean"],
                                     **reduced_log_info,
                                 },
                                 global_step,
@@ -1371,6 +1531,26 @@ def main(_):
                 transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True
             ):
                 tgt_param.data.copy_(tgt_param.detach().data * decay + src_param.detach().clone().data * (1.0 - decay))
+
+    if FLAGS.final_eval_and_save:
+        # Normal checkpoints describe the next epoch before its rollout. The
+        # terminal checkpoint follows the same convention with epoch=num_epochs.
+        transformer_ddp.module.set_adapter("default")
+        eval_fn(
+            pipeline, test_dataloader, text_encoders, tokenizers, config, device,
+            rank, world_size, global_step, eval_reward_fn, executor,
+            mixed_precision_dtype, ema, transformer_trainable_parameters, writer,
+        )
+        save_ckpt(
+            config.save_dir, transformer_ddp, global_step, rank, ema, config,
+            optimizer, scaler, config.num_epochs,
+            stat_tracker=stat_tracker if config.per_prompt_stat_tracking else None,
+            target_scale_schedule=target_scale_schedule,
+            successful_optimizer_updates=successful_optimizer_updates,
+            optimizer_count_start_step=optimizer_count_start_step,
+        )
+        if world_size > 1:
+            dist.barrier()
 
     if is_main_process(rank):
         writer.flush()

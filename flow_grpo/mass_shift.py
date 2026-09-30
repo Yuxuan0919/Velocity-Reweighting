@@ -57,3 +57,48 @@ def square_both_sides(shifts):
         active = active[~saturated]
 
     return result
+
+
+def square_positive_shifts(shifts):
+    """Square positive shifts, preserving negative values and signed zeros.
+
+    Accept one finite, one-dimensional group of original shifts >= -1 and
+    return a new float64 array. Positive mass is preserved; zero-sum input
+    remains zero-sum, but groups containing only one sign are also accepted.
+    Normalize magnitudes before squaring to avoid unnecessary overflow.
+    Allocations below float64's representable range may round to zero.
+    """
+    shifts = np.asarray(shifts, dtype=np.float64)
+    if shifts.ndim != 1:
+        raise ValueError("shifts must be a one-dimensional prompt group")
+    if not np.all(np.isfinite(shifts)):
+        raise ValueError("shifts must be finite")
+    if np.any(shifts < -1.0):
+        raise ValueError("negative shifts must be at least -1")
+
+    result = shifts.copy()
+    positive = shifts > 0
+    if np.any(positive):
+        magnitudes = shifts[positive]
+        with np.errstate(over="ignore"):
+            mass = magnitudes.sum()
+        if not np.isfinite(mass):
+            raise ValueError("total positive mass must be finite")
+        weights = np.square(magnitudes / magnitudes.max())
+        result[positive] = mass * (weights / weights.sum())
+    return result
+
+
+def square_positive_uniform_negative(shifts):
+    """Square positive shifts and divide negative mass equally within its sign.
+
+    The original negative set receives -S_minus / n_minus. Since each original
+    negative magnitude is at most one, this allocation is also bounded by -1.
+    Both sign totals are preserved, and zero shifts remain unchanged. Any
+    target scale c is applied by the caller after this transformation.
+    """
+    result = square_positive_shifts(shifts)
+    negative = result < 0
+    if np.any(negative):
+        result[negative] = result[negative].sum() / np.count_nonzero(negative)
+    return result
