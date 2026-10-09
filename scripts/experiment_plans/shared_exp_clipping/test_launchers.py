@@ -4,15 +4,22 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import tempfile
 import unittest
 
 
 DIRECTORY = Path(__file__).resolve().parent
+MATRIX = [
+    ("upper", "1", "2"), ("upper", "1", "1"),
+    ("two_sided", "0.6", "2"), ("upper", "1", "3"),
+    ("upper", "1", "0.6"), ("two_sided", "0.3", "2"),
+    ("upper", "1", "5"), ("upper", "1", "0.3"),
+]
 
 
 class FixedLauncherTests(unittest.TestCase):
-    def launch(self, row, *args, environment=None):
-        script = DIRECTORY / f"run_sd3_a6000_16gpu_shared_exp_clip{row}_kl1e-4.sh"
+    def launch(self, row, *args, environment=None, hardware="a6000_16gpu"):
+        script = DIRECTORY / f"run_sd3_{hardware}_shared_exp_clip{row}_kl1e-4.sh"
         env = {"PATH": os.defpath}
         env.update(environment or {})
         return subprocess.run(
@@ -21,13 +28,7 @@ class FixedLauncherTests(unittest.TestCase):
         )
 
     def test_eight_handoff_commands_preserve_the_document_matrix(self):
-        matrix = [
-            ("upper", "1", "2"), ("upper", "1", "1"),
-            ("two_sided", "0.6", "2"), ("upper", "1", "3"),
-            ("upper", "1", "0.6"), ("two_sided", "0.3", "2"),
-            ("upper", "1", "5"), ("upper", "1", "0.3"),
-        ]
-        for row, (variant, negative, positive) in enumerate(matrix, 1):
+        for row, (variant, negative, positive) in enumerate(MATRIX, 1):
             with self.subTest(row=row):
                 result = self.launch(row, "--dry-run")
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -82,6 +83,62 @@ class FixedLauncherTests(unittest.TestCase):
         result = self.launch(1)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("No such file", result.stderr)
+
+    def test_h20_matrix_changes_only_hardware_batching_and_output_paths(self):
+        for row in range(1, 9):
+            with self.subTest(row=row):
+                result = self.launch(row, "--dry-run", hardware="h20_8gpu")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = shlex.split(result.stdout)
+                for flag in ("--standalone", "--nnodes=1", "--nproc_per_node=8"):
+                    self.assertIn(flag, args)
+                self.assertFalse(any(arg.startswith(("--node_rank=", "--master_addr=", "--master_port=")) for arg in args))
+                self.assertIn("--config.sample.num_batches_per_epoch=24", args)
+                self.assertIn("--config.train.gradient_accumulation_steps=24", args)
+                self.assertIn(f"--config.run_name=sd35_pickscore_h20_8gpu_shared_exp_clip{row}_kl1e-4", args)
+                # Compare the complete trainer argv: only batching and hardware
+                # labels in output paths may differ from the checked A6000 run.
+                baseline = shlex.split(self.launch(row, "--dry-run").stdout)
+                baseline = baseline[next(i for i, arg in enumerate(baseline) if arg.startswith("--config=")):]
+                normalized = [arg.replace("h20_8gpu", "a6000_16gpu") for arg in args]
+                normalized = [
+                    arg.replace("num_batches_per_epoch=24", "num_batches_per_epoch=12")
+                       .replace("gradient_accumulation_steps=24", "gradient_accumulation_steps=12")
+                    for arg in normalized
+                ]
+                normalized = normalized[next(i for i, arg in enumerate(normalized) if arg.startswith("--config=")):]
+                self.assertEqual(normalized, baseline)
+
+    def test_h20_is_standalone_despite_inherited_distributed_settings(self):
+        result = self.launch(6, "--dry-run", hardware="h20_8gpu", environment={
+            "NNODES": "2", "NODE_RANK": "1", "SENSECORE_PYTORCH_NODE_RANK": "1",
+            "MASTER_ADDR": "192.0.2.10", "CLIP_RUN": "1", "TASK": "ocr",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = shlex.split(result.stdout)
+        self.assertIn("--standalone", args)
+        self.assertIn("--nnodes=1", args)
+        self.assertIn("--shared_clip_epsilon_minus=0.3", args)
+        self.assertIn("--config.train.gradient_accumulation_steps=24", args)
+
+    def test_h20_actual_command_reaches_torchrun_without_platform_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            (temporary / "repo").mkdir()
+            binaries = temporary / "bin"
+            binaries.mkdir()
+            (binaries / "activate").write_text("# Test conda activation; no environment changes.\n")
+            torchrun = binaries / "torchrun"
+            torchrun.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            torchrun.chmod(0o755)
+            result = self.launch(1, hardware="h20_8gpu", environment={
+                "PATH": f"{binaries}:{os.defpath}",
+                "CONDA_ROOT": str(temporary), "REPO_DIR": str(temporary / "repo"),
+            })
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--standalone", result.stdout.splitlines())
+            self.assertIn("--nnodes=1", result.stdout.splitlines())
+            self.assertIn("--config.train.gradient_accumulation_steps=24", result.stdout.splitlines())
 
 
 if __name__ == "__main__":
