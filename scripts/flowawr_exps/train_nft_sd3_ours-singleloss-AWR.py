@@ -25,6 +25,7 @@ import logging
 from diffusers import StableDiffusion3Pipeline
 import numpy as np
 import flow_grpo.rewards
+from flow_grpo.shared_coefficient_clipping import compute_shared_exp_shifts
 from flow_grpo.stat_tracking import PerPromptStatTracker
 from flow_grpo.diffusers_patch.pipeline_with_logprob import pipeline_with_logprob
 from flow_grpo.diffusers_patch.train_dreambooth_lora_sd3 import encode_prompt
@@ -54,6 +55,12 @@ flags.DEFINE_bool(
 )
 flags.DEFINE_float("awr_variance_floor", 1e-2, "Lower bound for the advantage std in variance gating.")
 flags.DEFINE_float("awr_gamma_floor", 1e-6, "Numerical lower bound for the rollout reward std.")
+flags.DEFINE_enum(
+    "shared_clip_variant", "off", ["off", "unclipped", "upper", "two_sided"],
+    "Shared-coefficient exponential experiment (c=alpha=1); off preserves the existing FlowAWR run.",
+)
+flags.DEFINE_float("shared_clip_epsilon_plus", 2.0, "Positive bound on the final mass shift b.")
+flags.DEFINE_float("shared_clip_epsilon_minus", 1.0, "Negative bound magnitude for two_sided clipping.")
 
 logger = logging.getLogger(__name__)
 
@@ -538,6 +545,14 @@ def main(_):
         raise ValueError("train.timestep_fraction must be in (0, 1]")
     rule_reward = any(name in config.reward_fn for name in ("ocr", "geneval"))
     variance_gate = FLAGS.awr_variance_gate and rule_reward
+    shared_clipping = FLAGS.shared_clip_variant != "off"
+    if shared_clipping:
+        if FLAGS.awr_variance_gate or FLAGS.awr_gamma_floor != 1e-6:
+            raise ValueError("Shared clipping requires --awr_variance_gate=false and --awr_gamma_floor=1e-6")
+        if not np.isfinite(FLAGS.shared_clip_epsilon_plus) or FLAGS.shared_clip_epsilon_plus <= 0:
+            raise ValueError("shared_clip_epsilon_plus must be finite and positive")
+        if not np.isfinite(FLAGS.shared_clip_epsilon_minus) or not 0 < FLAGS.shared_clip_epsilon_minus <= 1:
+            raise ValueError("shared_clip_epsilon_minus must be in (0, 1]")
 
     # --- Distributed Setup ---
     rank = int(os.environ["RANK"])
@@ -705,6 +720,13 @@ def main(_):
     logger.info(f"  Number of gradient updates per inner epoch = {samples_per_epoch // total_train_batch_size}")
     logger.info(f"  Number of inner epochs = {config.train.num_inner_epochs}")
     logger.info("  FlowAWR variance gate = %s (rule reward = %s)", variance_gate, rule_reward)
+    if shared_clipping:
+        logger.info(
+            "  Shared clipping: variant=%s, epsilon_minus=%s, epsilon_plus=%s, c=alpha=1",
+            FLAGS.shared_clip_variant, FLAGS.shared_clip_epsilon_minus, FLAGS.shared_clip_epsilon_plus,
+        )
+        if writer is not None:
+            writer.add_text("shared_clip/variant", FLAGS.shared_clip_variant, 0)
 
     reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
     eval_reward_fn = getattr(flow_grpo.rewards, "multi_score")(device, config.reward_fn)  # Pass device
@@ -977,15 +999,28 @@ def main(_):
 
         rollout_batch_ids_all = gather_tensor_to_all(collated_samples["rollout_batch_ids"], world_size).numpy()
         prompt_indices_all = gather_tensor_to_all(collated_samples["prompt_indices"], world_size).numpy()
-        awr_advantages, awr_stats = compute_flowawr_advantages(
-            gathered_rewards_dict["avg"][:, 0],
-            rollout_batch_ids_all,
-            prompt_indices_all,
-            group_size=config.sample.num_image_per_prompt,
-            gamma_floor=FLAGS.awr_gamma_floor,
-            variance_gate=variance_gate,
-            variance_floor=FLAGS.awr_variance_floor,
-        )
+        if shared_clipping:
+            # Full global rollout supplies sigma_R; normalize and clip each
+            # complete group before rank slicing or training minibatch shuffling.
+            awr_advantages, awr_stats = compute_shared_exp_shifts(
+                gathered_rewards_dict["avg"][:, 0],
+                rollout_batch_ids_all,
+                prompt_indices_all,
+                group_size=config.sample.num_image_per_prompt,
+                variant=FLAGS.shared_clip_variant,
+                epsilon_plus=FLAGS.shared_clip_epsilon_plus,
+                epsilon_minus=FLAGS.shared_clip_epsilon_minus,
+            )
+        else:
+            awr_advantages, awr_stats = compute_flowawr_advantages(
+                gathered_rewards_dict["avg"][:, 0],
+                rollout_batch_ids_all,
+                prompt_indices_all,
+                group_size=config.sample.num_image_per_prompt,
+                gamma_floor=FLAGS.awr_gamma_floor,
+                variance_gate=variance_gate,
+                variance_floor=FLAGS.awr_variance_floor,
+            )
 
         if stat_tracker is not None:
             prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
@@ -1015,7 +1050,8 @@ def main(_):
             stat_tracker.clear()
 
         if is_main_process(rank):
-            log_scalars(writer, {f"awr/{key}": value for key, value in awr_stats.items()}, global_step)
+            stats_prefix = "shared_clip" if shared_clipping else "awr"
+            log_scalars(writer, {f"{stats_prefix}/{key}": value for key, value in awr_stats.items()}, global_step)
             logger.info("FlowAWR rollout: %s", awr_stats)
 
         # Every rank sees the same gathered order: rank-major, then local sample order.
@@ -1147,6 +1183,8 @@ def main(_):
                                 )[0]
                             transformer_ddp.module.set_adapter("default")
 
+                    # In shared-clipping mode this frozen rollout quantity is b,
+                    # already scaled once by c_eff; do not clip/normalize it again.
                     advantage = train_sample_batch["advantages"].float()
                     with torch.no_grad():
                         conditional_velocity = noise - x0.float()
