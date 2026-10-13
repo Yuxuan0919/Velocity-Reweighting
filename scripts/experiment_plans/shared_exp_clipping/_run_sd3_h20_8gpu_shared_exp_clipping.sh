@@ -17,6 +17,8 @@ case "${CLIP_ROW}" in
   6) VARIANT=two_sided; EPSILON_MINUS=0.3; EPSILON_PLUS=2 ;;
   7) VARIANT=upper; EPSILON_MINUS=1; EPSILON_PLUS=5 ;;
   8) VARIANT=upper; EPSILON_MINUS=1; EPSILON_PLUS=0.3 ;;
+  9) VARIANT=upper; EPSILON_MINUS=1; EPSILON_PLUS=7 ;;
+  10) VARIANT=upper; EPSILON_MINUS=1; EPSILON_PLUS=9 ;;
   *) echo "Unknown shared-clipping experiment: ${CLIP_ROW}" >&2; exit 2 ;;
 esac
 
