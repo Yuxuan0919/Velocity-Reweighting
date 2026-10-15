@@ -1017,6 +1017,11 @@ def main(_):
                         for k, v in gathered_rewards_dict.items()
                         if "_strict_accuracy" not in k and "_accuracy" not in k
                     },
+                    **{
+                        f"reward_samples/{k}/{i}": float(value)
+                        for k in ("avg", *config.reward_fn)
+                        for i, value in enumerate(gathered_rewards_dict[k].reshape(-1))
+                    },
                 },
                 global_step,
             )
