@@ -5,7 +5,7 @@ REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 CONDA_ROOT="${CONDA_ROOT:-/inspire/qb-ilm/project/chineseculture/public/yuxuan/miniconda3}"
 CONDA_ENV="${CONDA_ENV:-DiffusionNFT}"
 SD3_MODEL="${SD3_MODEL:-${REPO_DIR}/pretrained_models/sd3.5-medium}"
-TRAIN_SCRIPT="scripts/train_nft_sd3_ours-singleloss-AWR.py"
+TRAIN_SCRIPT="scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py"
 
 # Match the H200 launcher: PickScore by default, with variance gating for
 # OCR/GenEval unless AWR_VARIANCE_GATE is explicitly set.
