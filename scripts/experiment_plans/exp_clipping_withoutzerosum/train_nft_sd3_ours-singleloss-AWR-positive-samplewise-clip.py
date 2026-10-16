@@ -350,9 +350,12 @@ def compute_flowawr_advantages(
         weights = np.exp(logits - logits.max())
         advantages[indices] = weights / weights.mean() - 1.0
 
+    raw_delta = advantages.copy()
     raw_advantage_std = float(advantages.std())
     if variance_gate:
         advantages /= max(raw_advantage_std, variance_floor)
+    baseline_advantage = advantages.copy()
+    sample_scales = np.full_like(advantages, c)
 
     # Apply c first, then clip individual positive updates without rescaling peers.
     proposed = c * advantages
@@ -364,6 +367,11 @@ def compute_flowawr_advantages(
     positive_mass = np.array([np.maximum(advantages[idx], 0).sum() for idx in groups.values()])
     negative_mass = np.array([np.maximum(-advantages[idx], 0).sum() for idx in groups.values()])
     group_shift_sums = positive_mass - negative_mass
+    # Zero advantages retain the nominal scale, without a 0/0 ratio.
+    np.divide(advantages, baseline_advantage, out=sample_scales, where=clipped & (baseline_advantage != 0))
+    before = c * baseline_advantage
+    used = advantages.astype(np.float32).astype(np.float64)
+    effective_c = sample_scales * baseline_scale
     stats = {
         "shared_clip_c": float(c),
         "shared_clip_epsilon_plus": float(epsilon_plus),
@@ -387,6 +395,45 @@ def compute_flowawr_advantages(
         "zero_std_group_ratio": zero_std_groups / len(groups),
         "group_count": len(groups),
         "variance_gate": int(variance_gate),
+        # Rollout summaries; keep individual group statistics below.
+        **{
+            f"{name}_{stat}": float(reduction(values))
+            for name, values in (
+                ("raw_weight", 1.0 + raw_delta), ("raw_delta", raw_delta),
+                ("b_before", before), ("b_used", used),
+                ("intervention_delta", advantages - before),
+                ("c_after", effective_c), ("scale_after_gate", sample_scales),
+            )
+            for stat, reduction in (("mean", np.mean), ("std", np.std), ("min", np.min), ("max", np.max))
+        },
+        # Per-group coefficient sums and positive/negative mass.
+        **{
+            f"groups/{key}/{batch_id}_{prompt_id}": float(value)
+            for (batch_id, prompt_id), indices in groups.items()
+            for key, value in {
+                "raw_weight_sum": (1.0 + raw_delta[indices]).sum(),
+                "raw_delta_sum": raw_delta[indices].sum(),
+                "b_before_sum": before[indices].sum(), "b_after_sum": advantages[indices].sum(),
+                "b_used_sum": used[indices].sum(), "c_after_sum": effective_c[indices].sum(),
+                "positive_mass_before": np.maximum(before[indices], 0).sum(),
+                "negative_mass_before": np.maximum(-before[indices], 0).sum(),
+                "positive_mass_after": np.maximum(used[indices], 0).sum(),
+                "negative_mass_after": np.maximum(-used[indices], 0).sum(),
+                "baseline_scale": baseline_scale, "c_requested": c,
+            }.items()
+        },
+        # Samplewise clipping can give different scales within a group.
+        **{
+            f"groups/{side}scale_{name}/{batch_id}_{prompt_id}": float(reduction(sample_scales[indices][mask]))
+            for (batch_id, prompt_id), indices in groups.items()
+            for side, mask in (
+                ("", np.ones(len(indices), dtype=bool)),
+                ("positive_", raw_delta[indices] > 0),
+                ("negative_", raw_delta[indices] < 0),
+            )
+            if mask.any()
+            for name, reduction in (("min", np.min), ("mean", np.mean), ("max", np.max))
+        },
     }
     return advantages.astype(np.float32), stats
 
@@ -1010,11 +1057,6 @@ def main(_):
                         for k, v in gathered_rewards_dict.items()
                         if "_strict_accuracy" not in k and "_accuracy" not in k
                     },
-                    **{
-                        f"reward_samples/{k}/{i}": float(value)
-                        for k in ("avg", *config.reward_fn)
-                        for i, value in enumerate(gathered_rewards_dict[k].reshape(-1))
-                    },
                 },
                 global_step,
             )
@@ -1062,7 +1104,7 @@ def main(_):
 
         if is_main_process(rank):
             log_scalars(writer, {f"awr/{key}": value for key, value in awr_stats.items()}, global_step)
-            logger.info("FlowAWR rollout: %s", awr_stats)
+            logger.info("FlowAWR rollout: %s", {key: value for key, value in awr_stats.items() if "/" not in key})
 
         # Every rank sees the same gathered order: rank-major, then local sample order.
         samples_per_gpu = collated_samples["timesteps"].shape[0]
@@ -1208,16 +1250,26 @@ def main(_):
                     policy_loss = (forward_prediction.float() - target_velocity).square().flatten(1).mean(1).mean()
                     kl_div_loss = (forward_prediction.float() - ref_forward_prediction.float()).square().flatten(1).mean(1).mean()
                     loss = policy_loss + config.train.beta * kl_div_loss
+                    residual = conditional_velocity - old_velocity
+                    current_old = forward_prediction.detach().float() - old_velocity
                     loss_terms = {
                         "policy_loss": policy_loss.detach(),
                         "kl_div_loss": kl_div_loss.detach(),
                         "kl_div": kl_div_loss.detach(),
                         "old_kl_div": (old_velocity - ref_forward_prediction.float()).square().mean().detach(),
                         "total_loss": loss.detach(),
-                        "old_deviate": (forward_prediction.float() - old_velocity).square().mean().detach(),
+                        "old_deviate": current_old.square().mean(),
                         "correction_norm": correction.square().mean().detach(),
                         "advantage_abs_mean": advantage.abs().mean().detach(),
                         "sigma_mean": sigma.mean().detach(),
+                        # Mean-square magnitudes: old_residual_mse, correction_norm, old_deviate.
+                        # These summaries use the existing accumulation and DDP reduction below.
+                        "old_residual_mse": residual.square().mean(),
+                        "old_residual_mean": residual.mean(),
+                        "correction_mean": correction.mean(),
+                        "current_minus_old_mean": current_old.mean(),
+                        "current_old_dot_residual": (current_old * residual).flatten(1).sum(1).mean(),
+                        "current_old_dot_correction": (current_old * correction).flatten(1).sum(1).mean(),
                     }
 
                     # Scale loss for gradient accumulation and DDP (DDP averages grads, so no need to divide by world_size here)
