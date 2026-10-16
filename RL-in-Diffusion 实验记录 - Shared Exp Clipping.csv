@@ -1,0 +1,191 @@
+﻿标识号码,类别,Git分支,评估指标,方法说明,配置（按实际条件修改）,对应核心代码,启动脚本,保存名称,,,,,,,状态,优先级,结果说明,,,
+E1,"Exp Shared-Coefficient Clipping: S+ 上界裁剪 (epsilon-=1, epsilon+=2)",experiment/shared-exp-clipping,PickScore,"AWR指数权重 + 整组共享系数裁剪；sigma_R=max(std_全局rollout(r),1e-6)，w=K*softmax_组内(r/sigma_R)，Delta_w=w-1；d_plus=max_i(max(Delta_w_i,0))，d_minus=max_i(max(-Delta_w_i,0))；c_eff=min(1, epsilon_plus/d_plus)（零分母对应+inf），b=c_eff*Delta_w；v_target=v_old+b*(u-v_old)，u=noise-x0；保持组内sum(b)=0。S+不单独施加负侧裁剪，epsilon_minus=1为天然下界。中等上界裁剪；作为E3/E6双侧实验的共同对照。","A6000 16卡
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+c=1; alpha=1; gamma_floor=1e-6; variance gate=false
+shared_clip_variant=upper
+epsilon_minus=1; epsilon_plus=2（跨轮固定）
+每轮48组×24图=1152图；每卡batch=6
+rollout batches=12; gradient accumulation=12；每轮1次optimizer step
+num_inner_epochs=1；每轮按完整组重算c_eff，训练中固定b
+old平滑更新保持原协议：eta_k=min(0.001*k,0.5)","scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py
+flow_grpo/shared_coefficient_clipping.py",bash scripts/experiment_plans/shared_exp_clipping/run_sd3_a6000_16gpu_shared_exp_clip1_kl1e-4.sh,sd35_pickscore_a6000_16gpu_shared_exp_clip1_kl1e-4,,,,,,,待开始,1,尚未运行。中等上界裁剪；作为E3/E6双侧实验的共同对照。在experiment/shared-exp-clipping分支的仓库根目录直接执行本行bash命令；实验配置已写入脚本。记录PickScore曲线、shared_clip/c_eff_mean、clipped_group_fraction、zero_sum_max_abs，以及相同正阈值下负界0.6/0.3的active_fraction与extra_shrink_mean（按组平均）。U复用条件：variance gate=false且policy loss系数=1。checkpoint目录为outputs/shared_exp_clipping/<保存名称>；日志目录为logs/shared_exp_clipping/<保存名称>。,,,
+E2,"Exp Shared-Coefficient Clipping: S+ 上界裁剪 (epsilon-=1, epsilon+=1)",experiment/shared-exp-clipping,PickScore,"AWR指数权重 + 整组共享系数裁剪；sigma_R=max(std_全局rollout(r),1e-6)，w=K*softmax_组内(r/sigma_R)，Delta_w=w-1；d_plus=max_i(max(Delta_w_i,0))，d_minus=max_i(max(-Delta_w_i,0))；c_eff=min(1, epsilon_plus/d_plus)（零分母对应+inf），b=c_eff*Delta_w；v_target=v_old+b*(u-v_old)，u=noise-x0；保持组内sum(b)=0。S+不单独施加负侧裁剪，epsilon_minus=1为天然下界。比E1更紧的上界；与E1及U比较。","A6000 16卡
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+c=1; alpha=1; gamma_floor=1e-6; variance gate=false
+shared_clip_variant=upper
+epsilon_minus=1; epsilon_plus=1（跨轮固定）
+每轮48组×24图=1152图；每卡batch=6
+rollout batches=12; gradient accumulation=12；每轮1次optimizer step
+num_inner_epochs=1；每轮按完整组重算c_eff，训练中固定b
+old平滑更新保持原协议：eta_k=min(0.001*k,0.5)","scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py
+flow_grpo/shared_coefficient_clipping.py",bash scripts/experiment_plans/shared_exp_clipping/run_sd3_a6000_16gpu_shared_exp_clip2_kl1e-4.sh,sd35_pickscore_a6000_16gpu_shared_exp_clip2_kl1e-4,,,,,,,待开始,2,尚未运行。比E1更紧的上界；与E1及U比较。在experiment/shared-exp-clipping分支的仓库根目录直接执行本行bash命令；实验配置已写入脚本。记录PickScore曲线、shared_clip/c_eff_mean、clipped_group_fraction、zero_sum_max_abs，以及相同正阈值下负界0.6/0.3的active_fraction与extra_shrink_mean（按组平均）。U复用条件：variance gate=false且policy loss系数=1。checkpoint目录为outputs/shared_exp_clipping/<保存名称>；日志目录为logs/shared_exp_clipping/<保存名称>。,,,
+E3,"Exp Shared-Coefficient Clipping: S± 双侧裁剪 (epsilon-=0.6, epsilon+=2)",experiment/shared-exp-clipping,PickScore,"AWR指数权重 + 整组共享系数裁剪；sigma_R=max(std_全局rollout(r),1e-6)，w=K*softmax_组内(r/sigma_R)，Delta_w=w-1；d_plus=max_i(max(Delta_w_i,0))，d_minus=max_i(max(-Delta_w_i,0))；c_eff=min(1, epsilon_plus/d_plus, epsilon_minus/d_minus)（零分母对应+inf），b=c_eff*Delta_w；v_target=v_old+b*(u-v_old)，u=noise-x0；保持组内sum(b)=0。与E1保持相同上界，只增加负侧约束。","A6000 16卡
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+c=1; alpha=1; gamma_floor=1e-6; variance gate=false
+shared_clip_variant=two_sided
+epsilon_minus=0.6; epsilon_plus=2（跨轮固定）
+每轮48组×24图=1152图；每卡batch=6
+rollout batches=12; gradient accumulation=12；每轮1次optimizer step
+num_inner_epochs=1；每轮按完整组重算c_eff，训练中固定b
+old平滑更新保持原协议：eta_k=min(0.001*k,0.5)","scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py
+flow_grpo/shared_coefficient_clipping.py",bash scripts/experiment_plans/shared_exp_clipping/run_sd3_a6000_16gpu_shared_exp_clip3_kl1e-4.sh,sd35_pickscore_a6000_16gpu_shared_exp_clip3_kl1e-4,,,,,,,待开始,3,尚未运行。与E1保持相同上界，只增加负侧约束。在experiment/shared-exp-clipping分支的仓库根目录直接执行本行bash命令；实验配置已写入脚本。记录PickScore曲线、shared_clip/c_eff_mean、clipped_group_fraction、zero_sum_max_abs，以及相同正阈值下负界0.6/0.3的active_fraction与extra_shrink_mean（按组平均）。U复用条件：variance gate=false且policy loss系数=1。checkpoint目录为outputs/shared_exp_clipping/<保存名称>；日志目录为logs/shared_exp_clipping/<保存名称>。,,,
+E6,"Exp Shared-Coefficient Clipping: S± 双侧裁剪 (epsilon-=0.3, epsilon+=2)",experiment/shared-exp-clipping,PickScore,"AWR指数权重 + 整组共享系数裁剪；sigma_R=max(std_全局rollout(r),1e-6)，w=K*softmax_组内(r/sigma_R)，Delta_w=w-1；d_plus=max_i(max(Delta_w_i,0))，d_minus=max_i(max(-Delta_w_i,0))；c_eff=min(1, epsilon_plus/d_plus, epsilon_minus/d_minus)（零分母对应+inf），b=c_eff*Delta_w；v_target=v_old+b*(u-v_old)，u=noise-x0；保持组内sum(b)=0。比E3更紧的负侧约束；与E1/E3比较。","A6000 16卡
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+c=1; alpha=1; gamma_floor=1e-6; variance gate=false
+shared_clip_variant=two_sided
+epsilon_minus=0.3; epsilon_plus=2（跨轮固定）
+每轮48组×24图=1152图；每卡batch=6
+rollout batches=12; gradient accumulation=12；每轮1次optimizer step
+num_inner_epochs=1；每轮按完整组重算c_eff，训练中固定b
+old平滑更新保持原协议：eta_k=min(0.001*k,0.5)","scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py
+flow_grpo/shared_coefficient_clipping.py",bash scripts/experiment_plans/shared_exp_clipping/run_sd3_a6000_16gpu_shared_exp_clip6_kl1e-4.sh,sd35_pickscore_a6000_16gpu_shared_exp_clip6_kl1e-4,,,,,,,待开始,6,尚未运行。比E3更紧的负侧约束；与E1/E3比较。在experiment/shared-exp-clipping分支的仓库根目录直接执行本行bash命令；实验配置已写入脚本。记录PickScore曲线、shared_clip/c_eff_mean、clipped_group_fraction、zero_sum_max_abs，以及相同正阈值下负界0.6/0.3的active_fraction与extra_shrink_mean（按组平均）。U复用条件：variance gate=false且policy loss系数=1。checkpoint目录为outputs/shared_exp_clipping/<保存名称>；日志目录为logs/shared_exp_clipping/<保存名称>。,,,
+E5,"Exp Shared-Coefficient Clipping: S+ 上界裁剪 (epsilon-=1, epsilon+=0.6)",experiment/shared-exp-clipping,PickScore,"AWR指数权重 + 整组共享系数裁剪；sigma_R=max(std_全局rollout(r),1e-6)，w=K*softmax_组内(r/sigma_R)，Delta_w=w-1；d_plus=max_i(max(Delta_w_i,0))，d_minus=max_i(max(-Delta_w_i,0))；c_eff=min(1, epsilon_plus/d_plus)（零分母对应+inf），b=c_eff*Delta_w；v_target=v_old+b*(u-v_old)，u=noise-x0；保持组内sum(b)=0。S+不单独施加负侧裁剪，epsilon_minus=1为天然下界。进一步收紧上界，探索更强裁剪。","A6000 16卡
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+c=1; alpha=1; gamma_floor=1e-6; variance gate=false
+shared_clip_variant=upper
+epsilon_minus=1; epsilon_plus=0.6（跨轮固定）
+每轮48组×24图=1152图；每卡batch=6
+rollout batches=12; gradient accumulation=12；每轮1次optimizer step
+num_inner_epochs=1；每轮按完整组重算c_eff，训练中固定b
+old平滑更新保持原协议：eta_k=min(0.001*k,0.5)","scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py
+flow_grpo/shared_coefficient_clipping.py",bash scripts/experiment_plans/shared_exp_clipping/run_sd3_a6000_16gpu_shared_exp_clip5_kl1e-4.sh,sd35_pickscore_a6000_16gpu_shared_exp_clip5_kl1e-4,,,,,,,待开始,5,尚未运行。进一步收紧上界，探索更强裁剪。在experiment/shared-exp-clipping分支的仓库根目录直接执行本行bash命令；实验配置已写入脚本。记录PickScore曲线、shared_clip/c_eff_mean、clipped_group_fraction、zero_sum_max_abs，以及相同正阈值下负界0.6/0.3的active_fraction与extra_shrink_mean（按组平均）。U复用条件：variance gate=false且policy loss系数=1。checkpoint目录为outputs/shared_exp_clipping/<保存名称>；日志目录为logs/shared_exp_clipping/<保存名称>。,,,
+E4,"Exp Shared-Coefficient Clipping: S+ 上界裁剪 (epsilon-=1, epsilon+=3)",experiment/shared-exp-clipping,PickScore,"AWR指数权重 + 整组共享系数裁剪；sigma_R=max(std_全局rollout(r),1e-6)，w=K*softmax_组内(r/sigma_R)，Delta_w=w-1；d_plus=max_i(max(Delta_w_i,0))，d_minus=max_i(max(-Delta_w_i,0))；c_eff=min(1, epsilon_plus/d_plus)（零分母对应+inf），b=c_eff*Delta_w；v_target=v_old+b*(u-v_old)，u=noise-x0；保持组内sum(b)=0。S+不单独施加负侧裁剪，epsilon_minus=1为天然下界。比E1更宽松的上界；检验较弱裁剪。","A6000 16卡
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+c=1; alpha=1; gamma_floor=1e-6; variance gate=false
+shared_clip_variant=upper
+epsilon_minus=1; epsilon_plus=3（跨轮固定）
+每轮48组×24图=1152图；每卡batch=6
+rollout batches=12; gradient accumulation=12；每轮1次optimizer step
+num_inner_epochs=1；每轮按完整组重算c_eff，训练中固定b
+old平滑更新保持原协议：eta_k=min(0.001*k,0.5)","scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py
+flow_grpo/shared_coefficient_clipping.py",bash scripts/experiment_plans/shared_exp_clipping/run_sd3_a6000_16gpu_shared_exp_clip4_kl1e-4.sh,sd35_pickscore_a6000_16gpu_shared_exp_clip4_kl1e-4,,,,,,,待开始,4,尚未运行。比E1更宽松的上界；检验较弱裁剪。在experiment/shared-exp-clipping分支的仓库根目录直接执行本行bash命令；实验配置已写入脚本。记录PickScore曲线、shared_clip/c_eff_mean、clipped_group_fraction、zero_sum_max_abs，以及相同正阈值下负界0.6/0.3的active_fraction与extra_shrink_mean（按组平均）。U复用条件：variance gate=false且policy loss系数=1。checkpoint目录为outputs/shared_exp_clipping/<保存名称>；日志目录为logs/shared_exp_clipping/<保存名称>。,,,
+E7,"Exp Shared-Coefficient Clipping: S+ 上界裁剪 (epsilon-=1, epsilon+=5)",experiment/shared-exp-clipping,PickScore,"AWR指数权重 + 整组共享系数裁剪；sigma_R=max(std_全局rollout(r),1e-6)，w=K*softmax_组内(r/sigma_R)，Delta_w=w-1；d_plus=max_i(max(Delta_w_i,0))，d_minus=max_i(max(-Delta_w_i,0))；c_eff=min(1, epsilon_plus/d_plus)（零分母对应+inf），b=c_eff*Delta_w；v_target=v_old+b*(u-v_old)，u=noise-x0；保持组内sum(b)=0。S+不单独施加负侧裁剪，epsilon_minus=1为天然下界。宽松上界，检验对少数大正向质量偏移的抑制。","A6000 16卡
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+c=1; alpha=1; gamma_floor=1e-6; variance gate=false
+shared_clip_variant=upper
+epsilon_minus=1; epsilon_plus=5（跨轮固定）
+每轮48组×24图=1152图；每卡batch=6
+rollout batches=12; gradient accumulation=12；每轮1次optimizer step
+num_inner_epochs=1；每轮按完整组重算c_eff，训练中固定b
+old平滑更新保持原协议：eta_k=min(0.001*k,0.5)","scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py
+flow_grpo/shared_coefficient_clipping.py",bash scripts/experiment_plans/shared_exp_clipping/run_sd3_a6000_16gpu_shared_exp_clip7_kl1e-4.sh,sd35_pickscore_a6000_16gpu_shared_exp_clip7_kl1e-4,,,,,,,待开始,7,尚未运行。宽松上界，检验对少数大正向质量偏移的抑制。在experiment/shared-exp-clipping分支的仓库根目录直接执行本行bash命令；实验配置已写入脚本。记录PickScore曲线、shared_clip/c_eff_mean、clipped_group_fraction、zero_sum_max_abs，以及相同正阈值下负界0.6/0.3的active_fraction与extra_shrink_mean（按组平均）。U复用条件：variance gate=false且policy loss系数=1。checkpoint目录为outputs/shared_exp_clipping/<保存名称>；日志目录为logs/shared_exp_clipping/<保存名称>。,,,
+E8,"Exp Shared-Coefficient Clipping: S+ 上界裁剪 (epsilon-=1, epsilon+=0.3)",experiment/shared-exp-clipping,PickScore,"AWR指数权重 + 整组共享系数裁剪；sigma_R=max(std_全局rollout(r),1e-6)，w=K*softmax_组内(r/sigma_R)，Delta_w=w-1；d_plus=max_i(max(Delta_w_i,0))，d_minus=max_i(max(-Delta_w_i,0))；c_eff=min(1, epsilon_plus/d_plus)（零分母对应+inf），b=c_eff*Delta_w；v_target=v_old+b*(u-v_old)，u=noise-x0；保持组内sum(b)=0。S+不单独施加负侧裁剪，epsilon_minus=1为天然下界。最强上界裁剪，检验整组大幅收缩的代价。","A6000 16卡
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16
+train/eval sample steps:10/40; timestep_fraction=1.0
+c=1; alpha=1; gamma_floor=1e-6; variance gate=false
+shared_clip_variant=upper
+epsilon_minus=1; epsilon_plus=0.3（跨轮固定）
+每轮48组×24图=1152图；每卡batch=6
+rollout batches=12; gradient accumulation=12；每轮1次optimizer step
+num_inner_epochs=1；每轮按完整组重算c_eff，训练中固定b
+old平滑更新保持原协议：eta_k=min(0.001*k,0.5)","scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py
+flow_grpo/shared_coefficient_clipping.py",bash scripts/experiment_plans/shared_exp_clipping/run_sd3_a6000_16gpu_shared_exp_clip8_kl1e-4.sh,sd35_pickscore_a6000_16gpu_shared_exp_clip8_kl1e-4,,,,,,,待开始,8,尚未运行。最强上界裁剪，检验整组大幅收缩的代价。在experiment/shared-exp-clipping分支的仓库根目录直接执行本行bash命令；实验配置已写入脚本。记录PickScore曲线、shared_clip/c_eff_mean、clipped_group_fraction、zero_sum_max_abs，以及相同正阈值下负界0.6/0.3的active_fraction与extra_shrink_mean（按组平均）。U复用条件：variance gate=false且policy loss系数=1。checkpoint目录为outputs/shared_exp_clipping/<保存名称>；日志目录为logs/shared_exp_clipping/<保存名称>。,,,
+E9,AWR Baseline：无裁剪对照（RTX 4090 16卡，KL=1e-4）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，Delta_w_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24。b_i=Delta_w_i；不施加正负阈值，保持组内sum(b)=0（浮点误差除外）。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","RTX 4090 16卡（2节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=12; gradient accumulation=12；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+有效c=1；不启用clipping，无epsilon_plus/epsilon_minus参数；每轮重算b，inner loop内固定。",scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py,bash scripts/flowawr_exps/run_sd3_4090_16gpu_flowawr_kl1e-4.sh,sd35_pickscore_4090_16gpu_flowawr_kl1e-4,,,,,,,待开始,,本轮对照待运行，暂无本轮结果。作为E10/E11/E12的同硬件、同训练配置基线；记录PickScore曲线及advantage幅度。在master分支仓库根目录执行；两节点设置同一MASTER_ADDR为节点0地址，并分别设置NODE_RANK=0/1（也可读取SenseCore节点环境变量）；MASTER_PORT默认29532。以下名称及目录对应脚本默认值；日志运行名会自动追加时间戳。 checkpoint目录为outputs/flowawr/sd35_pickscore_4090_16gpu_flowawr_kl1e-4；日志目录为logs/flowawr/sd35_pickscore_4090_16gpu_flowawr_kl1e-4_<时间戳>。,,,
+E10,Shared Clipping：整组统一缩放、保持零和（epsilon+=10）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，Delta_w_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24。d_plus=max_i(max(Delta_w_i,0))，d_minus=max_i(max(-Delta_w_i,0))；c_eff=min(c,epsilon_plus/d_plus,epsilon_minus/d_minus)，零分母对应+inf；b_i=c_eff*Delta_w_i。正负两侧一起缩小，保持组内sum(b)=0（浮点误差除外）。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","RTX 4090 16卡（2节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=12; gradient accumulation=12；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+c=1; epsilon_plus=10; epsilon_minus=1（跨轮固定）；PickScore下Delta_w>=-1，此设置的负界不会额外缩小；每轮按完整组重算c_eff，inner loop内固定b。",scripts/experiment_plans/shared_exp_clipping/train_nft_sd3_ours-singleloss-AWR-shared-clip-zerosum.py,bash scripts/experiment_plans/shared_exp_clipping/run_sd3_4090_16gpu_shared_clip_zerosum.sh,sd35_pickscore_4090_16gpu_shared-clip-zerosum_c1.0_epsplus10.0_epsminus1.0_kl0.0001,,,,,,,待开始,,待运行，暂无结果。与E11比较负侧随正侧一起缩小的影响；关注c_eff_mean、positive_bound_limited_fraction、negative_bound_limited_fraction。epsilon_minus支持inf关闭负界，但共享系数仍同时作用于正负侧。在master分支仓库根目录执行；两节点设置同一MASTER_ADDR为节点0地址，并分别设置NODE_RANK=0/1（也可读取SenseCore节点环境变量）；MASTER_PORT默认29532。以下名称及目录对应脚本默认值；日志运行名会自动追加时间戳。 checkpoint目录为outputs/shared_exp_clipping/sd35_pickscore_4090_16gpu_shared-clip-zerosum_c1.0_epsplus10.0_epsminus1.0_kl0.0001；日志目录为logs/public/experiment_plans/shared_exp_clipping/sd35_pickscore_4090_16gpu_shared-clip-zerosum_c1.0_epsplus10.0_epsminus1.0_kl0.0001_<时间戳>。,,,
+E11,Positive Shared Clipping：只统一缩放正侧、负侧不变（epsilon+=10）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，Delta_w_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24。d_plus=max_i(max(Delta_w_i,0))；c_plus=min(c,epsilon_plus/d_plus)，零分母对应+inf；Delta_w_i>0时b_i=c_plus*Delta_w_i，否则b_i=c*Delta_w_i。保留正侧内部比例，负侧不随clipping缩小；不再平衡或归一化，不保证组内零和；sum(b)=(c_plus-c)*sum_{Delta_w>0}(Delta_w)<=0。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","RTX 4090 16卡（2节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=12; gradient accumulation=12；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+c=1; epsilon_plus=10（跨轮固定）；无负侧阈值；每轮按完整组重算c_plus，inner loop内固定b。",scripts/experiment_plans/exp_clipping_withoutzerosum/train_nft_sd3_ours-singleloss-AWR-positive-shared-clip.py,bash scripts/experiment_plans/exp_clipping_withoutzerosum/run_sd3_4090_16gpu_positive_shared_clip.sh,sd35_pickscore_4090_16gpu_positive-shared-clip_c1.0_epsplus10.0_kl0.0001,,,,,,,待开始,,待运行，暂无结果。与E10比较保留负侧更新的影响，与E12比较正侧统一缩放和逐样本截断；关注positive_c_eff_mean、negative_c_eff、positive_clipped_group_fraction、正负质量及group_shift_sum_mean。在master分支仓库根目录执行；两节点设置同一MASTER_ADDR为节点0地址，并分别设置NODE_RANK=0/1（也可读取SenseCore节点环境变量）；MASTER_PORT默认29532。以下名称及目录对应脚本默认值；日志运行名会自动追加时间戳。 checkpoint目录为outputs/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_positive-shared-clip_c1.0_epsplus10.0_kl0.0001；日志目录为logs/public/experiment_plans/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_positive-shared-clip_c1.0_epsplus10.0_kl0.0001_<时间戳>。,,,
+E12,Positive Samplewise Clipping：只截断超阈值正样本、负侧不变（epsilon+=10）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，Delta_w_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24。先对所有样本统一乘c，再逐样本截断：b_i=min(c*Delta_w_i,epsilon_plus)。仅超过上界的正样本被截断；未超阈值的正样本和所有负样本保留c*Delta_w_i。不再平衡或归一化，不保证组内零和；sum(b)=-sum_i(max(c*Delta_w_i-epsilon_plus,0))<=0。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","RTX 4090 16卡（2节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=12; gradient accumulation=12；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+c=1; epsilon_plus=10（跨轮固定）；无负侧阈值，无共享shrink；每轮逐样本重算b，inner loop内固定。",scripts/experiment_plans/exp_clipping_withoutzerosum/train_nft_sd3_ours-singleloss-AWR-positive-samplewise-clip.py,bash scripts/experiment_plans/exp_clipping_withoutzerosum/run_sd3_4090_16gpu_positive_samplewise_clip.sh,sd35_pickscore_4090_16gpu_positive-samplewise-clip_c1.0_epsplus10.0_kl0.0001,,,,,,,待开始,,待运行，暂无结果。与E11比较保留未超阈值正样本的影响；关注clipped_sample_fraction、clipped_group_fraction、removed_positive_mass_per_group_mean、正负质量及group_shift_sum_mean。在master分支仓库根目录执行；两节点设置同一MASTER_ADDR为节点0地址，并分别设置NODE_RANK=0/1（也可读取SenseCore节点环境变量）；MASTER_PORT默认29532。以下名称及目录对应脚本默认值；日志运行名会自动追加时间戳。 checkpoint目录为outputs/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_positive-samplewise-clip_c1.0_epsplus10.0_kl0.0001；日志目录为logs/public/experiment_plans/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_positive-samplewise-clip_c1.0_epsplus10.0_kl0.0001_<时间戳>。,,,
+E13,Positive Shared Clipping：只统一缩放正侧、负侧不变（H200 8卡，epsilon+=15）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，Delta_w_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24。d_plus=max_i(max(Delta_w_i,0))；c_plus=min(c,epsilon_plus/d_plus)，零分母对应+inf；Delta_w_i>0时b_i=c_plus*Delta_w_i，否则b_i=c*Delta_w_i。保留正侧内部比例，负侧不随clipping缩小；不再平衡或归一化，不保证组内零和；sum(b)=(c_plus-c)*sum_{Delta_w>0}(Delta_w)<=0。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","H200 8卡（单节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=24; gradient accumulation=24；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+c=1; epsilon_plus=15（跨轮固定）；无负侧阈值；每轮按完整组重算c_plus，inner loop内固定b。",scripts/experiment_plans/exp_clipping_withoutzerosum/train_nft_sd3_ours-singleloss-AWR-positive-shared-clip.py,bash scripts/experiment_plans/exp_clipping_withoutzerosum/run_sd3_h200_8gpu_positive_shared_clip_epsplus15.sh,sd35_pickscore_h200_8gpu_positive-shared-clip_c1.0_epsplus15.0_kl0.0001,,,,,,,待开始,,"待运行，暂无结果。与E14在相同H200 8卡、epsilon_plus=15配置下比较正侧统一缩放与逐样本截断；关注positive_c_eff_mean、negative_c_eff、positive_clipped_group_fraction、正负质量及group_shift_sum_mean。在master分支仓库根目录执行本行bash命令；单节点torchrun --standalone启动8个进程，默认CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7。以下名称及目录对应脚本默认值；日志运行名会自动追加时间戳。checkpoint目录为outputs/exp_clipping_withoutzerosum/sd35_pickscore_h200_8gpu_positive-shared-clip_c1.0_epsplus15.0_kl0.0001；日志目录为logs/public/experiment_plans/exp_clipping_withoutzerosum/sd35_pickscore_h200_8gpu_positive-shared-clip_c1.0_epsplus15.0_kl0.0001_<时间戳>。",,,
+E14,Positive Samplewise Clipping：只截断超阈值正样本、负侧不变（H200 8卡，epsilon+=15）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，Delta_w_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24。先对所有样本统一乘c，再逐样本截断：b_i=min(c*Delta_w_i,epsilon_plus)。仅超过上界的正样本被截断；未超阈值的正样本和所有负样本保留c*Delta_w_i。不再平衡或归一化，不保证组内零和；sum(b)=-sum_i(max(c*Delta_w_i-epsilon_plus,0))<=0。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","H200 8卡（单节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=24; gradient accumulation=24；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+c=1; epsilon_plus=15（跨轮固定）；无负侧阈值，无共享shrink；每轮逐样本重算b，inner loop内固定。",scripts/experiment_plans/exp_clipping_withoutzerosum/train_nft_sd3_ours-singleloss-AWR-positive-samplewise-clip.py,bash scripts/experiment_plans/exp_clipping_withoutzerosum/run_sd3_h200_8gpu_positive_samplewise_clip_epsplus15.sh,sd35_pickscore_h200_8gpu_positive-samplewise-clip_c1.0_epsplus15.0_kl0.0001,,,,,,,待开始,,"待运行，暂无结果。与E13在相同H200 8卡、epsilon_plus=15配置下比较保留未超阈值正样本的影响；关注clipped_sample_fraction、clipped_group_fraction、removed_positive_mass_per_group_mean、正负质量及group_shift_sum_mean。在master分支仓库根目录执行本行bash命令；单节点torchrun --standalone启动8个进程，默认CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7。以下名称及目录对应脚本默认值；日志运行名会自动追加时间戳。checkpoint目录为outputs/exp_clipping_withoutzerosum/sd35_pickscore_h200_8gpu_positive-samplewise-clip_c1.0_epsplus15.0_kl0.0001；日志目录为logs/public/experiment_plans/exp_clipping_withoutzerosum/sd35_pickscore_h200_8gpu_positive-samplewise-clip_c1.0_epsplus15.0_kl0.0001_<时间戳>。",,,
+E15,Two-sided Samplewise Clipping：逐样本双侧截断（RTX 4090 16卡，epsilon-=0.5，epsilon+=9）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，A_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24，PickScore关闭variance gate。对指数归一化后得到的优势先乘c，再逐样本双侧截断：b_i=clip(c*A_i,-epsilon_minus,epsilon_plus)=min(max(c*A_i,-epsilon_minus),epsilon_plus)。两侧阈值独立；未超阈值的样本保留c*A_i。不做共享缩放、再平衡或重新归一化，不保证组内sum(b)=0。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","RTX 4090 16卡（2节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=12; gradient accumulation=12；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+num_epochs=100000；save_freq=30；eval_freq=10（沿用baseline默认值）
+c=1; epsilon_minus=0.5; epsilon_plus=9（跨轮固定）；b_i范围=[-0.5,9]；每轮逐样本重算b，inner loop内固定。",scripts/experiment_plans/exp_clipping_withoutzerosum/train_nft_sd3_ours-singleloss-AWR-two-sided-samplewise-clip.py,bash scripts/experiment_plans/exp_clipping_withoutzerosum/run_sd3_4090_16gpu_two_sided_samplewise_clip_epsplus9_epsminus0p5.sh,sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus9.0_epsminus0.5_kl0.0001,,,,,,,待开始,,脚本已准备并完成参数检查，尚未运行，暂无结果。与E16在epsilon_plus=9下比较负侧阈值0.5/0.7；与E17/E18在epsilon_minus=0.5下比较正侧阈值1/9/15。关注PickScore曲线、clipped_positive_sample_fraction、clipped_negative_sample_fraction、removed_positive_mass_per_group_mean、removed_negative_mass_per_group_mean及group_shift_sum_mean。在master分支仓库根目录执行本行bash命令；两节点设置同一MASTER_ADDR为节点0地址，并分别设置NODE_RANK=0/1（也可读取SenseCore节点环境变量）；MASTER_PORT默认29532。以上配置和名称对应脚本默认值；如通过环境变量或命令行覆盖，应同步记录实际值。日志运行名会自动追加时间戳。checkpoint目录为outputs/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus9.0_epsminus0.5_kl0.0001；日志目录为logs/public/experiment_plans/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus9.0_epsminus0.5_kl0.0001_<时间戳>。,,,
+E16,Two-sided Samplewise Clipping：逐样本双侧截断（RTX 4090 16卡，epsilon-=0.7，epsilon+=9）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，A_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24，PickScore关闭variance gate。对指数归一化后得到的优势先乘c，再逐样本双侧截断：b_i=clip(c*A_i,-epsilon_minus,epsilon_plus)=min(max(c*A_i,-epsilon_minus),epsilon_plus)。两侧阈值独立；未超阈值的样本保留c*A_i。不做共享缩放、再平衡或重新归一化，不保证组内sum(b)=0。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","RTX 4090 16卡（2节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=12; gradient accumulation=12；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+num_epochs=100000；save_freq=30；eval_freq=10（沿用baseline默认值）
+c=1; epsilon_minus=0.7; epsilon_plus=9（跨轮固定）；b_i范围=[-0.7,9]；每轮逐样本重算b，inner loop内固定。",scripts/experiment_plans/exp_clipping_withoutzerosum/train_nft_sd3_ours-singleloss-AWR-two-sided-samplewise-clip.py,bash scripts/experiment_plans/exp_clipping_withoutzerosum/run_sd3_4090_16gpu_two_sided_samplewise_clip_epsplus9_epsminus0p7.sh,sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus9.0_epsminus0.7_kl0.0001,,,,,,,待开始,,脚本已准备并完成参数检查，尚未运行，暂无结果。与E15保持epsilon_plus=9及其他配置相同，仅将epsilon_minus从0.5放宽到0.7，比较负侧裁剪强度。关注PickScore曲线、clipped_positive_sample_fraction、clipped_negative_sample_fraction、removed_positive_mass_per_group_mean、removed_negative_mass_per_group_mean及group_shift_sum_mean。在master分支仓库根目录执行本行bash命令；两节点设置同一MASTER_ADDR为节点0地址，并分别设置NODE_RANK=0/1（也可读取SenseCore节点环境变量）；MASTER_PORT默认29532。以上配置和名称对应脚本默认值；如通过环境变量或命令行覆盖，应同步记录实际值。日志运行名会自动追加时间戳。checkpoint目录为outputs/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus9.0_epsminus0.7_kl0.0001；日志目录为logs/public/experiment_plans/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus9.0_epsminus0.7_kl0.0001_<时间戳>。,,,
+E17,Two-sided Samplewise Clipping：逐样本双侧截断（RTX 4090 16卡，epsilon-=0.5，epsilon+=1）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，A_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24，PickScore关闭variance gate。对指数归一化后得到的优势先乘c，再逐样本双侧截断：b_i=clip(c*A_i,-epsilon_minus,epsilon_plus)=min(max(c*A_i,-epsilon_minus),epsilon_plus)。两侧阈值独立；未超阈值的样本保留c*A_i。不做共享缩放、再平衡或重新归一化，不保证组内sum(b)=0。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","RTX 4090 16卡（2节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=12; gradient accumulation=12；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+num_epochs=100000；save_freq=30；eval_freq=10（沿用baseline默认值）
+c=1; epsilon_minus=0.5; epsilon_plus=1（跨轮固定）；b_i范围=[-0.5,1]；每轮逐样本重算b，inner loop内固定。",scripts/experiment_plans/exp_clipping_withoutzerosum/train_nft_sd3_ours-singleloss-AWR-two-sided-samplewise-clip.py,bash scripts/experiment_plans/exp_clipping_withoutzerosum/run_sd3_4090_16gpu_two_sided_samplewise_clip_epsplus1_epsminus0p5.sh,sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus1.0_epsminus0.5_kl0.0001,,,,,,,待开始,,脚本已准备并完成参数检查，尚未运行，暂无结果。与E15/E18保持epsilon_minus=0.5及其他配置相同，比较正侧阈值1/9/15；本组正侧阈值最紧。关注PickScore曲线、clipped_positive_sample_fraction、clipped_negative_sample_fraction、removed_positive_mass_per_group_mean、removed_negative_mass_per_group_mean及group_shift_sum_mean。在master分支仓库根目录执行本行bash命令；两节点设置同一MASTER_ADDR为节点0地址，并分别设置NODE_RANK=0/1（也可读取SenseCore节点环境变量）；MASTER_PORT默认29532。以上配置和名称对应脚本默认值；如通过环境变量或命令行覆盖，应同步记录实际值。日志运行名会自动追加时间戳。checkpoint目录为outputs/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus1.0_epsminus0.5_kl0.0001；日志目录为logs/public/experiment_plans/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus1.0_epsminus0.5_kl0.0001_<时间戳>。,,,
+E18,Two-sided Samplewise Clipping：逐样本双侧截断（RTX 4090 16卡，epsilon-=0.5，epsilon+=15）,master,PickScore,"AWR指数权重：sigma_R=max(std_全局rollout(r),1e-6)，w_i=K*softmax_组内(r/sigma_R)_i，A_i=w_i-1；按(rollout_batch_id, prompt_index)分组，K=24，PickScore关闭variance gate。对指数归一化后得到的优势先乘c，再逐样本双侧截断：b_i=clip(c*A_i,-epsilon_minus,epsilon_plus)=min(max(c*A_i,-epsilon_minus),epsilon_plus)。两侧阈值独立；未超阈值的样本保留c*A_i。不做共享缩放、再平衡或重新归一化，不保证组内sum(b)=0。v_target=v_old+b_i*(u-v_old)，u=noise-x0；使用原单MSE loss，policy loss系数=1。","RTX 4090 16卡（2节点×8卡）；TASK=pickscore；config/nft.py:sd3_pickscore
+KL=1e-4；policy loss系数=1（without Delta AWR）
+lr=3e-4; seed=42; fp16; LoRA=true; resolution=512
+train/eval sample steps:10/40; timestep_fraction=1.0; rollout solver=dpm2
+guidance_scale=1.0; deterministic=true; gamma_floor=1e-6; variance gate=false
+每轮48组×24图=1152图；每卡train/sample/test batch=6
+rollout batches=12; gradient accumulation=12；num_inner_epochs=1；每轮1次optimizer step
+old平滑更新：eta_k=min(0.001*k,0.5)；沿用baseline的EMA、评估及保存设置
+num_epochs=100000；save_freq=30；eval_freq=10（沿用baseline默认值）
+c=1; epsilon_minus=0.5; epsilon_plus=15（跨轮固定）；b_i范围=[-0.5,15]；每轮逐样本重算b，inner loop内固定。",scripts/experiment_plans/exp_clipping_withoutzerosum/train_nft_sd3_ours-singleloss-AWR-two-sided-samplewise-clip.py,bash scripts/experiment_plans/exp_clipping_withoutzerosum/run_sd3_4090_16gpu_two_sided_samplewise_clip_epsplus15_epsminus0p5.sh,sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus15.0_epsminus0.5_kl0.0001,,,,,,,待开始,,脚本已准备并完成参数检查，尚未运行，暂无结果。与E15/E17保持epsilon_minus=0.5及其他配置相同，比较正侧阈值1/9/15；本组正侧阈值最宽松。关注PickScore曲线、clipped_positive_sample_fraction、clipped_negative_sample_fraction、removed_positive_mass_per_group_mean、removed_negative_mass_per_group_mean及group_shift_sum_mean。在master分支仓库根目录执行本行bash命令；两节点设置同一MASTER_ADDR为节点0地址，并分别设置NODE_RANK=0/1（也可读取SenseCore节点环境变量）；MASTER_PORT默认29532。以上配置和名称对应脚本默认值；如通过环境变量或命令行覆盖，应同步记录实际值。日志运行名会自动追加时间戳。checkpoint目录为outputs/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus15.0_epsminus0.5_kl0.0001；日志目录为logs/public/experiment_plans/exp_clipping_withoutzerosum/sd35_pickscore_4090_16gpu_two-sided-samplewise-clip_c1.0_epsplus15.0_epsminus0.5_kl0.0001_<时间戳>。,,,
