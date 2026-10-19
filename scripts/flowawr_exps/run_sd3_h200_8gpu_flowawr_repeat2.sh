@@ -15,7 +15,7 @@ TRAIN_SCRIPT="scripts/flowawr_exps/train_nft_sd3_ours-singleloss-AWR.py"
 TASK="${TASK:-pickscore}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-6}"
 KL_COEF="${KL_COEF:-0.0001}"
-SEED="${SEED:-42}"
+SEED="${SEED:-43}"
 REPEAT_ID=2
 
 case "${TASK}" in
